@@ -17,6 +17,7 @@ from src.utils.profiler import measure_latency, measure_cache_hits
 from src.co_design.iasp import find_optimal_permutation, get_activation_correlation
 from src.co_design.modularity import calculate_modularity
 from src.models.wrapper import ModelWrapper
+from src.co_design.hds import apply_hds
 
 def get_model_and_data(config: dict):
     """Loads model, tokenizer, and dataset based on the config."""
@@ -203,22 +204,82 @@ def run_permute_only(config, args):
     # Cleanup
     Path(temp_state_dict_path).unlink(missing_ok=True)
 
-def run_linear_pipeline(config, dry_run=False):
+def run_linear_pipeline(config, args):
+    """Runs the linear pipeline (IASP-then-HDS) experiment."""
     print("\n--- Running Method: (4) Linear Pipeline (IASP-then-HDS) ---")
-    if dry_run:
+    if args.dry_run:
         print("1. Loading model.")
         print("2. Running IASP to find initial permutation.")
         print("3. Applying initial permutation to the model.")
         print("4. Applying HDS fine-tuning to the permuted model.")
         print("5. Measuring final metrics (perplexity, latency, cache, modularity).")
         print("6. Saving results to results/.../linear_pipeline_metrics.json")
-    else:
-        # Full implementation will go here
-        print("Executing linear pipeline experiment...")
+        return
 
-def run_iterative(config, dry_run=False):
+    # --- 1. Setup ---
+    model, tokenizer, data_loader = get_model_and_data(config)
+    wrapped_model = ModelWrapper(model)
+    d_model = model.config.hidden_size
+    temp_state_dict_path = "temp_linear_state_dict.pt"
+
+    if torch.cuda.is_available():
+        wrapped_model.cuda()
+
+    # --- 2. Run IASP ---
+    print("Finding initial permutation with IASP...")
+    initial_permutation = find_optimal_permutation(
+        model=wrapped_model,
+        data_loader=data_loader,
+        target_layer_name=config['iasp']['target_layer_name'],
+        n_clusters=config['iasp']['n_clusters']
+    )
+    
+    # --- 3. Apply Permutation ---
+    print("Applying initial permutation to model weights...")
+    wrapped_model.permute_model_weights(initial_permutation)
+
+    # --- 4. Apply HDS ---
+    wrapped_model.model = apply_hds(wrapped_model.model, data_loader, config)
+
+    # --- 5. Run Measurements ---
+    print("Calculating perplexity...")
+    perplexity = calculate_perplexity(wrapped_model, tokenizer, data_loader)
+    print(f"Perplexity: {perplexity:.4f}")
+    
+    print("Measuring latency...")
+    dummy_input = torch.randint(0, config['vocab_size'], (1, 512))
+    latency = measure_latency(wrapped_model, dummy_input)
+    print(f"Latency: {latency:.2f} ms")
+
+    print("Measuring L2 cache hit rate...")
+    torch.save(wrapped_model.model.state_dict(), temp_state_dict_path)
+    cache_hits = measure_cache_hits(args.config, temp_state_dict_path)
+
+    print("Calculating modularity...")
+    correlation_matrix = get_activation_correlation(wrapped_model.model, data_loader, config['iasp']['target_layer_name'])
+    nodes_per_cluster = d_model // config['iasp']['n_clusters']
+    partition = [
+        initial_permutation[i:i + nodes_per_cluster] for i in range(0, d_model, nodes_per_cluster)
+    ]
+    modularity = calculate_modularity(correlation_matrix, partition)
+    print(f"Modularity: {modularity:.4f}")
+
+    # --- 6. Save Results ---
+    metrics = {
+        "perplexity": perplexity,
+        "latency_ms": latency,
+        "l2_cache_hit_rate_pct": cache_hits,
+        "modularity": modularity
+    }
+    save_results(config, 'linear_pipeline', metrics)
+    
+    # Cleanup
+    Path(temp_state_dict_path).unlink(missing_ok=True)
+
+def run_iterative(config, args):
+    """Runs the full iterative co-design experiment."""
     print("\n--- Running Method: (5) Iterative Co-Design (Ours) ---")
-    if dry_run:
+    if args.dry_run:
         print("1. Loading model.")
         print("--- Iteration 1 ---")
         print("2a. Apply HDS fine-tuning.")
@@ -230,9 +291,79 @@ def run_iterative(config, dry_run=False):
         print("3c. Apply π_2 to the model.")
         print("4. Measuring final metrics (perplexity, latency, cache, modularity).")
         print("5. Saving results to results/.../iterative_metrics.json")
-    else:
-        # Full implementation will go here
-        print("Executing iterative co-design experiment...")
+        return
+
+    # --- 1. Setup ---
+    model, tokenizer, data_loader = get_model_and_data(config)
+    wrapped_model = ModelWrapper(model)
+    d_model = model.config.hidden_size
+    temp_state_dict_path = "temp_iterative_state_dict.pt"
+    num_iterations = config.get('num_iterations', 2)
+    
+    if torch.cuda.is_available():
+        wrapped_model.cuda()
+
+    final_permutation = list(range(d_model))
+    iteration_metrics = {"latency": [], "modularity": [], "l2_cache_hit_rate": []}
+
+    # --- 2. Iterative Loop ---
+    for i in range(num_iterations):
+        print(f"\n--- Starting Co-Design Iteration {i+1}/{num_iterations} ---")
+        
+        # a. Apply HDS
+        wrapped_model.model = apply_hds(wrapped_model.model, data_loader, config)
+        
+        # b. Run IASP
+        print(f"Finding optimal permutation for iteration {i+1}...")
+        permutation = find_optimal_permutation(
+            model=wrapped_model,
+            data_loader=data_loader,
+            target_layer_name=config['iasp']['target_layer_name'],
+            n_clusters=config['iasp']['n_clusters']
+        )
+        
+        # c. Apply Permutation
+        print(f"Applying permutation for iteration {i+1}...")
+        wrapped_model.permute_model_weights(permutation)
+        final_permutation = permutation # Keep track of the last permutation
+
+    # --- 3. Final Measurements ---
+    print("\n--- Final Measurements after Iterative Co-Design ---")
+    print("Calculating perplexity...")
+    perplexity = calculate_perplexity(wrapped_model, tokenizer, data_loader)
+    print(f"Perplexity: {perplexity:.4f}")
+    
+    print("Measuring latency...")
+    dummy_input = torch.randint(0, config['vocab_size'], (1, 512))
+    latency = measure_latency(wrapped_model, dummy_input)
+    print(f"Latency: {latency:.2f} ms")
+
+    print("Measuring L2 cache hit rate...")
+    torch.save(wrapped_model.model.state_dict(), temp_state_dict_path)
+    cache_hits = measure_cache_hits(args.config, temp_state_dict_path)
+
+    print("Calculating modularity...")
+    correlation_matrix = get_activation_correlation(wrapped_model.model, data_loader, config['iasp']['target_layer_name'])
+    nodes_per_cluster = d_model // config['iasp']['n_clusters']
+    partition = [
+        final_permutation[i:i + nodes_per_cluster] for i in range(0, d_model, nodes_per_cluster)
+    ]
+    modularity = calculate_modularity(correlation_matrix, partition)
+    print(f"Modularity: {modularity:.4f}")
+
+    # --- 4. Save Results ---
+    metrics = {
+        "perplexity": perplexity,
+        "latency_ms": latency,
+        "l2_cache_hit_rate_pct": cache_hits,
+        "modularity": modularity,
+        "num_iterations": num_iterations,
+        "iteration_metrics": iteration_metrics # Note: This is not populated yet
+    }
+    save_results(config, 'iterative', metrics)
+
+    # Cleanup
+    Path(temp_state_dict_path).unlink(missing_ok=True)
 
 def main():
     parser = argparse.ArgumentParser(description="Run co-design experiments.")
@@ -273,9 +404,9 @@ def main():
     elif args.method == 'permute_only':
         run_permute_only(config, args)
     elif args.method == 'linear_pipeline':
-        run_linear_pipeline(config, args.dry_run)
+        run_linear_pipeline(config, args)
     elif args.method == 'iterative':
-        run_iterative(config, args.dry_run)
+        run_iterative(config, args)
 
 if __name__ == '__main__':
     main() 
