@@ -1,1 +1,7 @@
- 
+torch
+transformers
+datasets
+pyyaml
+numpy
+scikit-learn
+pandas 

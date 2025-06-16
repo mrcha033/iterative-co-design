@@ -6,43 +6,43 @@ Phase 1: Foundational Setup & Utilities
 
 This phase establishes the project backbone, including data handling, configuration management, and core measurement tools.
 
-[ ] Task 1.1: Initialize Project Structure
+[x] Task 1.1: Initialize Project Structure
 
 Description: Create the complete directory structure as outlined in the project proposal (configs/, data/, src/, etc.). Initialize a Git repository.
 
 Verification: All directories exist. git status shows a clean initial commit.
 
-[ ] Task 1.2: Setup Dependency Management
+[x] Task 1.2: Setup Dependency Management
 
 Description: Create a requirements.txt file and add initial core dependencies: torch, transformers, datasets, pyyaml, numpy, scikit-learn, pandas.
 
 Verification: Run pip install -r requirements.txt in a clean virtual environment. The command completes successfully.
 
-[ ] Task 1.3: Implement Configuration Loader
+[x] Task 1.3: Implement Configuration Loader
 
 Description: Create a utility function (src/utils/config.py) that loads a specified .yaml file and returns a configuration object (e.g., a dictionary or an argparse.Namespace).
 
 Verification: Write a unit test that loads a dummy test.yaml and asserts that the returned object contains the correct keys and values.
 
-[ ] Task 1.4: Create Data Loading Script
+[x] Task 1.4: Create Data Loading Script
 
 Description: Implement data/download_datasets.sh. This script will use the Hugging Face datasets library to download and cache 'wikitext-103-raw-v1' and 'sst2'.
 
 Verification: Run the script. Check that the datasets are downloaded to the default Hugging Face cache directory (~/.cache/huggingface/datasets).
 
-[ ] Task 1.5: Implement Latency Profiler
+[x] Task 1.5: Implement Latency Profiler
 
 Description: Implement the measure_latency() function in src/utils/profiler.py. It should take a model and dummy input, perform warm-up runs, and then average the wall-clock time over N subsequent runs. Use torch.cuda.synchronize() for accurate GPU timing.
 
 Verification: Test with a pre-trained bert-base-uncased. The function should return a positive float value (e.g., 15.2). Running it twice should yield similar, stable results.
 
-[ ] Task 1.6: Implement L2 Cache Hit Rate Profiler
+[x] Task 1.6: Implement L2 Cache Hit Rate Profiler
 
 Description: Implement measure_cache_hits() in src/utils/profiler.py. This function will construct and execute an ncu command line string using Python's subprocess module to profile a model's forward pass. It must parse the text output from ncu to extract the l2_tex_hit_rate.pct metric.
 
 Verification: Manually run ncu --metrics l2_tex_hit_rate.pct python my_simple_model_run.py on a tiny script. Then run the measure_cache_hits() function on the same script. Assert that the parsed value from the function matches the value from the manual run. This is a critical and potentially tricky task.
 
-[ ] Task 1.7: Implement Model Evaluation Utilities
+[x] Task 1.7: Implement Model Evaluation Utilities
 
 Description: Implement calculate_perplexity() and calculate_accuracy() in src/utils/evaluation.py for Mamba and BERT respectively.
 
@@ -52,7 +52,7 @@ Phase 2: Core Co-Design Algorithm Implementation
 
 This phase focuses on implementing the novel components of the paper: IASP and HDS.
 
-[ ] Task 2.1: Implement Model Wrapper and Permutation Logic
+[x] Task 2.1: Implement Model Wrapper and Permutation Logic
 
 Description: Create the ModelWrapper in src/models/wrapper.py. Implement the permute_model_weights(permutation) method. This method will take a permutation array (e.g., [0, 2, 1, 3]) and reorder the rows and columns of the relevant weight matrices in the model's state_dict.
 
@@ -66,19 +66,19 @@ Manually check that the second row of the original weight matrix is now the thir
 
 Assert that torch.equal() confirms the manual and programmatic permutations are identical.
 
-[ ] Task 2.2: Implement Activation Correlation Matrix Calculation
+[x] Task 2.2: Implement Activation Correlation Matrix Calculation
 
 Description: In src/co_design/iasp.py, implement get_activation_correlation(). This function should perform forward passes on a sample of data, hook into a target layer to extract activations, and compute the Pearson correlation matrix of the activation dimensions.
 
 Verification: Use a simple 2-layer MLP. Feed it perfectly correlated input data for two dimensions (e.g., dimension i is always 2 * j). The resulting correlation matrix entry C[i, j] should be very close to 1.0. For uncorrelated (random) input, it should be close to 0.0.
 
-[ ] Task 2.3: Implement Modularity Calculation
+[x] Task 2.3: Implement Modularity Calculation
 
 Description: Implement the calculate_modularity() function in src/co_design/modularity.py. It takes a correlation matrix C and a proposed clustering (or partition) of nodes and computes the modularity score as defined by Newman.
 
 Verification: Create a toy 4x4 correlation matrix representing two perfect clusters (e.g., C[0,1] and C[2,3] are high, all others are low). Test two partitions: [[0,1], [2,3]] and [[0,2], [1,3]]. Assert that the modularity score for the first (correct) partition is significantly higher.
 
-[ ] Task 2.4: Implement IASP (IO-Aware Scan Permutation)
+[x] Task 2.4: Implement IASP (IO-Aware Scan Permutation)
 
 Description: Implement find_optimal_permutation() in src/co_design/iasp.py. This function orchestrates the process:
 
@@ -90,7 +90,7 @@ Constructs a final permutation array by concatenating the indices within each cl
 
 Verification: Use the same toy 4x4 correlation matrix from Task 2.3. The function should return a permutation that groups the clustered nodes together, e.g., [0, 1, 2, 3] or [2, 3, 0, 1]. The modularity score for this output permutation should be maximal.
 
-[ ] Task 2.5: Implement HDS (Hardware-Native Differentiable Sparsity)
+[x] Task 2.5: Implement HDS (Hardware-Native Differentiable Sparsity)
 
 Description: In src/co_design/hds.py, implement a layer or hook that applies the Gumbel-Top-K trick to learn a 2:4 structured sparsity mask during a model's fine-tuning phase.
 
@@ -100,7 +100,7 @@ Phase 3: Experiment Execution and Analysis
 
 This phase brings all the components together to run the full experiments.
 
-[ ] Task 3.1: Implement the Main Experiment Runner
+[x] Task 3.1: Implement the Main Experiment Runner
 
 Description: Build scripts/run_experiment.py. It should parse command-line arguments (--config, --method), load the specified configuration, and call the appropriate sequence of functions from src to execute one of the five experimental conditions (Dense, Sparsity-Only, etc.).
 
