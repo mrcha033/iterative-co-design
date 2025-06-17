@@ -66,13 +66,13 @@ The script takes two main arguments:
 
 - `dense`: (Baseline 1) The original, unmodified model.
 - `permute_only`: (Baseline 3) Applies IASP to the dense model.
-- `sparsity_only`: (Baseline 2) Applies HDS to the dense model (Not yet fully implemented).
-- `linear_pipeline`: (Baseline 4) Applies IASP, then HDS (Not yet fully implemented).
-- `iterative`: (Ours) Applies HDS and IASP in a loop (Not yet fully implemented).
+- `sparsity_only`: (Baseline 2) Applies HDS to the dense model.
+- `linear_pipeline`: (Baseline 4) Applies IASP, then HDS.
+- `iterative`: (Ours) Applies HDS and IASP in a loop.
 
 ### Example Command
 
-To run the "dense" baseline experiment with the Mamba-130M configuration:
+To run the "dense" baseline experiment with the Mamba-3B configuration:
 
 ```bash
 python scripts/run_experiment.py --config configs/mamba_130m_wikitext103.yaml --method dense

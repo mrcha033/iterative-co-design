@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import os
 from pathlib import Path
+import shutil
 
 def measure_latency(model: torch.nn.Module, dummy_input: torch.Tensor, on_gpu: bool = True) -> float:
     """
@@ -52,18 +53,16 @@ def measure_latency(model: torch.nn.Module, dummy_input: torch.Tensor, on_gpu: b
 
 def measure_cache_hits(config_path: str, state_dict_path: str, experiment_script_path: str = 'scripts/run_experiment.py') -> float:
     """
-    Measures the L2 cache hit rate of a model's forward pass using NVIDIA Nsight Compute (ncu).
+    Measures the L2 cache hit rate using NVIDIA Nsight Compute (ncu).
 
-    This function calls the main experiment script in a special profiling mode.
-
-    Args:
-        config_path: Path to the experiment's YAML config file.
-        state_dict_path: Path to the .pt file containing the model's state_dict to profile.
-        experiment_script_path: Path to the main experiment runner script.
-
-    Returns:
-        The L2 cache hit rate as a float, or raises an error if it cannot be parsed.
+    Note: This function requires NVIDIA Nsight Compute (ncu) to be installed and
+    in the system's PATH. If ncu is not found, it will print a warning and return 0.0.
     """
+    if not shutil.which("ncu"):
+        print("\n[Warning] NVIDIA Nsight Compute (ncu) not found in PATH.")
+        print("          Skipping L2 cache hit rate measurement. Will return 0.0.")
+        return 0.0
+
     if not torch.cuda.is_available():
         print("Warning: CUDA not available. Skipping cache hit measurement.")
         return 0.0

@@ -2,8 +2,13 @@ import torch
 import numpy as np
 from tqdm import tqdm
 from sklearn.cluster import SpectralClustering
+from .modularity import calculate_modularity
+from typing import Tuple, List
+import torch.nn as nn
 
-def get_activation_correlation(model, data_loader, target_layer_name: str):
+def get_activation_correlation(model: nn.Module, 
+                             data_loader: torch.utils.data.DataLoader, 
+                             target_layer_name: str):
     """
     Computes the Pearson correlation matrix of a target layer's output activations.
 
@@ -109,22 +114,55 @@ def find_permutation_from_matrix(correlation_matrix: np.ndarray, n_clusters: int
     return permutation.tolist()
 
 
-def find_optimal_permutation(model, data_loader, target_layer_name: str, n_clusters: int):
+def find_optimal_permutation(model: nn.Module, 
+                             data_loader: torch.utils.data.DataLoader, 
+                             target_layer_name: str, 
+                             cluster_size_range: Tuple[int, int] = (16, 128)) -> List[int]:
     """
-    Orchestrates the IASP process to find an optimal permutation.
-
-    Args:
-        model: The PyTorch model to analyze.
-        data_loader: DataLoader for sample data.
-        target_layer_name: The name of the layer to analyze.
-        n_clusters: The number of clusters to find.
-
-    Returns:
-        A list representing the optimal permutation.
+    Finds the optimal permutation by searching for the number of clusters
+    that maximizes the modularity score.
     """
-    print("Step 1: Calculating activation correlation matrix...")
+    print("Finding optimal permutation by maximizing modularity...")
     correlation_matrix = get_activation_correlation(model, data_loader, target_layer_name)
+    d_model = correlation_matrix.shape[0]
 
-    permutation = find_permutation_from_matrix(correlation_matrix, n_clusters)
+    best_modularity = -1
+    best_permutation = list(range(d_model))
     
-    return permutation 
+    # Iterate over a range of possible numbers of clusters
+    min_clusters = d_model // cluster_size_range[1]
+    max_clusters = d_model // cluster_size_range[0]
+    
+    for n_clusters in range(min_clusters, max_clusters + 1):
+        if n_clusters <= 1:
+            continue
+
+        print(f"  - Testing with {n_clusters} clusters...")
+        clustering = SpectralClustering(n_clusters=n_clusters, affinity='precomputed', random_state=0, n_init=10)
+        labels = clustering.fit_predict(correlation_matrix)
+        
+        # Build the proposed partition from the clustering labels
+        partition = [[] for _ in range(n_clusters)]
+        for node_idx, cluster_idx in enumerate(labels):
+            partition[cluster_idx].append(node_idx)
+            
+        # Calculate modularity for this partition
+        current_modularity = calculate_modularity(correlation_matrix, partition)
+        print(f"    - Modularity: {current_modularity:.4f}")
+
+        if current_modularity > best_modularity:
+            best_modularity = current_modularity
+            # Build the final permutation from the best partition
+            best_permutation = [node for cluster in partition for node in cluster]
+            print(f"    - New best modularity found! Optimal clusters so far: {n_clusters}")
+
+    print(f"Finished search. Best modularity {best_modularity:.4f} found.")
+    return best_permutation
+
+def find_optimal_permutation_for_config(model, data_loader, iasp_config):
+    return find_optimal_permutation(
+        model=model,
+        data_loader=data_loader,
+        target_layer_name=iasp_config['target_layer_name'],
+        n_clusters=iasp_config['n_clusters']
+    ) 

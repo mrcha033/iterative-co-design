@@ -106,31 +106,31 @@ Description: Build scripts/run_experiment.py. It should parse command-line argum
 
 Verification: Run a "dry run" for each method: python scripts/run_experiment.py --config configs/mamba_3b_wikitext103.yaml --method <method_name> --dry_run. The script should print the sequence of operations it would perform without actually running them (e.g., "1. Loading model. 2. Applying HDS. 3. Measuring latency...").
 
-[ ] Task 3.2: Run Baseline Experiments (Dense, Permute-Only)
+[x] Task 3.2: Run Baseline Experiments (Dense, Permute-Only)
 
 Description: Execute run_experiment.py for the dense and permute_only methods on the Mamba-3B model.
 
 Verification: The script should complete without errors and generate result files (e.g., results/mamba_3b/dense_metrics.json). The JSON file should contain all measured metrics: perplexity, latency, l2_cache_hit_rate, and modularity. The values should be reasonable.
 
-[ ] Task 3.3: Run Sparsity and Linear Pipeline Experiments
+[x] Task 3.3: Run Sparsity and Linear Pipeline Experiments
 
 Description: Execute run_experiment.py for the sparsity_only and linear_pipeline methods. This involves fine-tuning with HDS.
 
 Verification: The fine-tuning process should show a decreasing loss. The final result files should be generated correctly. We expect latency for linear_pipeline to be lower than for the individual baselines.
 
-[ ] Task 3.4: Run the Full Iterative Co-Design Experiment
+[x] Task 3.4: Run the Full Iterative Co-Design Experiment
 
 Description: Execute run_experiment.py for the iterative method. This is the core experiment.
 
 Verification: The script should successfully complete multiple iterations of HDS -> IASP. The log output should show that the modularity score and L2 cache hit rate increase with iterations, while latency decreases, directly verifying the paper's central claim. A final iterative_metrics.json file is produced.
 
-[ ] Task 3.5: Implement and Run the Quantization Experiment
+[x] Task 3.5: Implement and Run the Quantization Experiment
 
 Description: Build scripts/run_quant_test.py. Implement the three strategies (Quant-then-Permute, Permute-then-Quant, Permute-Quant-RePermute) using a standard PTQ library (like PyTorch's native quantization).
 
 Verification: Run all three methods. The results should show that the Permute-Quant-RePermute method achieves the lowest latency, demonstrating the value of the final "re-permutation" step, as highlighted by the red arrow in Figure 2.
 
-[ ] Task 3.6: Create Analysis Notebook
+[x] Task 3.6: Create Analysis Notebook
 
 Description: Create notebooks/2_analyze_results.ipynb. Write code to load all generated JSON files into a single Pandas DataFrame.
 
