@@ -379,6 +379,29 @@ def run_iterative(config, args):
         wrapped_model.permute_model_weights(permutation)
         final_permutation = permutation # Keep track of the last permutation
 
+        # d. Measure metrics for this iteration
+        print(f"Measuring metrics for iteration {i+1}...")
+        dummy_input = torch.randint(0, config['vocab_size'], (1, 512))
+        
+        # Latency
+        lat = measure_latency(wrapped_model, dummy_input)
+        iteration_metrics["latency"].append(lat)
+        print(f"  - Latency: {lat:.2f} ms")
+
+        # L2 Cache Hits
+        torch.save(wrapped_model.model.state_dict(), temp_state_dict_path)
+        cache = measure_cache_hits(args.config, temp_state_dict_path)
+        iteration_metrics["l2_cache_hit_rate"].append(cache)
+        print(f"  - L2 Cache Hit Rate: {cache:.2f}%")
+
+        # Modularity
+        corr_matrix = get_activation_correlation(wrapped_model.model, data_loader, config['iasp']['target_layer_name'])
+        nodes_per_cluster = d_model // config['iasp']['n_clusters']
+        part = [permutation[j:j + nodes_per_cluster] for j in range(0, d_model, nodes_per_cluster)]
+        mod = calculate_modularity(corr_matrix, part)
+        iteration_metrics["modularity"].append(mod)
+        print(f"  - Modularity: {mod:.4f}")
+
     # --- 3. Final Measurements ---
     print("\n--- Final Measurements after Iterative Co-Design ---")
     print("Calculating perplexity...")
@@ -410,7 +433,7 @@ def run_iterative(config, args):
         "l2_cache_hit_rate_pct": cache_hits,
         "modularity": modularity,
         "num_iterations": num_iterations,
-        "iteration_metrics": iteration_metrics # Note: This is not populated yet
+        "iteration_metrics": iteration_metrics
     }
     save_results(config, 'iterative', metrics)
 
