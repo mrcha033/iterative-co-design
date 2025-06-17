@@ -1,30 +1,48 @@
-FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
+# Build stage for CUDA tools
+FROM nvidia/cuda:12.4-base-ubuntu22.04 as cuda_tools
 
-# Set non-interactive frontend to avoid prompts
+# Install NVIDIA tools (ncu, etc)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cuda-nsight-compute-12-4 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Final stage
+FROM nvidia/cuda:12.4-base-ubuntu22.04
+
+# Set non-interactive frontend
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install git, wget, and other basic dependencies
-RUN apt-get update && apt-get install -y git wget bzip2 && rm -rf /var/lib/apt/lists/*
+# Install essential packages and clean up in one layer
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    wget \
+    bzip2 \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
-# Install Miniconda
+# Copy NVIDIA tools from build stage
+COPY --from=cuda_tools /usr/local/cuda-12.4/nsight-compute-2024.1.0 /usr/local/cuda-12.4/nsight-compute-2024.1.0
+ENV PATH=/usr/local/cuda-12.4/nsight-compute-2024.1.0:$PATH
+
+# Install Miniconda efficiently
 ENV CONDA_DIR /opt/conda
-RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh && \
-    /bin/bash ~/miniconda.sh -b -p /opt/conda && \
-    rm ~/miniconda.sh
+RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh \
+    && /bin/bash ~/miniconda.sh -b -p /opt/conda \
+    && rm ~/miniconda.sh \
+    && echo "source /opt/conda/bin/activate co-design" >> ~/.bashrc
+
 ENV PATH=$CONDA_DIR/bin:$PATH
 
-# Create Conda environment from the environment.yml file
+# Create Conda environment
 COPY environment.yml .
-RUN conda env create -f environment.yml
+RUN conda env create -f environment.yml \
+    && conda clean -afy
 
-# Make Conda available in bash shells
-RUN echo "source /opt/conda/bin/activate co-design" >> ~/.bashrc
-
-# Set up the working directory and copy the project files
+# Set up workspace
 WORKDIR /workspace
 COPY . .
 
-# Set the default entrypoint to use the conda environment
+# Set default shell to use conda environment
 SHELL ["conda", "run", "-n", "co-design", "/bin/bash", "-c"]
 
 CMD ["echo", "Environment ready. Run experiments with 'python scripts/run_experiment.py ...'"] 

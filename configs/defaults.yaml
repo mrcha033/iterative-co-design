@@ -1,0 +1,34 @@
+# Common model targets
+model_registry:
+  mamba: "co_design.models.mamba.MambaWrapper"
+  bert: "co_design.models.bert.BertWrapper"
+  
+# Common dataset targets
+dataset_registry:
+  sst2: "co_design.data.text_classification.SST2Dataset"
+  wikitext103: "co_design.data.language_modeling.WikiText103Dataset"
+
+# Profiler configuration
+profiler:
+  _target_: "co_design.utils.profiler.LatencyProfiler"
+  cache_dir: "${hydra:runtime.output_dir}/profiler_cache"
+  ncu_metrics: ["sm__cycles_elapsed.avg", "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum"]
+
+# Wandb configuration
+wandb:
+  _target_: "co_design.utils.logging.setup_wandb"
+  project: ${project_name}
+  mode: "offline"  # Set to offline by default
+  
+# Debug preset
+debug:
+  dataset:
+    max_samples: 100
+  training:
+    max_steps: 10
+    batch_size: 4
+
+# Storage management
+storage:
+  max_checkpoints_to_keep: 5
+  cleanup_older_than_days: 30 

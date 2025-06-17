@@ -1,15 +1,33 @@
 defaults:
+  - defaults  # Load common configurations first
   - model: mamba_3b
   - dataset: wikitext103
   - override hydra/job_logging: colorlog
   - override hydra/hydra_logging: colorlog
+  - _self_  # Allow overriding of defaults
 
 # Global settings
 project_name: "iterative-co-design"
 seed: 42
-num_iterations: 2 # For the iterative method
+num_iterations: 2  # For the iterative method
 
 # Hydra configuration
 hydra:
   run:
-    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S} 
+    dir: outputs/${now:%Y-%m}/${now:%d-%H%M}  # Monthly subdirs with day-time runs
+  sweep:
+    dir: multirun/${now:%Y-%m}/${now:%d-%H%M}
+    subdir: ${hydra.job.override_dirname}
+  job:
+    chdir: true  # Change working directory to output dir
+  
+  # Sweeps configuration
+  sweeper:
+    params:
+      ++experiment: debug  # Enable quick-run mode with +experiment=debug
+      
+# Cleanup old runs (implemented in co_design.utils.cleanup)
+cleanup:
+  _target_: co_design.utils.cleanup.cleanup_old_runs
+  max_age_days: ${storage.cleanup_older_than_days}
+  base_dirs: ["outputs", "multirun"] 
