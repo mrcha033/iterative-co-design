@@ -57,25 +57,18 @@ class HDSLinear(nn.Module):
         """
         Generates the N:M structured sparsity mask from the learnable scores.
         """
-        # Pad the scores to be divisible by M
+        # Pad the scores to ensure divisibility by M
         padded_scores = F.pad(self.scores, (0, self.padding))
-        
-        # Reshape for grouped selection
-        grouped_scores = padded_scores.view(-1, self.m)
-        
-        # Apply Gumbel noise for stochasticity
-        gumbel_noise = -torch.log(-torch.log(torch.rand_like(grouped_scores)))
-        
-        # Select top N scores in each group
-        _, top_indices = torch.topk(grouped_scores + gumbel_noise, self.n, dim=-1)
-        
-        # Create a binary mask from the top-k indices
-        mask = torch.zeros_like(grouped_scores)
-        mask.scatter_(-1, top_indices, 1)
-        
-        # Reshape and un-pad the mask to match the original weight dimensions
-        full_mask = mask.view(self.linear.out_features, -1)
-        return full_mask[:, :self.in_features]
+
+        # Reshape so that each group of size `m` is processed independently
+        grouped_scores = padded_scores.view(self.linear.out_features, -1, self.m)
+
+        # Use the differentiable Gumbel-TopK to obtain the mask
+        mask = gumbel_topk(grouped_scores, self.n, temperature=self.gumbel_temp)
+
+        # Reshape and crop the mask back to (out_features, in_features)
+        mask = mask.view(self.linear.out_features, -1)
+        return mask[:, :self.in_features]
 
     def forward(self, x):
         sparsity_mask = self.get_sparsity_mask()
