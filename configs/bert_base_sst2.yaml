@@ -21,5 +21,9 @@ iasp:
 
 # HDS Configuration (if applicable)
 hds:
+  target_layers:
+    - "bert.encoder.layer.*.output.dense"
+  n: 2
+  m: 4
   sparsity_target: 0.5 # 50% sparsity
   fine_tuning_epochs: 3 

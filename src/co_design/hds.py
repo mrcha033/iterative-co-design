@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
+import fnmatch
 
 def gumbel_topk(logits: torch.Tensor, k: int, temperature: float = 1.0) -> torch.Tensor:
     """
@@ -81,20 +82,41 @@ class HDSLinear(nn.Module):
         sparse_weight = self.linear.weight * sparsity_mask
         return F.linear(x, sparse_weight, self.linear.bias)
 
-def _replace_linear_with_hds(module, hds_config):
-    has_replaced = False
-    target_layer_names = hds_config.get('target_layers', [])
+def _replace_linear_with_hds(model: nn.Module, hds_config: dict):
+    """
+    Recursively finds and replaces nn.Linear layers with HDSLinear wrappers
+    based on wildcard patterns in the configuration.
+    """
+    target_patterns = hds_config.get('target_layers', [])
+    if not target_patterns:
+        print("Warning: No target_layers specified for HDS. No layers will be replaced.")
+        return
+
     n = hds_config.get('n', 2)
     m = hds_config.get('m', 4)
 
-    for name, child in module.named_children():
-        if isinstance(child, nn.Linear) and any(target in name for target in target_layer_names):
-            print(f"  - Wrapping layer: {name} with {n}:{m} HDSLinear")
-            setattr(module, name, HDSLinear(child, n=n, m=m))
-            has_replaced = True
-        else:
-            has_replaced = _replace_linear_with_hds(child, hds_config) or has_replaced
-    return has_replaced
+    # Find all linear layers that match the target patterns
+    layers_to_replace = []
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Linear):
+            if any(fnmatch.fnmatch(name, pattern) for pattern in target_patterns):
+                layers_to_replace.append(name)
+    
+    for name in layers_to_replace:
+        # Get the parent module and the name of the child attribute
+        name_parts = name.split('.')
+        parent_name = '.'.join(name_parts[:-1])
+        child_name = name_parts[-1]
+        
+        parent_module = model
+        if parent_name:
+            # Use get_submodule to access nested modules
+            parent_module = model.get_submodule(parent_name)
+
+        original_layer = getattr(parent_module, child_name)
+        hds_layer = HDSLinear(original_layer, n=n, m=m)
+        setattr(parent_module, child_name, hds_layer)
+        print(f"  - Wrapped layer: {name} with {n}:{m} HDSLinear")
 
 def apply_hds(model: nn.Module, data_loader: torch.utils.data.DataLoader, config: dict):
     """
