@@ -116,6 +116,7 @@ def run_dense(config, args):
     Path(temp_state_dict_path).unlink(missing_ok=True)
 
 def run_sparsity_only(config, args):
+    """Runs the sparsity-only (HDS) baseline experiment."""
     print("\n--- Running Method: (2) Sparsity-Only (HDS) ---")
     if args.dry_run:
         print("1. Loading model.")
@@ -125,8 +126,59 @@ def run_sparsity_only(config, args):
         print("5. Measuring L2 cache hit rate on sparse model.")
         print("6. Measuring modularity on sparse model.")
         print("7. Saving results to results/.../sparsity_only_metrics.json")
-    else:
-        print("Executing sparsity-only experiment...")
+        return
+
+    # --- 1. Setup ---
+    model, tokenizer, data_loader = get_model_and_data(config)
+    wrapped_model = ModelWrapper(model)
+    d_model = model.config.hidden_size
+    temp_state_dict_path = "temp_sparse_state_dict.pt"
+
+    if torch.cuda.is_available():
+        wrapped_model.cuda()
+
+    # --- 2. Apply HDS ---
+    wrapped_model.model = apply_hds(wrapped_model.model, data_loader, config)
+
+    # --- 3. Run Measurements ---
+    print("Calculating perplexity...")
+    perplexity = calculate_perplexity(wrapped_model, tokenizer, data_loader)
+    print(f"Perplexity: {perplexity:.4f}")
+
+    print("Measuring latency...")
+    dummy_input = torch.randint(0, config['vocab_size'], (1, 512))
+    latency = measure_latency(wrapped_model, dummy_input)
+    print(f"Latency: {latency:.2f} ms")
+
+    print("Measuring L2 cache hit rate...")
+    torch.save(wrapped_model.model.state_dict(), temp_state_dict_path)
+    cache_hits = measure_cache_hits(args.config, temp_state_dict_path)
+
+    print("Calculating modularity...")
+    # Since no permutation is applied, modularity is calculated on the natural order
+    # after the model's weights have been changed by HDS.
+    correlation_matrix = get_activation_correlation(wrapped_model.model, data_loader, config['iasp']['target_layer_name'])
+    
+    # We assume a default partition (no reordering)
+    nodes_per_cluster = d_model // config['iasp']['n_clusters']
+    identity_permutation = list(range(d_model))
+    partition = [
+        identity_permutation[i:i + nodes_per_cluster] for i in range(0, d_model, nodes_per_cluster)
+    ]
+    modularity = calculate_modularity(correlation_matrix, partition)
+    print(f"Modularity: {modularity:.4f}")
+
+    # --- 4. Save Results ---
+    metrics = {
+        "perplexity": perplexity,
+        "latency_ms": latency,
+        "l2_cache_hit_rate_pct": cache_hits,
+        "modularity": modularity
+    }
+    save_results(config, 'sparsity_only', metrics)
+    
+    # Cleanup
+    Path(temp_state_dict_path).unlink(missing_ok=True)
 
 def run_permute_only(config, args):
     """Runs the permutation-only baseline experiment."""

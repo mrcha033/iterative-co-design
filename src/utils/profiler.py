@@ -4,44 +4,51 @@ import re
 import subprocess
 import tempfile
 import os
+from pathlib import Path
 
-def measure_latency(model, dummy_input, warmup_runs=5, measure_runs=20):
+def measure_latency(model: torch.nn.Module, dummy_input: torch.Tensor, on_gpu: bool = True) -> float:
     """
-    Measures the average latency of a model's forward pass.
+    Measures the average inference latency of a model.
 
     Args:
-        model: The PyTorch model to profile.
-        dummy_input: A tensor of appropriate shape to feed to the model.
-        warmup_runs: Number of initial runs to discard.
-        measure_runs: Number of runs to average for the measurement.
+        model: The model to profile.
+        dummy_input: A sample input tensor for the model.
+        on_gpu: Flag to indicate if profiling should be run on a GPU.
 
     Returns:
         The average latency in milliseconds.
     """
-    # Move model and input to GPU if available
-    if torch.cuda.is_available():
+    if on_gpu and torch.cuda.is_available():
         model.cuda()
         dummy_input = dummy_input.cuda()
+        # Warm-up runs
+        for _ in range(10):
+            _ = model(dummy_input)
         torch.cuda.synchronize()
-
-    # Warm-up runs
-    for _ in range(warmup_runs):
-        _ = model(dummy_input)
-    
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+    else:
+        # Warm-up runs for CPU
+        for _ in range(10):
+            _ = model(dummy_input)
 
     # Measurement runs
     timings = []
-    for _ in range(measure_runs):
-        start_time = time.perf_counter()
-        _ = model(dummy_input)
-        if torch.cuda.is_available():
+    for _ in range(100):
+        if on_gpu and torch.cuda.is_available():
+            start_time = torch.cuda.Event(enable_timing=True)
+            end_time = torch.cuda.Event(enable_timing=True)
+            start_time.record()
+            _ = model(dummy_input)
+            end_time.record()
             torch.cuda.synchronize()
-        end_time = time.perf_counter()
-        timings.append((end_time - start_time) * 1000) # Convert to ms
+            timings.append(start_time.elapsed_time(end_time))
+        else:
+            start_time = time.time()
+            _ = model(dummy_input)
+            end_time = time.time()
+            timings.append((end_time - start_time) * 1000)
 
-    return sum(timings) / len(timings)
+    avg_latency_ms = sum(timings) / len(timings)
+    return avg_latency_ms
 
 def measure_cache_hits(config_path: str, state_dict_path: str, experiment_script_path: str = 'scripts/run_experiment.py') -> float:
     """
