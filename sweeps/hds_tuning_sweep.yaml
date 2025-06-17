@@ -1,0 +1,22 @@
+program: scripts/run_experiment.py
+method: grid
+metric:
+  name: iterative.latency_ms
+  goal: minimize
+parameters:
+  model:
+    values: [mamba_3b, bert_base]
+  dataset:
+    values: [wikitext103, sst2]
+  method:
+    values: [iterative]
+  num_iterations:
+    values: [1, 2, 3]
+  model.hds.fine_tuning_epochs:
+    values: [1, 2]
+  dataset.learning_rate:
+    values: [1.0e-5, 2.0e-5, 5.0e-5]
+
+# Example command to run the sweep:
+# wandb sweep sweeps/hds_tuning_sweep.yaml
+# wandb agent <sweep_id> 

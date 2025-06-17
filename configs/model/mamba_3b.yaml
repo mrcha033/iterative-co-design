@@ -1,0 +1,17 @@
+# Mamba-3B Model Configuration
+name: "state-spaces/mamba-2.8b-slimpj"
+task: "language_modeling"
+vocab_size: 50280 
+
+# IASP Configuration
+iasp:
+  target_layer_name: "layers.20.mixer.out_proj" # Example layer
+  cluster_size_range: [32, 128]
+
+# HDS Configuration
+hds:
+  target_layers:
+    - "layers.*.mixer.out_proj"
+  n: 2
+  m: 4
+  fine_tuning_epochs: 1 

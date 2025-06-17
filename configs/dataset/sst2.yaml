@@ -1,0 +1,7 @@
+# SST-2 Dataset Configuration
+name: "glue"
+config: "sst2"
+text_column: "sentence"
+sample_size: 100
+batch_size: 16
+learning_rate: 2.0e-5 

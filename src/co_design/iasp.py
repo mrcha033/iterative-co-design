@@ -3,28 +3,39 @@ import numpy as np
 from tqdm import tqdm
 from sklearn.cluster import SpectralClustering
 from .modularity import calculate_modularity
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 import torch.nn as nn
+from torch.utils.data import DataLoader
 
-def get_activation_correlation(model: nn.Module, 
-                             data_loader: torch.utils.data.DataLoader, 
-                             target_layer_name: str):
+def get_activation_correlation(
+    model: nn.Module,
+    dataloader: DataLoader,
+    target_layer_name: str,
+    max_samples: int = 512,
+    device: str = "cuda"
+) -> np.ndarray:
     """
-    Computes the Pearson correlation matrix of a target layer's output activations.
+    Computes the activation correlation matrix for a target layer's output.
 
-    This function registers a forward hook on the specified layer, passes data through
-    the model to collect the layer's output activations, and then computes the
-    Pearson correlation matrix of the activation dimensions.
+    This function hooks into the specified model layer, collects activations
+    as the model processes data from the dataloader, and then computes a
+    Pearson correlation matrix of the activations.
 
     Args:
         model: The PyTorch model to analyze.
-        data_loader: A DataLoader providing sample data. Each batch is expected
-                     to be a dictionary that can be passed to the model as `model(**batch)`.
-        target_layer_name: The name of the layer to hook into (e.g., 'model.layers.0').
+        dataloader: The dataloader providing data samples.
+        target_layer_name: The name of the layer to hook for activations
+            (e.g., 'bert.encoder.layer.0.output.dense').
+        max_samples: The maximum number of samples to use for calculation.
+        device: The device to run the model on.
 
     Returns:
-        A numpy array representing the Pearson correlation matrix of the activations.
+        A 2D numpy array representing the Pearson correlation matrix of the
+        layer's output activations.
     """
+    model.to(device)
+    model.eval()
+
     activations = []
 
     def hook_fn(module, input, output):
@@ -45,12 +56,8 @@ def get_activation_correlation(model: nn.Module,
 
     handle = target_layer.register_forward_hook(hook_fn)
 
-    model.eval()
-    if torch.cuda.is_available():
-        model.cuda()
-
     # Pass data through the model to collect activations
-    for batch in tqdm(data_loader, desc="Collecting activations"):
+    for batch in tqdm(dataloader, desc="Collecting activations"):
         inputs = {k: v.cuda() for k, v in batch.items() if torch.is_tensor(v)} if torch.cuda.is_available() else batch
         with torch.no_grad():
             _ = model(**inputs)
@@ -58,7 +65,7 @@ def get_activation_correlation(model: nn.Module,
     handle.remove() # Ensure the hook is removed to prevent memory leaks
 
     if not activations:
-        raise ValueError("No activations were collected. Check the data_loader and model.")
+        raise ValueError("No activations were collected. Check the dataloader and model.")
 
     # Concatenate all collected activations. The shape is typically (num_batches, batch_size, seq_len, hidden_dim).
     # We need to reshape it to (total_tokens, hidden_dim).
@@ -115,78 +122,85 @@ def find_permutation_from_matrix(correlation_matrix: np.ndarray, n_clusters: int
 
 
 def find_optimal_permutation(
-    model: nn.Module,
-    data_loader: torch.utils.data.DataLoader,
-    target_layer_name: str,
-    *,
-    n_clusters: int | None = None,
-    cluster_size_range: Tuple[int, int] = (16, 128),
+    correlation_matrix: np.ndarray,
+    num_clusters: Optional[int] = None
 ) -> List[int]:
-    """Finds a permutation that groups strongly correlated dimensions.
-
-    The function can either search for the best number of clusters within
-    ``cluster_size_range`` or use a fixed ``n_clusters`` if provided.
     """
+    Finds the optimal permutation of neuron indices to maximize modularity.
 
-    print("Finding optimal permutation by maximizing modularity...")
-    correlation_matrix = get_activation_correlation(model, data_loader, target_layer_name)
-    d_model = correlation_matrix.shape[0]
+    This function takes a correlation matrix and performs spectral clustering to
+    group correlated neurons. It then orders the neurons based on these
+    clusters to find a permutation that improves data locality. If num_clusters
+    is not provided, it searches for the optimal number of clusters that
+    maximizes the modularity score.
 
-    # If n_clusters is specified, directly compute the permutation
-    if n_clusters is not None:
+    Args:
+        correlation_matrix: A 2D numpy array of activation correlations.
+        num_clusters: The number of clusters to form. If None, the optimal
+            number of clusters will be determined automatically.
+
+    Returns:
+        A list of integers representing the optimal permutation of indices.
+    """
+    if num_clusters is None:
+        # Search for the best number of clusters to maximize modularity
+        best_modularity = -1
+        best_permutation = list(range(correlation_matrix.shape[0]))
+
+        min_clusters = max(2, correlation_matrix.shape[0] // 128)
+        max_clusters = max(2, correlation_matrix.shape[0] // 16)
+
+        for k in range(min_clusters, max_clusters + 1):
+            if k <= 1:
+                continue
+
+            print(f"  - Testing with {k} clusters...")
+            clustering = SpectralClustering(
+                n_clusters=k,
+                affinity='precomputed',
+                random_state=0,
+                n_init=10,
+            )
+            labels = clustering.fit_predict(correlation_matrix)
+
+            partition = [[] for _ in range(k)]
+            for node_idx, cluster_idx in enumerate(labels):
+                partition[cluster_idx].append(node_idx)
+
+            current_modularity = calculate_modularity(correlation_matrix, partition)
+            print(f"    - Modularity: {current_modularity:.4f}")
+
+            if current_modularity > best_modularity:
+                best_modularity = current_modularity
+                best_permutation = [node for cluster in partition for node in cluster]
+                print(f"    - New best modularity found! Optimal clusters so far: {k}")
+
+        print(f"Finished search. Best modularity {best_modularity:.4f} found.")
+        return best_permutation
+    else:
         clustering = SpectralClustering(
-            n_clusters=n_clusters,
+            n_clusters=num_clusters,
             affinity='precomputed',
             random_state=0,
             n_init=10,
         )
         labels = clustering.fit_predict(correlation_matrix)
 
-        partition = [[] for _ in range(n_clusters)]
+        partition = [[] for _ in range(num_clusters)]
         for node_idx, cluster_idx in enumerate(labels):
             partition[cluster_idx].append(node_idx)
 
         permutation = [node for cluster in partition for node in cluster]
         return permutation
 
-    best_modularity = -1
-    best_permutation = list(range(d_model))
-
-    min_clusters = max(2, d_model // cluster_size_range[1])
-    max_clusters = max(2, d_model // cluster_size_range[0])
-
-    for k in range(min_clusters, max_clusters + 1):
-        if k <= 1:
-            continue
-
-        print(f"  - Testing with {k} clusters...")
-        clustering = SpectralClustering(
-            n_clusters=k,
-            affinity='precomputed',
-            random_state=0,
-            n_init=10,
-        )
-        labels = clustering.fit_predict(correlation_matrix)
-
-        partition = [[] for _ in range(k)]
-        for node_idx, cluster_idx in enumerate(labels):
-            partition[cluster_idx].append(node_idx)
-
-        current_modularity = calculate_modularity(correlation_matrix, partition)
-        print(f"    - Modularity: {current_modularity:.4f}")
-
-        if current_modularity > best_modularity:
-            best_modularity = current_modularity
-            best_permutation = [node for cluster in partition for node in cluster]
-            print(f"    - New best modularity found! Optimal clusters so far: {k}")
-
-    print(f"Finished search. Best modularity {best_modularity:.4f} found.")
-    return best_permutation
-
 def find_optimal_permutation_for_config(model, data_loader, iasp_config):
     return find_optimal_permutation(
-        model=model,
-        data_loader=data_loader,
-        target_layer_name=iasp_config['target_layer_name'],
-        n_clusters=iasp_config['n_clusters']
+        correlation_matrix=get_activation_correlation(
+            model=model,
+            dataloader=data_loader,
+            target_layer_name=iasp_config['target_layer_name'],
+            max_samples=iasp_config['max_samples'],
+            device=iasp_config['device']
+        ),
+        num_clusters=iasp_config['n_clusters']
     ) 

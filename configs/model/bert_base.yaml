@@ -1,0 +1,17 @@
+# BERT-base Model Configuration
+name: "bert-base-uncased"
+task: "sequence_classification"
+vocab_size: 30522
+
+# IASP Configuration
+iasp:
+  target_layer_name: "encoder.layer.11.output.dense"
+  cluster_size_range: [16, 64]
+
+# HDS Configuration
+hds:
+  target_layers:
+    - "encoder.layer.*.output.dense"
+  n: 2
+  m: 4
+  fine_tuning_epochs: 3 

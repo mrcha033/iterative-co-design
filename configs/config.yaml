@@ -1,0 +1,15 @@
+defaults:
+  - model: mamba_3b
+  - dataset: wikitext103
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+
+# Global settings
+project_name: "iterative-co-design"
+seed: 42
+num_iterations: 2 # For the iterative method
+
+# Hydra configuration
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S} 
