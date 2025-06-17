@@ -114,47 +114,71 @@ def find_permutation_from_matrix(correlation_matrix: np.ndarray, n_clusters: int
     return permutation.tolist()
 
 
-def find_optimal_permutation(model: nn.Module, 
-                             data_loader: torch.utils.data.DataLoader, 
-                             target_layer_name: str, 
-                             cluster_size_range: Tuple[int, int] = (16, 128)) -> List[int]:
+def find_optimal_permutation(
+    model: nn.Module,
+    data_loader: torch.utils.data.DataLoader,
+    target_layer_name: str,
+    *,
+    n_clusters: int | None = None,
+    cluster_size_range: Tuple[int, int] = (16, 128),
+) -> List[int]:
+    """Finds a permutation that groups strongly correlated dimensions.
+
+    The function can either search for the best number of clusters within
+    ``cluster_size_range`` or use a fixed ``n_clusters`` if provided.
     """
-    Finds the optimal permutation by searching for the number of clusters
-    that maximizes the modularity score.
-    """
+
     print("Finding optimal permutation by maximizing modularity...")
     correlation_matrix = get_activation_correlation(model, data_loader, target_layer_name)
     d_model = correlation_matrix.shape[0]
 
-    best_modularity = -1
-    best_permutation = list(range(d_model))
-    
-    # Iterate over a range of possible numbers of clusters
-    min_clusters = d_model // cluster_size_range[1]
-    max_clusters = d_model // cluster_size_range[0]
-    
-    for n_clusters in range(min_clusters, max_clusters + 1):
-        if n_clusters <= 1:
-            continue
-
-        print(f"  - Testing with {n_clusters} clusters...")
-        clustering = SpectralClustering(n_clusters=n_clusters, affinity='precomputed', random_state=0, n_init=10)
+    # If n_clusters is specified, directly compute the permutation
+    if n_clusters is not None:
+        clustering = SpectralClustering(
+            n_clusters=n_clusters,
+            affinity='precomputed',
+            random_state=0,
+            n_init=10,
+        )
         labels = clustering.fit_predict(correlation_matrix)
-        
-        # Build the proposed partition from the clustering labels
+
         partition = [[] for _ in range(n_clusters)]
         for node_idx, cluster_idx in enumerate(labels):
             partition[cluster_idx].append(node_idx)
-            
-        # Calculate modularity for this partition
+
+        permutation = [node for cluster in partition for node in cluster]
+        return permutation
+
+    best_modularity = -1
+    best_permutation = list(range(d_model))
+
+    min_clusters = max(2, d_model // cluster_size_range[1])
+    max_clusters = max(2, d_model // cluster_size_range[0])
+
+    for k in range(min_clusters, max_clusters + 1):
+        if k <= 1:
+            continue
+
+        print(f"  - Testing with {k} clusters...")
+        clustering = SpectralClustering(
+            n_clusters=k,
+            affinity='precomputed',
+            random_state=0,
+            n_init=10,
+        )
+        labels = clustering.fit_predict(correlation_matrix)
+
+        partition = [[] for _ in range(k)]
+        for node_idx, cluster_idx in enumerate(labels):
+            partition[cluster_idx].append(node_idx)
+
         current_modularity = calculate_modularity(correlation_matrix, partition)
         print(f"    - Modularity: {current_modularity:.4f}")
 
         if current_modularity > best_modularity:
             best_modularity = current_modularity
-            # Build the final permutation from the best partition
             best_permutation = [node for cluster in partition for node in cluster]
-            print(f"    - New best modularity found! Optimal clusters so far: {n_clusters}")
+            print(f"    - New best modularity found! Optimal clusters so far: {k}")
 
     print(f"Finished search. Best modularity {best_modularity:.4f} found.")
     return best_permutation
