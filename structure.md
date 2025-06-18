@@ -24,12 +24,18 @@ iterative-co-design/
 │   ├── index.md
 │   └── api/                # Auto-generated API docs
 ├── notebooks/               # Jupyter notebooks for analysis and visualization
-│   ├── 1_explore_correlation.ipynb
-│   └── 2_analyze_results.ipynb
+│   ├── 1_explore_correlation.ipynb  # Updated with Figure 1 generation capability
+│   └── 2_analyze_results.ipynb      # Analysis of experimental results (Tables & Figures 2-4)
+├── figures/                 # Generated figures for the paper
+│   ├── figure1_mamba_latency_scan_vs_perm.pdf  # Figure 1: Random vs optimized permutation latency
+│   ├── figure1_data.json                       # Raw data for Figure 1
+│   └── (other generated figures)
 ├── results/                 # Default output directory for Hydra (organized by YYYY-MM/DD-HHMM)
 ├── scripts/                 # Executable scripts for running experiments
 │   ├── run_experiment.py
-│   └── run_quant_test.py
+│   ├── run_quant_test.py
+│   ├── generate_figure1.py     # Script to generate Figure 1 (random vs optimized permutation latency)
+│   └── generate_all_figures.py # Comprehensive figure generation suite
 ├── src/                     # Core logic and reusable source code modules
 │   ├── co_design/
 │   ├── models/
@@ -94,6 +100,10 @@ Command-line entry points with debug support:
 *   **W&B Integration**:
     - Offline mode by default for CI
     - Cached logging for network-constrained environments
+*   **Figure Generation**:
+    - Dedicated `figures/` directory for publication-quality outputs
+    - Automated figure generation scripts for all paper figures
+    - JSON data files accompanying each figure for reproducibility
 
 ### 🧪 Testing & CI
 
@@ -171,6 +181,12 @@ python scripts/run_experiment.py +experiment=debug
 
 # Production run with monthly organization
 python scripts/run_experiment.py model=mamba_3b dataset=wikitext103
+
+# Generate Figure 1 (Random vs Optimized Permutation Latency)
+python scripts/generate_figure1.py model=mamba_3b dataset=wikitext103
+
+# Generate all paper figures
+python scripts/generate_all_figures.py
 
 # Offline mode for air-gapped environments
 WANDB_MODE=offline python scripts/run_experiment.py

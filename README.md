@@ -70,12 +70,36 @@ The script takes two main arguments:
 - `linear_pipeline`: (Baseline 4) Applies IASP, then HDS.
 - `iterative`: (Ours) Applies HDS and IASP in a loop.
 
+### Figure Generation
+
+To reproduce the figures from the paper:
+
+- **Figure 1**: Random vs. Optimized Permutation Latency
+- **Figures 2-4**: Analysis results from experiments
+
 ### Example Command
 
 To run the "dense" baseline experiment with the Mamba-3B configuration:
 
 ```bash
 python scripts/run_experiment.py --config configs/model/mamba_3b.yaml --method dense
+```
+
+#### Generating Paper Figures
+
+**Figure 1** (Random vs. Optimized Permutation Latency):
+```bash
+python scripts/generate_figure1.py model=mamba_3b dataset=wikitext103
+```
+
+**All Figures**:
+```bash
+python scripts/generate_all_figures.py
+```
+
+**Interactive Figure Generation** (Jupyter):
+```bash
+jupyter notebook notebooks/1_explore_correlation.ipynb
 ```
 
 ### Dry Run

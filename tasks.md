@@ -135,3 +135,37 @@ Verification: Run all three methods. The results should show that the Permute-Qu
 Description: Create notebooks/2_analyze_results.ipynb. Write code to load all generated JSON files into a single Pandas DataFrame.
 
 Verification: The notebook should correctly display a summary table that looks like Table 1. It should also generate plots that visually replicate Figure 3 (metrics vs. iteration) and Figure 4 (Pareto frontier). The final plots should qualitatively match the conclusions of the paper.
+
+## Phase 4: Figure Generation and Visualization
+
+This phase focuses on creating publication-quality figures that replicate the paper's key visualizations.
+
+[ ] Task 4.1: Implement Figure 1 Generation Script
+
+Description: Create scripts/generate_figure1.py that generates Figure 1 (Random vs. Optimized Permutation Latency). The script should:
+- Generate multiple random permutations of model weights
+- Measure latency for each random permutation
+- Find the optimal permutation using IASP
+- Measure latency for the optimal permutation
+- Create a bar chart/scatter plot comparing random vs. optimized latencies
+- Save the figure as both PDF and PNG formats
+
+Verification: Run the script and verify it produces a figure showing ~25-35% latency improvement from optimized permutations vs. random/baseline, matching the paper's claims.
+
+[ ] Task 4.2: Integrate Figure 1 Generation into Notebooks
+
+Description: Update notebooks/1_explore_correlation.ipynb to include Figure 1 generation functionality. Add cells that can be run interactively to generate the figure.
+
+Verification: Open the notebook and run all cells. It should successfully generate Figure 1 and save it to the figures/ directory.
+
+[ ] Task 4.3: Add Figure Generation Commands to Main Script
+
+Description: Extend scripts/run_experiment.py to include a new method 'generate_figures' that can create all paper figures on demand.
+
+Verification: Run `python scripts/run_experiment.py method=generate_figures` and verify it creates figures/ directory with all paper figures.
+
+[ ] Task 4.4: Create Comprehensive Figure Generation Suite
+
+Description: Create scripts/generate_all_figures.py that orchestrates the generation of all paper figures (Figure 1, 2, 3, 4) in a single run.
+
+Verification: Run the script and verify it produces all figures with proper naming and formatting, ready for publication use.
