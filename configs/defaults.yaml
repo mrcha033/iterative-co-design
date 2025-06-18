@@ -3,10 +3,6 @@ model_registry:
   mamba: "co_design.models.mamba.MambaWrapper"
   bert: "co_design.models.bert.BertWrapper"
   
-# Common dataset targets
-dataset_registry:
-  sst2: "co_design.data.text_classification.SST2Dataset"
-  wikitext103: "co_design.data.language_modeling.WikiText103Dataset"
 
 # Profiler configuration
 profiler:
