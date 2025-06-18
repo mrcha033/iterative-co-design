@@ -102,6 +102,13 @@ python scripts/generate_all_figures.py
 jupyter notebook notebooks/1_explore_correlation.ipynb
 ```
 
+### Model Configuration
+
+Model YAML files under `configs/model` include an `iasp` section that controls
+the permutation search. The key `cluster_size_range` defines the minimum and
+maximum cluster sizes (in neurons) considered when searching for an optimal
+permutation.
+
 ### Dry Run
 
 To see the sequence of operations for a method without executing the full, expensive run, use the `--dry_run` flag:
