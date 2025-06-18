@@ -87,20 +87,33 @@ python scripts/run_experiment.py --config configs/model/mamba_3b.yaml --method d
 
 #### Generating Paper Figures
 
-**Figure 1** (Random vs. Optimized Permutation Latency):
-```bash
-python scripts/generate_figure1.py model=mamba_3b dataset=wikitext103
-```
-
-**All Figures**:
+**All Figures (1-4)**:
 ```bash
 python scripts/generate_all_figures.py
+```
+
+**Specific Figure**:
+```bash
+python scripts/generate_all_figures.py --figure 1  # Just Figure 1
+python scripts/generate_all_figures.py --figure 2  # Just Figure 2
+# ... etc
+```
+
+**Quick Mode** (for testing):
+```bash
+python scripts/generate_all_figures.py --quick
 ```
 
 **Interactive Figure Generation** (Jupyter):
 ```bash
 jupyter notebook notebooks/1_explore_correlation.ipynb
 ```
+
+**Available Figures:**
+- **Figure 1**: Random vs. Optimized Permutation Latency (~25-35% improvement)
+- **Figure 2**: Quantization Co-Design Strategies (iterative vs. linear)
+- **Figure 3**: Metrics vs. Iteration (causal chain in action)
+- **Figure 4**: Pareto Frontier (all methods comparison)
 
 ### Model Configuration
 
