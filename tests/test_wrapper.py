@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from src.models.wrapper import ModelWrapper
+from models.wrapper import ModelWrapper
 
 
 class SimpleModel(nn.Module):
@@ -143,6 +143,7 @@ class TestModelWrapper:
         wrapped.permute_model_weights(permutation)
 
         # Bias should also be permuted for output features
+        assert not torch.allclose(original_bias, wrapped.model.linear.bias.data)
         new_bias = wrapped.model.linear.bias.data
 
         # Should be different (unless symmetric)

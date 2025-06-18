@@ -1,7 +1,7 @@
 import tempfile
 import yaml
 from pathlib import Path
-from src.utils.config import load_yaml_config, load_omegaconf, config_to_namespace
+from utils.config import load_yaml_config, load_omegaconf, config_to_namespace
 
 
 class TestConfigLoader:

@@ -1,5 +1,5 @@
 import numpy as np
-from src.co_design.modularity import calculate_modularity
+from co_design.modularity import calculate_modularity
 
 
 def test_modularity_perfect_clusters():

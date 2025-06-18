@@ -28,12 +28,31 @@ python -m venv venv
 source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
 ```
 
-Install the required Python packages:
+#### Option A: Install with pip (Recommended for users)
 
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
-*Note: The experiments may require a recent version of PyTorch (`>=2.3.0`) and other libraries. If you encounter issues, consider upgrading the packages.*
+
+This will install the package and all required dependencies as specified in `pyproject.toml`.
+
+#### Option B: Install from requirements.txt (Development)
+
+```bash
+pip install -r requirements.txt -r tests/requirements.txt
+```
+
+*Note: The experiments require PyTorch (`>=2.3.0`), NumPy, PyYAML, and other core dependencies. If you encounter import errors, ensure these are properly installed.*
+
+#### Verify Installation
+
+```bash
+# Quick verification
+python -c "import torch; import numpy; import yaml; print('All core dependencies available')"
+
+# Run basic functional test
+pytest tests/test_config.py::TestConfigLoader::test_load_yaml_config_basic -v
+```
 
 ### 3. Download Datasets
 
@@ -143,15 +162,52 @@ All results, including measured metrics (perplexity, latency, modularity, etc.) 
 
 ### Testing
 
-To run the unit tests, first install the additional test dependencies and then execute `pytest`:
+**Important**: Tests require dependencies to be installed and PYTHONPATH to be set correctly.
 
-```bash
-pip install -r requirements.txt -r tests/requirements.txt
-pytest
-```
-
-Alternatively, you can use the helper script:
+#### Method 1: Using the test script (Recommended)
 
 ```bash
 ./scripts/run_tests.sh
 ```
+
+This script automatically:
+- Installs all required dependencies
+- Sets PYTHONPATH correctly  
+- Runs pytest with appropriate flags
+
+#### Method 2: Manual testing
+
+```bash
+# Install test dependencies (if not already done)
+pip install -e .[test]
+# OR: pip install -r requirements.txt -r tests/requirements.txt
+
+# Set PYTHONPATH (required for src imports)
+export PYTHONPATH=$(pwd)  # On Windows: set PYTHONPATH=%cd%
+
+# Run tests
+pytest
+```
+
+#### Method 3: Using pyproject.toml configuration
+
+```bash
+# Install the package in editable mode
+pip install -e .[test]
+
+# Run tests (PYTHONPATH handled by pyproject.toml)
+pytest
+```
+
+#### Test Requirements
+
+Tests require the following dependencies:
+- PyTorch (for model wrapper tests)  
+- NumPy (for numerical computations)
+- PyYAML (for configuration loading)
+- pytest (testing framework)
+
+**Note**: If you get import errors when running `pytest` directly, make sure to either:
+1. Use the provided `scripts/run_tests.sh` script, or
+2. Set `PYTHONPATH=$(pwd)` before running pytest, or  
+3. Install in editable mode with `pip install -e .`

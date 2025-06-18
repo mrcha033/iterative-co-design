@@ -8,10 +8,40 @@ version = "0.1.0"
 description = "Iterative Co-Design of Sparsity and Permutation Structures for Hardware-Accelerated Inference"
 authors = [{name = "Research Team"}]
 requires-python = ">=3.8"
+dependencies = [
+    "transformers>=4.38.2",
+    "datasets>=2.18.0",
+    "pyyaml>=6.0.1",
+    "numpy>=1.26.4",
+    "scikit-learn>=1.4.1",
+    "pandas>=2.2.1",
+    "tqdm>=4.66.2",
+    "hydra-core>=1.3.2",
+    "omegaconf>=2.3.0",
+    "wandb>=0.16.4",
+    "matplotlib>=3.8.3",
+    "seaborn>=0.13.2",
+    "torch>=2.3.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.2",
+    "pytest-cov",
+]
+docs = [
+    "mkdocs>=1.5.3",
+    "mkdocs-material>=9.5.13",
+    "mkdocstrings[python]>=0.24.1",
+]
+dev = [
+    "ruff>=0.2.2",
+    "iterative-co-design[test,docs]",
+]
 
 [tool.setuptools]
-packages = ["src.co_design", "src.models", "src.utils"]
-package-dir = {"" = "."}
+packages = ["co_design", "models", "utils"]
+package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
 "*" = ["*.yaml", "*.yml"]
