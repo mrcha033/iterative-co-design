@@ -25,10 +25,7 @@ import seaborn as sns
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
-import hydra
-from omegaconf import DictConfig, OmegaConf
 import json
-import glob
 import pandas as pd
 from tqdm import tqdm
 import subprocess
@@ -37,9 +34,9 @@ import subprocess
 project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
-from src.utils.profiler import LatencyProfiler
-from src.co_design.iasp import find_optimal_permutation
-from src.models.wrapper import ModelWrapper
+from src.utils.profiler import LatencyProfiler  # noqa: E402
+from src.co_design.iasp import find_optimal_permutation  # noqa: E402
+from src.models.wrapper import ModelWrapper  # noqa: E402
 
 # ================================
 # Figure Generation Functions
@@ -205,7 +202,7 @@ def generate_figure1(quick_mode=False):
         with open(output_dir / "figure1_data.json", 'w') as f:
             json.dump(results, f, indent=4)
         
-        print(f"✅ Figure 1 saved successfully")
+        print("✅ Figure 1 saved successfully")
         print(f"   • Improvement: {improvement_vs_baseline:.1f}%")
         return True
         
@@ -236,7 +233,7 @@ def generate_figure2():
             for cmd in commands:
                 try:
                     subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
-                except subprocess.CalledProcessError as e:
+                except subprocess.CalledProcessError:
                     print(f"❌ Failed to run: {cmd}")
                     return False
         
@@ -360,7 +357,7 @@ def generate_figure3():
         
         # Combine legends
         lines = line1 + line2 + line3
-        labels = [l.get_label() for l in lines]
+        labels = [line.get_label() for line in lines]
         ax1.legend(lines, labels, loc='center right', fontsize=12)
         
         plt.title('Figure 3: The Causal Chain in Action\n'
