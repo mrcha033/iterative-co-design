@@ -57,10 +57,25 @@ def get_activation_correlation(
     handle = target_layer.register_forward_hook(hook_fn)
 
     # Pass data through the model to collect activations
+    samples_collected = 0
     for batch in tqdm(dataloader, desc="Collecting activations"):
-        inputs = {k: v.cuda() for k, v in batch.items() if torch.is_tensor(v)} if torch.cuda.is_available() else batch
+        if samples_collected >= max_samples:
+            break
+
+        inputs = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
         with torch.no_grad():
             _ = model(**inputs)
+
+        # Determine how many samples were just processed using the first tensor
+        first_tensor = next((v for v in inputs.values() if torch.is_tensor(v)), None)
+        if first_tensor is not None:
+            samples_collected += first_tensor.size(0)
+        else:
+            # Fallback: use the last collected activation's batch size
+            samples_collected += activations[-1].shape[0]
+
+        if samples_collected >= max_samples:
+            break
 
     handle.remove() # Ensure the hook is removed to prevent memory leaks
 
@@ -69,7 +84,7 @@ def get_activation_correlation(
 
     # Concatenate all collected activations. The shape is typically (num_batches, batch_size, seq_len, hidden_dim).
     # We need to reshape it to (total_tokens, hidden_dim).
-    all_activations = np.concatenate(activations, axis=0)
+    all_activations = np.concatenate(activations, axis=0)[:max_samples]
     
     # Reshape from (total_samples, seq_len, hidden_dim) to (total_tokens, hidden_dim)
     if all_activations.ndim != 3:
