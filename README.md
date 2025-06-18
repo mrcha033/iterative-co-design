@@ -89,3 +89,18 @@ python scripts/run_experiment.py --config configs/model/mamba_3b.yaml --method i
 ### Results
 
 All results, including measured metrics (perplexity, latency, modularity, etc.) and any generated artifacts, are saved as JSON files in the `results/` directory, organized by model name. 
+
+### Testing
+
+To run the unit tests, first install the additional test dependencies and then execute `pytest`:
+
+```bash
+pip install -r requirements.txt -r tests/requirements.txt
+pytest
+```
+
+Alternatively, you can use the helper script:
+
+```bash
+./scripts/run_tests.sh
+```
