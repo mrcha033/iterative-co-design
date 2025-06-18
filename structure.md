@@ -10,8 +10,7 @@ The overall project layout is as follows:
 iterative-co-design/
 ├── .github/                  # CI workflows for automated testing
 │   └── workflows/
-│       ├── ci.yml           # Main CI workflow (linting, CPU tests)
-│       └── cuda_tests.yml   # Separate workflow for CUDA tests on A100
+│       └── ci.yml           # Main CI workflow (linting, CPU tests)
 ├── configs/                  # Hydra configuration files for experiments
 │   ├── config.yaml          # Main configuration entry point
 │   ├── defaults.yaml        # Common configurations and target paths
@@ -30,7 +29,7 @@ iterative-co-design/
 │   ├── figure1_mamba_latency_scan_vs_perm.pdf  # Figure 1: Random vs optimized permutation latency
 │   ├── figure1_data.json                       # Raw data for Figure 1
 │   └── (other generated figures)
-├── results/                 # Default output directory for Hydra (organized by YYYY-MM/DD-HHMM)
+├── outputs/                 # Default output directory for Hydra (organized by YYYY-MM/DD-HHMM)
 ├── scripts/                 # Executable scripts for running experiments
 │   ├── run_experiment.py
 │   ├── run_quant_test.py
@@ -112,7 +111,6 @@ Command-line entry points with debug support:
     - Separate CI workflows for GPU/CPU tests
 *   **CI Workflows**:
     - `ci.yml`: Fast CPU tests and linting
-    - `cuda_tests.yml`: GPU tests on A100 self-hosted runner
 
 ### 🐳 Containerization & Environment
 

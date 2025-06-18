@@ -4,11 +4,16 @@ from collections import OrderedDict
 from .utils import permute_tensor
 from typing import List
 
+
 class ModelWrapper(nn.Module):
     def __init__(self, model: nn.Module):
         super().__init__()
         self.model = model
-        self.device = next(model.parameters()).device if list(model.parameters()) else torch.device("cpu")
+        self.device = (
+            next(model.parameters()).device
+            if list(model.parameters())
+            else torch.device("cpu")
+        )
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
@@ -20,7 +25,7 @@ class ModelWrapper(nn.Module):
         """
         perm_tensor = torch.LongTensor(permutation).to(self.device)
         d_model = len(permutation)
-        
+
         # Create a map of layers to permute
         layers_to_permute = {}
         for name, module in self.model.named_modules():
@@ -66,7 +71,9 @@ class ModelWrapper(nn.Module):
         if isinstance(permutation, list):
             # Using model's device to create the tensor
             example_param = next(self.model.parameters())
-            permutation = torch.tensor(permutation, dtype=torch.long, device=example_param.device)
+            permutation = torch.tensor(
+                permutation, dtype=torch.long, device=example_param.device
+            )
 
         target_dim = len(permutation)
         current_state_dict = self.model.state_dict()
@@ -75,16 +82,22 @@ class ModelWrapper(nn.Module):
         permuted_layers = []
         for name, params in current_state_dict.items():
             # Identify square 2D tensors that match the permutation dimension
-            if params.dim() == 2 and params.size(0) == target_dim and params.size(1) == target_dim:
+            if (
+                params.dim() == 2
+                and params.size(0) == target_dim
+                and params.size(1) == target_dim
+            ):
                 permuted_layers.append(name)
                 permuted_params = permute_tensor(params, permutation)
                 new_state_dict[name] = permuted_params
             else:
                 new_state_dict[name] = params
-        
+
         if not permuted_layers:
-            print(f"Warning: No layers found with dimension {target_dim}x{target_dim}. No weights were permuted.")
+            print(
+                f"Warning: No layers found with dimension {target_dim}x{target_dim}. No weights were permuted."
+            )
         else:
             print(f"Permuted layers: {permuted_layers}")
 
-        self.model.load_state_dict(new_state_dict) 
+        self.model.load_state_dict(new_state_dict)

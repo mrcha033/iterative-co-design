@@ -12,10 +12,15 @@ import torch.nn as nn
 import hashlib
 import json
 
+
 class LatencyProfiler:
-    def __init__(self, cache_dir: str = "./results/profiler_cache", ncu_metrics: Optional[list] = None):
+    def __init__(
+        self,
+        cache_dir: str = "./outputs/profiler_cache",
+        ncu_metrics: Optional[list] = None,
+    ):
         """Initialize the profiler with configurable cache directory and metrics.
-        
+
         Args:
             cache_dir: Directory to store profiling cache
             ncu_metrics: List of NCU metrics to collect. Defaults to L2 cache metrics.
@@ -24,7 +29,7 @@ class LatencyProfiler:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.cache_file = self.cache_dir / "profiler_cache.json"
         self.ncu_metrics = ncu_metrics or ["l2_tex_hit_rate.pct"]
-        
+
     def _get_model_hash(self, model_state_dict) -> str:
         """Creates a SHA256 hash of a model's state_dict."""
         s = str(model_state_dict)
@@ -46,28 +51,28 @@ class LatencyProfiler:
             json.dump(cache, f)
 
     def measure_latency(
-        self, 
-        model: nn.Module, 
-        dummy_input: Dict[str, torch.Tensor], 
-        num_runs: int = 100
+        self,
+        model: nn.Module,
+        dummy_input: Dict[str, torch.Tensor],
+        num_runs: int = 100,
     ) -> float:
         """Measures the average inference latency of a model.
-        
+
         Args:
             model: The PyTorch model to profile
             dummy_input: Dictionary of input tensors
             num_runs: Number of inference runs to average over
-            
+
         Returns:
             Average latency in milliseconds
         """
         # Ensure model is in eval mode
         model.eval()
-        
+
         # Move inputs to same device as model
         device = next(model.parameters()).device
         dummy_input = {k: v.to(device) for k, v in dummy_input.items()}
-        
+
         with torch.no_grad():
             if device.type == "cuda":
                 return self._measure_gpu_latency(model, dummy_input, num_runs)
@@ -75,10 +80,7 @@ class LatencyProfiler:
                 return self._measure_cpu_latency(model, dummy_input, num_runs)
 
     def _measure_gpu_latency(
-        self, 
-        model: nn.Module,
-        dummy_input: Dict[str, torch.Tensor],
-        num_runs: int
+        self, model: nn.Module, dummy_input: Dict[str, torch.Tensor], num_runs: int
     ) -> float:
         """GPU-specific latency measurement using CUDA events."""
         starter = torch.cuda.Event(enable_timing=True)
@@ -101,10 +103,7 @@ class LatencyProfiler:
         return float(np.mean(timings))
 
     def _measure_cpu_latency(
-        self,
-        model: nn.Module,
-        dummy_input: Dict[str, torch.Tensor],
-        num_runs: int
+        self, model: nn.Module, dummy_input: Dict[str, torch.Tensor], num_runs: int
     ) -> float:
         """CPU-specific latency measurement using time.perf_counter."""
         # Warmup
@@ -120,27 +119,25 @@ class LatencyProfiler:
         return (end_time - start_time) * 1000 / num_runs
 
     def measure_cache_hits(
-        self,
-        model: nn.Module,
-        dummy_input: Dict[str, torch.Tensor]
+        self, model: nn.Module, dummy_input: Dict[str, torch.Tensor]
     ) -> Optional[Dict[str, float]]:
         """Measures cache hit rates and other metrics using NVIDIA's Nsight Compute.
-        
+
         Args:
             model: The PyTorch model to profile
             dummy_input: Dictionary of input tensors
-            
+
         Returns:
             Dictionary of metrics or None if profiling is not possible
         """
         if not torch.cuda.is_available():
             warnings.warn("CUDA not available - skipping hardware profiling")
             return None
-            
+
         if not shutil.which("ncu"):
             warnings.warn("NVIDIA Nsight Compute (ncu) not found in PATH")
             return None
-            
+
         # Check cache
         model_hash = self._get_model_hash(model.state_dict())
         cache = self._read_cache()
@@ -176,11 +173,15 @@ with torch.no_grad():
             metrics_str = ",".join(self.ncu_metrics)
             cmd = [
                 "ncu",
-                "--metrics", metrics_str,
+                "--metrics",
+                metrics_str,
                 "--csv",
-                "--replay-mode", "kernel",
-                "--log-file", str(output_path),
-                "python", str(script_path)
+                "--replay-mode",
+                "kernel",
+                "--log-file",
+                str(output_path),
+                "python",
+                str(script_path),
             ]
 
             try:
@@ -199,15 +200,15 @@ with torch.no_grad():
         try:
             with open(output_path) as f:
                 content = f.read()
-            
+
             metrics = {}
             for metric in self.ncu_metrics:
                 pattern = f"{metric}\\s*,\\s*[\\w%]+\\s*,\\s*([\\d\\.]+)"
                 match = re.search(pattern, content)
                 if match:
                     metrics[metric] = float(match.group(1))
-            
+
             return metrics if metrics else None
         except Exception as e:
             warnings.warn(f"Failed to parse NCU output: {e}")
-            return None 
+            return None

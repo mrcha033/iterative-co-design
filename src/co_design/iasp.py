@@ -7,12 +7,13 @@ from typing import List, Optional
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
+
 def get_activation_correlation(
     model: nn.Module,
     dataloader: DataLoader,
     target_layer_name: str,
     max_samples: int = 512,
-    device: str = "cuda"
+    device: str = "cuda",
 ) -> np.ndarray:
     """
     Computes the activation correlation matrix for a target layer's output.
@@ -50,7 +51,7 @@ def get_activation_correlation(
         if name == target_layer_name:
             target_layer = module
             break
-    
+
     if target_layer is None:
         raise ValueError(f"Layer '{target_layer_name}' not found in the model.")
 
@@ -62,7 +63,9 @@ def get_activation_correlation(
         if samples_collected >= max_samples:
             break
 
-        inputs = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
+        inputs = {
+            k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()
+        }
         with torch.no_grad():
             _ = model(**inputs)
 
@@ -77,29 +80,37 @@ def get_activation_correlation(
         if samples_collected >= max_samples:
             break
 
-    handle.remove() # Ensure the hook is removed to prevent memory leaks
+    handle.remove()  # Ensure the hook is removed to prevent memory leaks
 
     if not activations:
-        raise ValueError("No activations were collected. Check the dataloader and model.")
+        raise ValueError(
+            "No activations were collected. Check the dataloader and model."
+        )
 
     # Concatenate all collected activations. The shape is typically (num_batches, batch_size, seq_len, hidden_dim).
     # We need to reshape it to (total_tokens, hidden_dim).
     all_activations = np.concatenate(activations, axis=0)[:max_samples]
-    
+
     # Reshape from (total_samples, seq_len, hidden_dim) to (total_tokens, hidden_dim)
     if all_activations.ndim != 3:
-        raise ValueError(f"Expected 3D activations, but got {all_activations.ndim}D. The hook might be on an incompatible layer.")
-    
+        raise ValueError(
+            f"Expected 3D activations, but got {all_activations.ndim}D. The hook might be on an incompatible layer."
+        )
+
     num_samples, seq_len, hidden_dim = all_activations.shape
-    all_activations_reshaped = all_activations.reshape(num_samples * seq_len, hidden_dim)
-    
+    all_activations_reshaped = all_activations.reshape(
+        num_samples * seq_len, hidden_dim
+    )
+
     # Compute Pearson correlation matrix
     correlation_matrix = np.corrcoef(all_activations_reshaped, rowvar=False)
-    
+
     return correlation_matrix
 
 
-def find_permutation_from_matrix(correlation_matrix: np.ndarray, n_clusters: int) -> list[int]:
+def find_permutation_from_matrix(
+    correlation_matrix: np.ndarray, n_clusters: int
+) -> list[int]:
     """
     Finds an optimal permutation from a correlation matrix using spectral clustering.
 
@@ -119,20 +130,20 @@ def find_permutation_from_matrix(correlation_matrix: np.ndarray, n_clusters: int
     # We use the absolute value of correlation as affinity for clustering,
     # as strong negative correlations are also meaningful for grouping.
     affinity_matrix = np.abs(correlation_matrix)
-    
+
     clustering = SpectralClustering(
         n_clusters=n_clusters,
-        affinity='precomputed',
-        random_state=0  # for reproducibility
+        affinity="precomputed",
+        random_state=0,  # for reproducibility
     ).fit(affinity_matrix)
 
     labels = clustering.labels_
-    
+
     print("Step 2b: Constructing permutation from clusters...")
     # argsort provides a permutation that groups indices by their corresponding labels.
     # Using a stable sort for robustness.
-    permutation = np.argsort(labels, kind='mergesort')
-    
+    permutation = np.argsort(labels, kind="mergesort")
+
     return permutation.tolist()
 
 
@@ -177,7 +188,7 @@ def find_optimal_permutation_from_matrix(
             print(f"  - Testing with {k} clusters...")
             clustering = SpectralClustering(
                 n_clusters=k,
-                affinity='precomputed',
+                affinity="precomputed",
                 random_state=0,
                 n_init=10,
             )
@@ -200,7 +211,7 @@ def find_optimal_permutation_from_matrix(
     else:
         clustering = SpectralClustering(
             n_clusters=num_clusters,
-            affinity='precomputed',
+            affinity="precomputed",
             random_state=0,
             n_init=10,
         )
@@ -212,6 +223,7 @@ def find_optimal_permutation_from_matrix(
 
         permutation = [node for cluster in partition for node in cluster]
         return permutation
+
 
 def find_optimal_permutation(
     model: nn.Module,

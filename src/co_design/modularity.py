@@ -1,6 +1,9 @@
 import numpy as np
 
-def calculate_modularity(correlation_matrix: np.ndarray, partition: list[list[int]]) -> float:
+
+def calculate_modularity(
+    correlation_matrix: np.ndarray, partition: list[list[int]]
+) -> float:
     """
     Calculates the modularity of a partitioned graph.
 
@@ -18,15 +21,15 @@ def calculate_modularity(correlation_matrix: np.ndarray, partition: list[list[in
     """
     if correlation_matrix.shape[0] != correlation_matrix.shape[1]:
         raise ValueError("Correlation matrix must be square.")
-    
+
     num_nodes = correlation_matrix.shape[0]
-    
+
     # Create a mapping from node index to community index
     node_to_community = {}
     for community_idx, community in enumerate(partition):
         for node in community:
             node_to_community[node] = community_idx
-    
+
     if len(node_to_community) != num_nodes:
         raise ValueError("Partition must include all nodes from 0 to N-1 exactly once.")
 
@@ -34,19 +37,19 @@ def calculate_modularity(correlation_matrix: np.ndarray, partition: list[list[in
     # For a weighted, undirected graph, m is half the sum of all matrix elements.
     # We handle negative weights by just summing them.
     m = np.sum(correlation_matrix) / 2.0
-    
+
     if m == 0:
         # If there are no edges, modularity is conventionally zero.
         return 0.0
-        
+
     # Sum of weights of edges attached to each node (degree)
     k = np.sum(correlation_matrix, axis=1)
-    
+
     modularity_sum = 0.0
     for i in range(num_nodes):
         for j in range(num_nodes):
             # Check if nodes i and j are in the same community
             if node_to_community.get(i) == node_to_community.get(j):
                 modularity_sum += correlation_matrix[i, j] - (k[i] * k[j]) / (2 * m)
-                
-    return modularity_sum / (2 * m) 
+
+    return modularity_sum / (2 * m)

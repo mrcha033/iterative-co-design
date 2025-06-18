@@ -1,18 +1,17 @@
 # Common model targets
 model_registry:
-  mamba: "co_design.models.mamba.MambaWrapper"
-  bert: "co_design.models.bert.BertWrapper"
+  general: "src.models.wrapper.ModelWrapper"
   
 
 # Profiler configuration
 profiler:
-  _target_: "co_design.utils.profiler.LatencyProfiler"
+  _target_: "src.utils.profiler.LatencyProfiler"
   cache_dir: "${hydra:runtime.output_dir}/profiler_cache"
   ncu_metrics: ["sm__cycles_elapsed.avg", "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum"]
 
 # Wandb configuration
 wandb:
-  _target_: "co_design.utils.logging.setup_wandb"
+  _target_: "src.utils.logging.initialize_wandb"
   project: ${project_name}
   mode: "offline"  # Set to offline by default
   

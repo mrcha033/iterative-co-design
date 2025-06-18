@@ -136,7 +136,7 @@ cython_debug/
 .vscode/
 
 # Project-specific ignores
-results/
+outputs/
 *.pt
 ncu_output.txt
 paper.md

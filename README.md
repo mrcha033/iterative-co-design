@@ -58,9 +58,10 @@ All experiments are orchestrated through the main runner script, `scripts/run_ex
 
 ### Basic Usage
 
-The script takes two main arguments:
-- `--config`: The path to the experiment configuration file (e.g., `configs/model/mamba_3b.yaml`).
-- `--method`: The experimental condition to run.
+The script uses Hydra for configuration management. Specify configurations using the `key=value` format:
+- `model=<model_config>`: The model configuration name (e.g., `mamba_3b`, `bert_base`).
+- `dataset=<dataset_config>`: The dataset configuration name (e.g., `wikitext103`, `sst2`).
+- `method=<method_name>`: The experimental condition to run.
 
 ### Available Methods
 
@@ -77,12 +78,18 @@ To reproduce the figures from the paper:
 - **Figure 1**: Random vs. Optimized Permutation Latency
 - **Figures 2-4**: Analysis results from experiments
 
-### Example Command
+### Example Commands
 
 To run the "dense" baseline experiment with the Mamba-3B configuration:
 
 ```bash
-python scripts/run_experiment.py --config configs/model/mamba_3b.yaml --method dense
+python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=dense
+```
+
+To run the iterative co-design method with BERT:
+
+```bash
+python scripts/run_experiment.py model=bert_base dataset=sst2 method=iterative
 ```
 
 #### Generating Paper Figures
@@ -124,15 +131,15 @@ permutation.
 
 ### Dry Run
 
-To see the sequence of operations for a method without executing the full, expensive run, use the `--dry_run` flag:
+To see the sequence of operations for a method without executing the full, expensive run, use the `dry_run=true` parameter:
 
 ```bash
-python scripts/run_experiment.py --config configs/model/mamba_3b.yaml --method iterative --dry_run
+python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=iterative dry_run=true
 ```
 
 ### Results
 
-All results, including measured metrics (perplexity, latency, modularity, etc.) and any generated artifacts, are saved as JSON files in the `results/` directory, organized by model name. 
+All results, including measured metrics (perplexity, latency, modularity, etc.) and any generated artifacts, are saved as JSON files in the `outputs/` directory, organized by timestamp (managed by Hydra). 
 
 ### Testing
 
