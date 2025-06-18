@@ -59,7 +59,7 @@ All experiments are orchestrated through the main runner script, `scripts/run_ex
 ### Basic Usage
 
 The script takes two main arguments:
-- `--config`: The path to the experiment configuration file (e.g., `configs/mamba_130m_wikitext103.yaml`).
+- `--config`: The path to the experiment configuration file (e.g., `configs/model/mamba_3b.yaml`).
 - `--method`: The experimental condition to run.
 
 ### Available Methods
@@ -75,7 +75,7 @@ The script takes two main arguments:
 To run the "dense" baseline experiment with the Mamba-3B configuration:
 
 ```bash
-python scripts/run_experiment.py --config configs/mamba_130m_wikitext103.yaml --method dense
+python scripts/run_experiment.py --config configs/model/mamba_3b.yaml --method dense
 ```
 
 ### Dry Run
@@ -83,7 +83,7 @@ python scripts/run_experiment.py --config configs/mamba_130m_wikitext103.yaml --
 To see the sequence of operations for a method without executing the full, expensive run, use the `--dry_run` flag:
 
 ```bash
-python scripts/run_experiment.py --config configs/mamba_130m_wikitext103.yaml --method iterative --dry_run
+python scripts/run_experiment.py --config configs/model/mamba_3b.yaml --method iterative --dry_run
 ```
 
 ### Results
