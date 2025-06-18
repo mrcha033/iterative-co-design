@@ -1,4 +1,3 @@
-import sys
 import json
 from pathlib import Path
 import torch
@@ -9,13 +8,11 @@ import torch.quantization
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
-# Add project root to the Python path
-project_root = Path(__file__).resolve().parent.parent
-sys.path.append(str(project_root))
-
-from src.utils.profiler import measure_latency
+from src.utils.profiler import LatencyProfiler
 from src.co_design.iasp import find_optimal_permutation
 from src.models.wrapper import ModelWrapper
+
+profiler = LatencyProfiler()
 
 def get_model_and_data(cfg: DictConfig):
     """Loads model, tokenizer, and a data sample based on the config."""
@@ -71,7 +68,9 @@ def run_quant_then_permute(cfg, model, tokenizer, data_loader):
     wrapped_model.permute_model_weights(permutation)
     
     dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
-    latency = measure_latency(wrapped_model, dummy_input, on_gpu=False)
+    latency = profiler.measure_latency(
+        wrapped_model, {"input_ids": dummy_input}
+    )
     print(f"Final Latency: {latency:.2f} ms")
     save_quant_results(cfg, 'quant_then_permute', {"latency": latency})
 
@@ -91,7 +90,7 @@ def run_permute_then_quant(cfg, model, tokenizer, data_loader):
     
     final_model = apply_ptq(wrapped_model.model)
     dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
-    latency = measure_latency(final_model, dummy_input, on_gpu=False)
+    latency = profiler.measure_latency(final_model, {"input_ids": dummy_input})
     print(f"Final Latency: {latency:.2f} ms")
     save_quant_results(cfg, 'permute_then_quant', {"latency": latency})
 
@@ -120,7 +119,9 @@ def run_permute_quant_repermute(cfg, model, tokenizer, data_loader):
     wrapped_quant_model.permute_model_weights(perm2)
     
     dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
-    latency = measure_latency(wrapped_quant_model, dummy_input, on_gpu=False)
+    latency = profiler.measure_latency(
+        wrapped_quant_model, {"input_ids": dummy_input}
+    )
     print(f"Final Latency: {latency:.2f} ms")
     save_quant_results(cfg, 'permute_quant_repermute', {"latency": latency})
 

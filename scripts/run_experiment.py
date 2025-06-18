@@ -1,20 +1,19 @@
-import sys
 from pathlib import Path
 import json
 import torch
 from torch.utils.data import DataLoader
-from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification, AutoTokenizer
+from transformers import (
+    AutoModelForCausalLM,
+    AutoModelForSequenceClassification,
+    AutoTokenizer,
+)
 from datasets import load_dataset
 import hydra
 from omegaconf import DictConfig, OmegaConf
 from src.utils.logging import initialize_wandb
 import wandb
 
-# Add project root to the Python path
-project_root = Path(__file__).resolve().parent.parent
-sys.path.append(str(project_root))
-
-from src.utils.evaluation import calculate_perplexity, calculate_accuracy
+from src.utils.evaluation import calculate_perplexity
 from src.utils.profiler import LatencyProfiler
 from src.co_design.iasp import find_optimal_permutation, get_activation_correlation
 from src.co_design.modularity import calculate_modularity
@@ -76,7 +75,6 @@ def run_dense(cfg: DictConfig):
     # --- 1. Setup ---
     model, tokenizer, data_loader = get_model_and_data(cfg)
     profiler = LatencyProfiler()
-    d_model = model.config.hidden_size
 
     if torch.cuda.is_available():
         model.cuda()
@@ -120,6 +118,7 @@ def run_sparsity_only(cfg: DictConfig):
     wrapped_model = ModelWrapper(model)
     d_model = model.config.hidden_size
     temp_state_dict_path = "temp_sparse_state_dict.pt"
+    profiler = LatencyProfiler()
 
     if torch.cuda.is_available():
         wrapped_model.cuda()
@@ -128,9 +127,11 @@ def run_sparsity_only(cfg: DictConfig):
     
     perplexity = calculate_perplexity(wrapped_model, tokenizer, data_loader)
     dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
-    latency = measure_latency(wrapped_model, dummy_input)
+    dummy_dict = {"input_ids": dummy_input}
+    latency = profiler.measure_latency(wrapped_model, dummy_dict)
     torch.save(wrapped_model.model.state_dict(), temp_state_dict_path)
-    cache_hits = measure_cache_hits(str(Path.cwd() / "config.yaml"), temp_state_dict_path)
+    cache_result = profiler.measure_cache_hits(wrapped_model, dummy_dict)
+    cache_hits = cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
 
     correlation_matrix = get_activation_correlation(wrapped_model.model, data_loader, cfg.model.iasp.target_layer_name)
     identity_permutation = list(range(d_model))
@@ -156,6 +157,7 @@ def run_permute_only(cfg: DictConfig):
     wrapped_model = ModelWrapper(model)
     d_model = model.config.hidden_size
     temp_state_dict_path = "temp_permuted_state_dict.pt"
+    profiler = LatencyProfiler()
 
     if torch.cuda.is_available():
         wrapped_model.cuda()
@@ -170,9 +172,11 @@ def run_permute_only(cfg: DictConfig):
 
     perplexity = calculate_perplexity(wrapped_model, tokenizer, data_loader)
     dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
-    latency = measure_latency(wrapped_model, dummy_input)
+    dummy_dict = {"input_ids": dummy_input}
+    latency = profiler.measure_latency(wrapped_model, dummy_dict)
     torch.save(wrapped_model.model.state_dict(), temp_state_dict_path)
-    cache_hits = measure_cache_hits(str(Path.cwd() / "config.yaml"), temp_state_dict_path)
+    cache_result = profiler.measure_cache_hits(wrapped_model, dummy_dict)
+    cache_hits = cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
 
     original_model, _, _ = get_model_and_data(cfg)
     correlation_matrix = get_activation_correlation(original_model, data_loader, cfg.model.iasp.target_layer_name)
@@ -200,6 +204,7 @@ def run_linear_pipeline(cfg: DictConfig):
     wrapped_model = ModelWrapper(model)
     d_model = model.config.hidden_size
     temp_state_dict_path = "temp_linear_state_dict.pt"
+    profiler = LatencyProfiler()
 
     if torch.cuda.is_available():
         wrapped_model.cuda()
@@ -215,9 +220,11 @@ def run_linear_pipeline(cfg: DictConfig):
 
     perplexity = calculate_perplexity(wrapped_model, tokenizer, data_loader)
     dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
-    latency = measure_latency(wrapped_model, dummy_input)
+    dummy_dict = {"input_ids": dummy_input}
+    latency = profiler.measure_latency(wrapped_model, dummy_dict)
     torch.save(wrapped_model.model.state_dict(), temp_state_dict_path)
-    cache_hits = measure_cache_hits(str(Path.cwd() / "config.yaml"), temp_state_dict_path)
+    cache_result = profiler.measure_cache_hits(wrapped_model, dummy_dict)
+    cache_hits = cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
 
     correlation_matrix = get_activation_correlation(wrapped_model.model, data_loader, cfg.model.iasp.target_layer_name)
     n_clusters = len(initial_permutation) * len(initial_permutation) // d_model
@@ -243,11 +250,11 @@ def run_iterative(cfg: DictConfig):
     wrapped_model = ModelWrapper(model)
     d_model = model.config.hidden_size
     temp_state_dict_path = "temp_iterative_state_dict.pt"
+    profiler = LatencyProfiler()
     
     if torch.cuda.is_available():
         wrapped_model.cuda()
 
-    final_permutation = list(range(d_model))
     iteration_metrics = {"latency": [], "modularity": [], "l2_cache_hit_rate": []}
 
     for i in range(cfg.num_iterations):
@@ -260,15 +267,16 @@ def run_iterative(cfg: DictConfig):
             cluster_size_range=tuple(cfg.model.iasp.cluster_size_range)
         )
         wrapped_model.permute_model_weights(permutation)
-        final_permutation = permutation
 
         dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
-        lat = measure_latency(wrapped_model, dummy_input)
+        dummy_dict = {"input_ids": dummy_input}
+        lat = profiler.measure_latency(wrapped_model, dummy_dict)
         iteration_metrics["latency"].append(lat)
-        
+
         torch.save(wrapped_model.model.state_dict(), temp_state_dict_path)
-        cache = measure_cache_hits(str(Path.cwd() / "config.yaml"), temp_state_dict_path)
-        iteration_metrics["l2_cache_hit_rate"].append(cache)
+        cache_result = profiler.measure_cache_hits(wrapped_model, dummy_dict)
+        cache_value = cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
+        iteration_metrics["l2_cache_hit_rate"].append(cache_value)
 
         corr_matrix = get_activation_correlation(wrapped_model.model, data_loader, cfg.model.iasp.target_layer_name)
         n_clusters = len(permutation) * len(permutation) // d_model

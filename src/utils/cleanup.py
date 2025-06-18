@@ -1,6 +1,5 @@
 """Utilities for cleaning up old experiment outputs."""
 
-import os
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
