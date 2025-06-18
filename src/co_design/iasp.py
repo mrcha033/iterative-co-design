@@ -3,7 +3,7 @@ import numpy as np
 from tqdm import tqdm
 from sklearn.cluster import SpectralClustering
 from .modularity import calculate_modularity
-from typing import Tuple, List, Optional
+from typing import List, Optional
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
