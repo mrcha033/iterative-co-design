@@ -15,7 +15,7 @@ project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
 from src.utils.evaluation import calculate_perplexity, calculate_accuracy
-from src.utils.profiler import measure_latency, measure_cache_hits
+from src.utils.profiler import LatencyProfiler
 from src.co_design.iasp import find_optimal_permutation, get_activation_correlation
 from src.co_design.modularity import calculate_modularity
 from src.models.wrapper import ModelWrapper
@@ -75,8 +75,8 @@ def run_dense(cfg: DictConfig):
     
     # --- 1. Setup ---
     model, tokenizer, data_loader = get_model_and_data(cfg)
+    profiler = LatencyProfiler()
     d_model = model.config.hidden_size
-    temp_state_dict_path = "temp_dense_state_dict.pt"
 
     if torch.cuda.is_available():
         model.cuda()
@@ -88,13 +88,13 @@ def run_dense(cfg: DictConfig):
 
     print("Measuring latency...")
     dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
-    latency = measure_latency(model, dummy_input)
+    dummy_input_dict = {"input_ids": dummy_input}
+    latency = profiler.measure_latency(model, dummy_input_dict)
     print(f"Latency: {latency:.2f} ms")
 
     print("Measuring L2 cache hit rate...")
-    torch.save(model.state_dict(), temp_state_dict_path)
-    # Pass the main config file path to the profiler
-    cache_hits = measure_cache_hits(str(Path.cwd() / "config.yaml"), temp_state_dict_path)
+    cache_result = profiler.measure_cache_hits(model, dummy_input_dict)
+    cache_hits = cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
     
     print("Calculating modularity...")
     modularity = 0.0
@@ -108,8 +108,6 @@ def run_dense(cfg: DictConfig):
         "modularity": modularity
     }
     save_results(cfg, 'dense', metrics)
-    
-    Path(temp_state_dict_path).unlink(missing_ok=True)
 
     if wandb.run:
         wandb.finish()
