@@ -26,8 +26,8 @@ hydra:
     params:
       ++experiment: debug  # Enable quick-run mode with +experiment=debug
       
-# Cleanup old runs (implemented in co_design.utils.cleanup)
+# Cleanup old runs (implemented in src.utils.cleanup)
 cleanup:
-  _target_: co_design.utils.cleanup.cleanup_old_runs
+  _target_: src.utils.cleanup.cleanup_old_runs
   max_age_days: ${storage.cleanup_older_than_days}
   base_dirs: ["outputs", "multirun"] 

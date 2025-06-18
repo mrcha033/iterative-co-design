@@ -33,7 +33,6 @@ iterative-co-design/
 ├── scripts/                 # Executable scripts for running experiments
 │   ├── run_experiment.py
 │   ├── run_quant_test.py
-│   ├── generate_figure1.py     # Script to generate Figure 1 (random vs optimized permutation latency)
 │   └── generate_all_figures.py # Comprehensive figure generation suite
 ├── src/                     # Core logic and reusable source code modules
 │   ├── co_design/

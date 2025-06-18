@@ -210,7 +210,10 @@ def run_permute_only(cfg: DictConfig):
         original_model, data_loader, cfg.model.iasp.target_layer_name
     )
 
-    n_clusters = len(permutation) * len(permutation) // d_model  # Re-derive n_clusters
+    # Calculate cluster size from IASP configuration
+    cluster_size_range = cfg.model.iasp.cluster_size_range
+    optimal_cluster_size = min(cluster_size_range[1], max(cluster_size_range[0], d_model // 8))
+    n_clusters = d_model // optimal_cluster_size
     nodes_per_cluster = d_model // n_clusters if n_clusters > 0 else d_model
     partition = [
         permutation[i : i + nodes_per_cluster]
@@ -267,7 +270,10 @@ def run_linear_pipeline(cfg: DictConfig):
     correlation_matrix = get_activation_correlation(
         wrapped_model.model, data_loader, cfg.model.iasp.target_layer_name
     )
-    n_clusters = len(initial_permutation) * len(initial_permutation) // d_model
+    # Calculate cluster size from IASP configuration
+    cluster_size_range = cfg.model.iasp.cluster_size_range
+    optimal_cluster_size = min(cluster_size_range[1], max(cluster_size_range[0], d_model // 8))
+    n_clusters = d_model // optimal_cluster_size
     nodes_per_cluster = d_model // n_clusters if n_clusters > 0 else d_model
     partition = [
         initial_permutation[i : i + nodes_per_cluster]
@@ -332,7 +338,10 @@ def run_iterative(cfg: DictConfig):
         corr_matrix = get_activation_correlation(
             wrapped_model.model, data_loader, cfg.model.iasp.target_layer_name
         )
-        n_clusters = len(permutation) * len(permutation) // d_model
+        # Calculate cluster size from IASP configuration
+        cluster_size_range = cfg.model.iasp.cluster_size_range
+        optimal_cluster_size = min(cluster_size_range[1], max(cluster_size_range[0], d_model // 8))
+        n_clusters = d_model // optimal_cluster_size
         nodes_per_cluster = d_model // n_clusters if n_clusters > 0 else d_model
         part = [
             permutation[j : j + nodes_per_cluster]
