@@ -136,9 +136,10 @@ def find_permutation_from_matrix(correlation_matrix: np.ndarray, n_clusters: int
     return permutation.tolist()
 
 
-def find_optimal_permutation(
+def find_optimal_permutation_from_matrix(
     correlation_matrix: np.ndarray,
-    num_clusters: Optional[int] = None
+    clusters_range: Optional[tuple[int, int]] = None,
+    num_clusters: Optional[int] = None,
 ) -> List[int]:
     """
     Finds the optimal permutation of neuron indices to maximize modularity.
@@ -158,12 +159,16 @@ def find_optimal_permutation(
         A list of integers representing the optimal permutation of indices.
     """
     if num_clusters is None:
+        # Determine search bounds
+        if clusters_range is None:
+            min_clusters = max(2, correlation_matrix.shape[0] // 128)
+            max_clusters = max(2, correlation_matrix.shape[0] // 16)
+        else:
+            min_clusters, max_clusters = clusters_range
+
         # Search for the best number of clusters to maximize modularity
         best_modularity = -1
         best_permutation = list(range(correlation_matrix.shape[0]))
-
-        min_clusters = max(2, correlation_matrix.shape[0] // 128)
-        max_clusters = max(2, correlation_matrix.shape[0] // 16)
 
         for k in range(min_clusters, max_clusters + 1):
             if k <= 1:
@@ -208,14 +213,25 @@ def find_optimal_permutation(
         permutation = [node for cluster in partition for node in cluster]
         return permutation
 
-def find_optimal_permutation_for_config(model, data_loader, iasp_config):
-    return find_optimal_permutation(
-        correlation_matrix=get_activation_correlation(
-            model=model,
-            dataloader=data_loader,
-            target_layer_name=iasp_config['target_layer_name'],
-            max_samples=iasp_config['max_samples'],
-            device=iasp_config['device']
-        ),
-        num_clusters=iasp_config['n_clusters']
-    ) 
+def find_optimal_permutation(
+    model: nn.Module,
+    data_loader: DataLoader,
+    target_layer_name: str,
+    cluster_size_range: tuple[int, int],
+) -> List[int]:
+    """Compute the optimal permutation for a given model layer."""
+    correlation_matrix = get_activation_correlation(
+        model=model,
+        dataloader=data_loader,
+        target_layer_name=target_layer_name,
+    )
+
+    d_model = correlation_matrix.shape[0]
+    min_size, max_size = cluster_size_range
+    min_clusters = max(2, d_model // max_size)
+    max_clusters = max(2, d_model // min_size)
+
+    return find_optimal_permutation_from_matrix(
+        correlation_matrix,
+        clusters_range=(min_clusters, max_clusters),
+    )
