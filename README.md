@@ -78,6 +78,13 @@ To run the "dense" baseline experiment with the Mamba-3B configuration:
 python scripts/run_experiment.py --config configs/model/mamba_3b.yaml --method dense
 ```
 
+### Model Configuration
+
+Model YAML files under `configs/model` include an `iasp` section that controls
+the permutation search. The key `cluster_size_range` defines the minimum and
+maximum cluster sizes (in neurons) considered when searching for an optimal
+permutation.
+
 ### Dry Run
 
 To see the sequence of operations for a method without executing the full, expensive run, use the `--dry_run` flag:
