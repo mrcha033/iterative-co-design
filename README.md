@@ -143,6 +143,20 @@ On Linux or macOS:
 bash data/download_datasets.sh
 ```
 
+**⚠️ SECURITY NOTE for data/download_datasets.sh:**
+- The script may attempt to install `aria2` using system package managers (apt-get, yum)
+- This could require `sudo` privileges for system-wide installation
+- **Use `--install-aria2` flag to explicitly consent to potential sudo operations**
+- **Alternative**: Install aria2 manually (`sudo apt-get install aria2`) or use conda (`conda install -c conda-forge aria2`)
+
+```bash
+# Safe usage - explicitly consent to aria2 installation
+bash data/download_datasets.sh --install-aria2
+
+# Help and security information
+bash data/download_datasets.sh --help
+```
+
 On Windows (or as an alternative):
 ```bash
 python -c "from datasets import load_dataset; load_dataset('wikitext', 'wikitext-103-raw-v1')"
@@ -327,7 +341,7 @@ pytest tests/test_wrapper.py -v             # Model wrapper tests
 #### Complete Test Suite
 
 The test suite includes:
-- **39 total tests** covering all major components
+- **41 total tests** covering all major components
 - **Deterministic hashing tests** for reliable caching
 - **GPU fallback testing** (automatically skips when CUDA unavailable)
 - **Import validation** for all core modules

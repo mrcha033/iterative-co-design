@@ -186,16 +186,15 @@ class LatencyProfiler:
             torch.save(dummy_input, input_path)
 
             # Create profiling script
-            script_content = f"""
-import torch
-model = torch.load('{model_path}')
-inputs = torch.load('{input_path}')
-model.cuda()
-model.eval()
-with torch.no_grad():
-    inputs = {{k: v.cuda() for k, v in inputs.items()}}
-    model(**inputs)
-"""
+            script_content = (
+                "import torch\n"
+                f"model = torch.load(r'{model_path}')\n"
+                f"inputs = torch.load(r'{input_path}')\n"
+                "model.cuda(); model.eval()\n"
+                "with torch.no_grad():\n"
+                "    inputs = {k: v.cuda() for k, v in inputs.items()}\n"
+                "    model(**inputs)\n"
+            )
             script_path.write_text(script_content)
 
             # Run NCU
