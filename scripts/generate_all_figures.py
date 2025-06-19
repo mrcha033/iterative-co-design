@@ -2,11 +2,11 @@
 """
 Paper Figure Generation Suite
 
-This script generates all figures from the paper "The Orthogonality Fallacy: 
+This script generates all figures from the paper "The Orthogonality Fallacy:
 Iterative Co-Design as a First-Class Principle for Efficient AI":
 
 - Figure 1: Random vs. Optimized Permutation Latency
-- Figure 2: Quantization Co-Design Strategies 
+- Figure 2: Quantization Co-Design Strategies
 - Figure 3: Metrics vs. Iteration (Causal Chain)
 - Figure 4: Pareto Frontier
 

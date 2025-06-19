@@ -76,12 +76,12 @@ class TestLatencyProfiler:
         hash2 = profiler._get_model_hash(model2.state_dict())
 
         # All hashes should be identical for identical models
-        assert (
-            hash1_first == hash1_second
-        ), "Hash should be deterministic for same model"
-        assert (
-            hash1_first == hash2
-        ), "Hash should be identical for models with same weights"
+        assert hash1_first == hash1_second, (
+            "Hash should be deterministic for same model"
+        )
+        assert hash1_first == hash2, (
+            "Hash should be identical for models with same weights"
+        )
 
         # Modify one model slightly
         with torch.no_grad():
@@ -90,9 +90,9 @@ class TestLatencyProfiler:
         hash2_modified = profiler._get_model_hash(model2.state_dict())
 
         # Hash should change when model changes
-        assert (
-            hash1_first != hash2_modified
-        ), "Hash should change when model weights change"
+        assert hash1_first != hash2_modified, (
+            "Hash should change when model weights change"
+        )
 
     def test_cache_read_write(self):
         """Test cache read/write functionality."""

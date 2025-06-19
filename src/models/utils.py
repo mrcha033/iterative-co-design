@@ -14,9 +14,9 @@ def permute_tensor(tensor: torch.Tensor, permutation: torch.Tensor) -> torch.Ten
     """
     assert tensor.dim() >= 2, "Tensor must be at least 2D"
     assert tensor.size(0) == tensor.size(1), "Tensor must be square"
-    assert tensor.size(0) == len(
-        permutation
-    ), "Tensor dimension and permutation length must match"
+    assert tensor.size(0) == len(permutation), (
+        "Tensor dimension and permutation length must match"
+    )
 
     # Ensure permutation tensor is on the same device as the input tensor
     perm_device = permutation.to(tensor.device)

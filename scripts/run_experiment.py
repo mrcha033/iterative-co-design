@@ -307,7 +307,7 @@ def run_iterative(cfg: DictConfig):
     iteration_metrics = {"latency": [], "modularity": [], "l2_cache_hit_rate": []}
 
     for i in range(cfg.num_iterations):
-        print(f"\n--- Starting Co-Design Iteration {i+1}/{cfg.num_iterations} ---")
+        print(f"\n--- Starting Co-Design Iteration {i + 1}/{cfg.num_iterations} ---")
         wrapped_model.model = apply_hds(
             wrapped_model.model, data_loader, OmegaConf.to_container(cfg, resolve=True)
         )
