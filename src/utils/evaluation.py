@@ -29,9 +29,9 @@ def calculate_task_metric(model, tokenizer, data_loader, task_type):
 def calculate_perplexity(model, tokenizer, data_loader):
     """
     Calculates the perplexity of a language model on a given dataset.
-
-    Note: This is a simplified implementation. A real-world scenario might
-    require more sophisticated handling of sliding windows or tokenization.
+    
+    Properly accounts for variable sequence lengths by counting actual tokens
+    using the attention mask, rather than assuming fixed-length sequences.
     """
     model.eval()
     if torch.cuda.is_available():
@@ -55,8 +55,16 @@ def calculate_perplexity(model, tokenizer, data_loader):
             outputs = model(**inputs, labels=inputs["input_ids"])
             loss = outputs.loss
 
-            total_loss += loss.item() * inputs["input_ids"].size(0)
-            total_tokens += inputs["input_ids"].size(0)
+            # Count actual tokens using attention mask (excludes padding tokens)
+            # The attention mask has 1s for real tokens and 0s for padding
+            batch_tokens = inputs["attention_mask"].sum().item()
+            
+            # Loss is already averaged over the sequence length and batch size by transformers
+            # We need to denormalize it to get the total loss for this batch
+            batch_loss = loss.item() * batch_tokens
+
+            total_loss += batch_loss
+            total_tokens += batch_tokens
 
     avg_loss = total_loss / total_tokens
     perplexity = math.exp(avg_loss)

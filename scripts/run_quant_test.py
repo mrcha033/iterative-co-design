@@ -15,6 +15,8 @@ Usage:
 """
 import json
 from pathlib import Path
+import random
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -28,6 +30,20 @@ from co_design.iasp import find_optimal_permutation
 from models.wrapper import ModelWrapper
 
 profiler = LatencyProfiler()
+
+
+def set_random_seeds(seed: int):
+    """Set random seeds for reproducible quantization experiments."""
+    print(f"Setting random seeds to {seed} for reproducible results")
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        # Additional settings for reproducibility
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 
 def get_model_and_data(cfg: DictConfig):
@@ -154,6 +170,9 @@ def run_permute_quant_repermute(cfg, model, tokenizer, data_loader):
 
 @hydra.main(config_path="../configs", config_name="config", version_base=None)
 def main(cfg: DictConfig):
+    # Initialize random seeds for reproducible experiments
+    set_random_seeds(cfg.seed)
+    
     method = OmegaConf.select(cfg, "method", default="permute_then_quant")
 
     model, tokenizer, data_loader = get_model_and_data(cfg)

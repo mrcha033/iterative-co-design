@@ -18,6 +18,8 @@ Usage:
 """
 from pathlib import Path
 import json
+import random
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from transformers import (
@@ -37,6 +39,20 @@ from co_design.iasp import find_optimal_permutation, get_activation_correlation
 from co_design.modularity import calculate_modularity
 from models.wrapper import ModelWrapper
 from co_design.hds import apply_hds
+
+
+def set_random_seeds(seed: int):
+    """Set random seeds for reproducible experiments."""
+    print(f"Setting random seeds to {seed} for reproducible results")
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        # Additional settings for reproducibility
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 
 def get_model_and_data(cfg: DictConfig):
@@ -490,6 +506,9 @@ def print_dry_run_plan(cfg: DictConfig):
 
 @hydra.main(config_path="../configs", config_name="config", version_base=None)
 def main(cfg: DictConfig):
+    # Initialize random seeds for reproducible experiments
+    set_random_seeds(cfg.seed)
+    
     # The 'method' is now chosen from the command line, e.g., `python script.py method=dense`
     method = OmegaConf.select(cfg, "method", default="dense")
     dry_run = OmegaConf.select(cfg, "dry_run", default=False)

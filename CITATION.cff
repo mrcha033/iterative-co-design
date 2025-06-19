@@ -14,7 +14,8 @@ date-released: 2025-06-30
 license: MIT
 repository-code: "https://github.com/mrcha033/iterative-co-design"
 url: "https://github.com/mrcha033/iterative-co-design"
-doi: "10.5281/zenodo.1234567"  # Placeholder - replace with actual DOI when available
+# DOI will be added upon publication - currently under review
+# doi: "10.xxxx/zenodo.xxxxxxx"  
 keywords:
   - "artificial intelligence"
   - "machine learning"
