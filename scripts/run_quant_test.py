@@ -84,7 +84,8 @@ def apply_ptq(model: torch.nn.Module) -> torch.nn.Module:
 
 def save_quant_results(cfg: DictConfig, method: str, metrics: dict):
     """Saves quantization experiment results."""
-    output_dir = Path.cwd() / "quantization"
+    # Save to outputs/quantization so generate_all_figures.py can find the results
+    output_dir = Path("outputs") / "quantization"
     output_dir.mkdir(exist_ok=True, parents=True)
     file_path = output_dir / f"{method}_metrics.json"
 
