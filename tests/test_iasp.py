@@ -190,6 +190,45 @@ class TestIASP:
         assert isinstance(correlation_matrix, np.ndarray)
         assert correlation_matrix.shape == (8, 8)
 
+    def test_get_activation_correlation_device_agnostic(self):
+        """Test activation correlation computation is device-agnostic."""
+        model = SimpleTestModel(hidden_size=8)
+        model.eval()
+
+        # Create simple dataset
+        batch_size, seq_len = 2, 4
+        input_data = torch.randn(batch_size, seq_len, 8)
+        dataloader = [{"input_ids": input_data}]
+
+        # Test CPU computation
+        correlation_matrix_cpu = get_activation_correlation(
+            model=model,
+            dataloader=dataloader,
+            target_layer_name="linear1",
+            max_samples=2,
+            device="cpu",
+        )
+
+        assert isinstance(correlation_matrix_cpu, np.ndarray)
+        assert correlation_matrix_cpu.shape == (8, 8)
+
+        # Test GPU computation if available, otherwise skip gracefully
+        if torch.cuda.is_available():
+            correlation_matrix_gpu = get_activation_correlation(
+                model=model,
+                dataloader=dataloader,
+                target_layer_name="linear1",
+                max_samples=2,
+                device="cuda",
+            )
+
+            # Results should be approximately equal between CPU and GPU
+            assert np.allclose(correlation_matrix_cpu, correlation_matrix_gpu, rtol=1e-5)
+        else:
+            # If CUDA not available, just ensure CPU version works
+            assert np.allclose(np.diag(correlation_matrix_cpu), 1.0)
+            assert np.allclose(correlation_matrix_cpu, correlation_matrix_cpu.T)
+
     def test_find_permutation_robustness(self):
         """Test permutation finding with edge cases."""
         # Test with very small matrix

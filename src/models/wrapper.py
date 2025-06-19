@@ -14,6 +14,9 @@ Key components:
 import torch
 import torch.nn as nn
 from typing import List
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ModelWrapper(nn.Module):
@@ -47,16 +50,16 @@ class ModelWrapper(nn.Module):
             # Permute columns (input features)
             if layer.weight.shape[1] == d_model:
                 layer.weight.data = layer.weight.data[:, perm_tensor]
-                print(f"  - Permuted columns of layer: {name}")
+                logger.info(f"  - Permuted columns of layer: {name}")
 
             # Permute rows (output features)
             if layer.weight.shape[0] == d_model:
                 layer.weight.data = layer.weight.data[perm_tensor, :]
-                print(f"  - Permuted rows of layer: {name}")
+                logger.info(f"  - Permuted rows of layer: {name}")
                 # Permute corresponding bias if it exists
                 if layer.bias is not None:
                     layer.bias.data = layer.bias.data[perm_tensor]
-                    print(f"  - Permuted bias of layer: {name}")
+                    logger.info(f"  - Permuted bias of layer: {name}")
 
     def cuda(self, *args, **kwargs):
         self.device = torch.device("cuda")

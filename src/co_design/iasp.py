@@ -19,6 +19,9 @@ from .modularity import calculate_modularity
 from typing import List, Optional, Tuple
 import torch.nn as nn
 from torch.utils.data import DataLoader
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def get_activation_correlation(
@@ -139,7 +142,7 @@ def find_permutation_from_matrix(
     Returns:
         A list of integers representing the permutation.
     """
-    print("Step 2a: Performing spectral clustering...")
+    logger.info("Step 2a: Performing spectral clustering...")
     # We use the absolute value of correlation as affinity for clustering,
     # as strong negative correlations are also meaningful for grouping.
     affinity_matrix = np.abs(correlation_matrix)
@@ -152,7 +155,7 @@ def find_permutation_from_matrix(
 
     labels = clustering.labels_
 
-    print("Step 2b: Constructing permutation from clusters...")
+    logger.info("Step 2b: Constructing permutation from clusters...")
     # argsort provides a permutation that groups indices by their corresponding labels.
     # Using a stable sort for robustness.
     permutation = np.argsort(labels, kind="mergesort")
@@ -198,7 +201,7 @@ def find_optimal_permutation_from_matrix(
             if k <= 1:
                 continue
 
-            print(f"  - Testing with {k} clusters...")
+            logger.info(f"  - Testing with {k} clusters...")
             clustering = SpectralClustering(
                 n_clusters=k,
                 affinity="precomputed",
@@ -212,14 +215,14 @@ def find_optimal_permutation_from_matrix(
                 partition[cluster_idx].append(node_idx)
 
             current_modularity = calculate_modularity(correlation_matrix, partition)
-            print(f"    - Modularity: {current_modularity:.4f}")
+            logger.info(f"    - Modularity: {current_modularity:.4f}")
 
             if current_modularity > best_modularity:
                 best_modularity = current_modularity
                 best_permutation = [node for cluster in partition for node in cluster]
-                print(f"    - New best modularity found! Optimal clusters so far: {k}")
+                logger.info(f"    - New best modularity found! Optimal clusters so far: {k}")
 
-        print(f"Finished search. Best modularity {best_modularity:.4f} found.")
+        logger.info(f"Finished search. Best modularity {best_modularity:.4f} found.")
         return best_permutation
     else:
         clustering = SpectralClustering(

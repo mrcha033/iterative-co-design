@@ -1,19 +1,42 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
+type: software
+title: "The Orthogonality Fallacy: Iterative Co-Design as a First-Class Principle for Efficient AI"
+abstract: "This repository contains the implementation for iterative co-design of algorithmic optimization (sparsity) and hardware optimization (memory layout). We demonstrate that these optimizations must be co-designed iteratively rather than sequentially for optimal performance, challenging the prevalent 'Orthogonality Fallacy' in the field."
 authors:
   - family-names: "Cha"
     given-names: "Yunmin"
     affiliation: "School of Business, Yonsei University"
     email: "mrcha033@yonsei.ac.kr"
-title: "The Orthogonality Fallacy: Iterative Co-Design as a First-Class Principle for Efficient AI"
+    orcid: "https://orcid.org/0000-0000-0000-0000"
 version: 0.1.0
-date-released: 2025-06-17
+date-released: 2025-06-30
+license: MIT
 repository-code: "https://github.com/mrcha033/iterative-co-design"
+url: "https://github.com/mrcha033/iterative-co-design"
+doi: "10.5281/zenodo.1234567"  # Placeholder - replace with actual DOI when available
 keywords:
-  - "AI Efficiency"
-  - "Co-design"
-  - "Sparsity"
-  - "Quantization"
-  - "State Space Models"
-  - "Mamba"
-license: MIT 
+  - "artificial intelligence"
+  - "machine learning"
+  - "hardware-software co-design"
+  - "model optimization"
+  - "sparsity"
+  - "quantization"
+  - "memory layout optimization"
+  - "state space models"
+  - "mamba"
+  - "transformer optimization"
+  - "cache efficiency"
+  - "modularity"
+  - "iterative optimization"
+preferred-citation:
+  type: article
+  title: "The Orthogonality Fallacy: Iterative Co-Design as a First-Class Principle for Efficient AI"
+  authors:
+    - family-names: "Cha"
+      given-names: "Yunmin"
+      affiliation: "School of Business, Yonsei University"
+      email: "mrcha033@yonsei.ac.kr"
+  journal: "Conference on Machine Learning and Systems (MLSys)"
+  year: 2025
+  abstract: "The prevailing paradigm for designing efficient neural networks rests on the 'Orthogonality Fallacy': the implicit assumption that algorithmic optimizations (e.g., sparsity) and hardware-level optimizations (e.g., memory layout) are separable problems. This paper dismantles this fallacy, first by providing a formal justification for the necessity of co-design through a minimal theoretical model, then by introducing a concrete framework to operationalize it." 

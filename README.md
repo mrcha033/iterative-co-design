@@ -255,21 +255,57 @@ The project includes comprehensive tests covering all core modules with determin
 
 #### Prerequisites for Running Tests
 
-**Before running tests, ensure all dependencies are installed:**
+**⚠️ IMPORTANT: Install dependencies before running tests to avoid import errors.**
 
+Tests require several packages that must be installed first. If you encounter errors like:
+```
+ModuleNotFoundError: No module named 'yaml'
+ModuleNotFoundError: No module named 'numpy'  
+ModuleNotFoundError: No module named 'torch'
+```
+
+This means required dependencies are not installed. Follow one of these installation methods:
+
+**Method 1: Install with test dependencies (Recommended)**
 ```bash
-# Method 1: Install with test dependencies (Recommended)
 pip install -e .[test]
+```
 
-# Method 2: Use setup script with testing
+**Method 2: Use setup script with testing**
+```bash
 python scripts/setup.py --test
+```
 
-# Method 3: Manual installation
+**Method 3: Manual installation**
+```bash
 pip install -r requirements.txt -r tests/requirements.txt
 pip install -e .
 ```
 
-**⚠️ Common Issue**: If you encounter `ModuleNotFoundError` for `yaml`, `numpy`, `torch`, or other dependencies when running `pytest`, it means the packages aren't installed. Use one of the installation methods above before testing.
+**Method 4: Development setup (includes all dependencies)**
+```bash
+pip install -e .[dev]  # Includes test, docs, and development tools
+```
+
+**What gets installed:**
+- **Core packages**: torch, numpy, transformers, datasets, pyyaml
+- **Testing framework**: pytest, pytest-cov  
+- **Scientific computing**: scikit-learn, pandas, matplotlib, seaborn
+- **Configuration**: hydra-core, omegaconf
+- **Development tools**: ruff (linting), mkdocs (documentation)
+
+**System Requirements:**
+- **Python 3.8+** (3.9+ recommended for best compatibility)
+- **Operating Systems**: Windows, macOS, Linux
+- **Hardware**: CPU-only systems supported (GPU optional for full experiments)
+
+**Troubleshooting Test Issues:**
+
+1. **Import errors**: Ensure all dependencies are installed using one of the methods above
+2. **GPU tests skipped**: Normal on CPU-only systems - tests will skip gracefully 
+3. **Slow tests**: Use `pytest -x` to stop on first failure for faster debugging
+4. **Permission errors**: Run `pip install --user` if you encounter permission issues
+5. **Version conflicts**: Update pip with `python -m pip install --upgrade pip setuptools wheel`
 
 #### Quick Testing
 

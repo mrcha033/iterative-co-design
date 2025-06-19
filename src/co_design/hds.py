@@ -16,6 +16,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
 import fnmatch
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def gumbel_topk(logits: torch.Tensor, k: int, temperature: float = 1.0) -> torch.Tensor:
@@ -103,9 +106,7 @@ def _replace_linear_with_hds(model: nn.Module, hds_config: dict):
     """
     target_patterns = hds_config.get("target_layers", [])
     if not target_patterns:
-        print(
-            "Warning: No target_layers specified for HDS. No layers will be replaced."
-        )
+        logger.warning("No target_layers specified for HDS. No layers will be replaced.")
         return
 
     n = hds_config.get("n", 2)
@@ -132,14 +133,14 @@ def _replace_linear_with_hds(model: nn.Module, hds_config: dict):
         original_layer = getattr(parent_module, child_name)
         hds_layer = HDSLinear(original_layer, n=n, m=m)
         setattr(parent_module, child_name, hds_layer)
-        print(f"  - Wrapped layer: {name} with {n}:{m} HDSLinear")
+        logger.info(f"  - Wrapped layer: {name} with {n}:{m} HDSLinear")
 
 
 def apply_hds(model: nn.Module, data_loader: torch.utils.data.DataLoader, config: dict):
     """
     Applies HDS to the model by replacing target linear layers and fine-tuning.
     """
-    print(">>> Applying HDS by replacing Linear layers and fine-tuning...")
+    logger.info(">>> Applying HDS by replacing Linear layers and fine-tuning...")
 
     hds_config = config.get("hds", {})
     _replace_linear_with_hds(model, hds_config)
@@ -156,7 +157,7 @@ def apply_hds(model: nn.Module, data_loader: torch.utils.data.DataLoader, config
     model.train()
 
     for epoch in range(num_epochs):
-        print(f"  - HDS Fine-tuning Epoch {epoch + 1}/{num_epochs}")
+        logger.info(f"  - HDS Fine-tuning Epoch {epoch + 1}/{num_epochs}")
         for batch in tqdm(data_loader, desc="Fine-tuning"):
             optimizer.zero_grad()
 
@@ -172,5 +173,5 @@ def apply_hds(model: nn.Module, data_loader: torch.utils.data.DataLoader, config
             optimizer.step()
 
     model.eval()
-    print(">>> HDS application complete.")
+    logger.info(">>> HDS application complete.")
     return model
