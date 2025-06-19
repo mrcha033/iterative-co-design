@@ -1,3 +1,21 @@
+"""
+Main experiment runner for iterative co-design methods.
+
+This script orchestrates experiments comparing different optimization strategies:
+- Dense baseline (no optimization)
+- Sparsity-only (HDS applied alone)
+- Permutation-only (IASP applied alone)  
+- Linear pipeline (IASP then HDS sequentially)
+- Iterative co-design (HDS and IASP in feedback loop)
+
+The script uses Hydra for configuration management and supports various models
+(Mamba, BERT) and datasets (WikiText-103, SST-2). Results are automatically
+saved and can be logged to Weights & Biases.
+
+Usage:
+    python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=iterative
+    python scripts/run_experiment.py model=bert_base dataset=sst2 method=dense dry_run=true
+"""
 from pathlib import Path
 import json
 import torch
@@ -147,10 +165,12 @@ def run_sparsity_only(cfg: DictConfig):
         wrapped_model.model, data_loader, OmegaConf.to_container(cfg, resolve=True)
     )
 
-    task_metric = calculate_task_metric(wrapped_model, tokenizer, data_loader, cfg.model.task)
+    task_metric = calculate_task_metric(
+        wrapped_model, tokenizer, data_loader, cfg.model.task
+    )
     metric_name = list(task_metric.keys())[0]
     metric_value = task_metric[metric_name]
-    
+
     dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
     dummy_dict = {"input_ids": dummy_input}
     latency = profiler.measure_latency(wrapped_model, dummy_dict)
@@ -201,10 +221,12 @@ def run_permute_only(cfg: DictConfig):
 
     wrapped_model.permute_model_weights(permutation)
 
-    task_metric = calculate_task_metric(wrapped_model, tokenizer, data_loader, cfg.model.task)
+    task_metric = calculate_task_metric(
+        wrapped_model, tokenizer, data_loader, cfg.model.task
+    )
     metric_name = list(task_metric.keys())[0]
     metric_value = task_metric[metric_name]
-    
+
     dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
     dummy_dict = {"input_ids": dummy_input}
     latency = profiler.measure_latency(wrapped_model, dummy_dict)
@@ -265,7 +287,9 @@ def run_linear_pipeline(cfg: DictConfig):
         wrapped_model.model, data_loader, OmegaConf.to_container(cfg, resolve=True)
     )
 
-    task_metric = calculate_task_metric(wrapped_model, tokenizer, data_loader, cfg.model.task)
+    task_metric = calculate_task_metric(
+        wrapped_model, tokenizer, data_loader, cfg.model.task
+    )
     metric_name = list(task_metric.keys())[0]
     metric_value = task_metric[metric_name]
 
@@ -359,7 +383,9 @@ def run_iterative(cfg: DictConfig):
         mod = calculate_modularity(corr_matrix, part)
         iteration_metrics["modularity"].append(mod)
 
-    task_metric = calculate_task_metric(wrapped_model, tokenizer, data_loader, cfg.model.task)
+    task_metric = calculate_task_metric(
+        wrapped_model, tokenizer, data_loader, cfg.model.task
+    )
     metric_name = list(task_metric.keys())[0]
     metric_value = task_metric[metric_name]
 
@@ -377,13 +403,105 @@ def run_iterative(cfg: DictConfig):
         wandb.finish()
 
 
+def print_dry_run_plan(cfg: DictConfig):
+    """Print the planned operations for a dry run without executing them."""
+    method = cfg.method
+    print(f"\n🔍 DRY RUN MODE - Showing planned operations for method: {method}")
+    print("=" * 60)
+    
+    if method == "dense":
+        print("📋 Dense Baseline Plan:")
+        print("  1. Load model and dataset")
+        print("  2. Measure baseline task metric (perplexity/accuracy)")
+        print("  3. Measure baseline latency")
+        print("  4. Measure L2 cache hit rate")
+        print("  5. Record modularity = 0.0 (identity permutation)")
+        print("  6. Save results")
+        
+    elif method == "sparsity_only":
+        print("📋 Sparsity-Only (HDS) Plan:")
+        print("  1. Load model and dataset") 
+        print("  2. Apply HDS to target layers (fine-tune sparsity masks)")
+        print("  3. Measure task metric on sparse model")
+        print("  4. Measure latency on sparse model")
+        print("  5. Measure L2 cache hit rate")
+        print("  6. Calculate modularity with identity permutation")
+        print("  7. Save results")
+        
+    elif method == "permute_only":
+        print("📋 Permutation-Only (IASP) Plan:")
+        print("  1. Load model and dataset")
+        print("  2. Collect activation correlations")
+        print("  3. Find optimal permutation using spectral clustering")
+        print("  4. Apply permutation to model weights")
+        print("  5. Measure task metric on permuted model")
+        print("  6. Measure latency and cache hit rate")
+        print("  7. Calculate modularity score")
+        print("  8. Save results")
+        
+    elif method == "linear_pipeline":
+        print("📋 Linear Pipeline (IASP-then-HDS) Plan:")
+        print("  1. Load model and dataset")
+        print("  2. Find initial optimal permutation (IASP)")
+        print("  3. Apply permutation to model weights")
+        print("  4. Apply HDS to permuted model (fine-tune sparsity)")
+        print("  5. Measure task metric on permuted + sparse model")
+        print("  6. Measure latency and cache hit rate")
+        print("  7. Calculate modularity score")
+        print("  8. Save results")
+        
+    elif method == "iterative":
+        print("📋 Iterative Co-Design Plan:")
+        print("  1. Load model and dataset")
+        print(f"  2. Iterate {cfg.num_iterations} times:")
+        for i in range(cfg.num_iterations):
+            print(f"     Iteration {i+1}:")
+            print("       - Apply HDS (fine-tune sparsity masks)")
+            print("       - Find optimal permutation for current state")
+            print("       - Apply permutation to weights")
+            print("       - Measure iteration metrics (latency, modularity, cache)")
+        print("  3. Calculate final task metric")
+        print("  4. Save comprehensive results with iteration history")
+        
+    else:
+        print(f"❌ Unknown method: {method}")
+        return
+    
+    print("\n📊 Expected outputs:")
+    print(f"  • Results saved to: outputs/<timestamp>/{method}_metrics.json")
+    print("  • Config saved to: outputs/<timestamp>/config.yaml")
+    if cfg.get("wandb", {}).get("mode") != "disabled":
+        print(f"  • Metrics logged to W&B project: {cfg.project_name}")
+    
+    print("\n⏱️  Estimated runtime:")
+    if method == "dense":
+        print("  • ~2-5 minutes (baseline measurements only)")
+    elif method in ["sparsity_only", "permute_only"]:
+        print("  • ~10-30 minutes (includes optimization step)")
+    elif method == "linear_pipeline":
+        print("  • ~20-45 minutes (sequential optimization)")
+    elif method == "iterative":
+        iter_time = cfg.num_iterations * 15
+        print(f"  • ~{iter_time}-{iter_time*2} minutes ({cfg.num_iterations} iterations)")
+    
+    print("\n✅ Dry run complete - no actual computation performed")
+    print("💡 Remove 'dry_run=true' to execute the full experiment")
+
+
 @hydra.main(config_path="../configs", config_name="config", version_base=None)
 def main(cfg: DictConfig):
     # The 'method' is now chosen from the command line, e.g., `python script.py method=dense`
     method = OmegaConf.select(cfg, "method", default="dense")
+    dry_run = OmegaConf.select(cfg, "dry_run", default=False)
+    
     # Add method to config for logging
     OmegaConf.set_struct(cfg, False)
     cfg.method = method
+
+    # Handle dry run mode
+    if dry_run:
+        print_dry_run_plan(cfg)
+        return
 
     initialize_wandb(cfg)
 
@@ -397,6 +515,8 @@ def main(cfg: DictConfig):
         run_linear_pipeline(cfg)
     elif method == "iterative":
         run_iterative(cfg)
+    else:
+        raise ValueError(f"Unknown method: {method}")
 
 
 if __name__ == "__main__":

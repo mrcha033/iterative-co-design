@@ -1,3 +1,16 @@
+"""
+Model utilities for tensor operations and transformations.
+
+This module provides utility functions for tensor manipulation, permutation
+application, and other model-related operations. These utilities support
+the core permutation and optimization functionality used throughout the
+iterative co-design framework.
+
+Key functions:
+- apply_permutation_to_tensor: Apply permutation transformations to tensors
+- Tensor validation and error handling utilities
+- Device-aware tensor operations for model optimization
+"""
 import torch
 
 

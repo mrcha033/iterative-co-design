@@ -1,3 +1,16 @@
+"""
+Hardware profiling and latency measurement utilities.
+
+This module provides tools for measuring model performance metrics including
+latency, cache hit rates, and memory access patterns. It includes deterministic
+model hashing for reproducible caching and integration with NVIDIA Nsight Compute
+for detailed GPU profiling.
+
+Key components:
+- LatencyProfiler: Main profiling class with caching and measurement capabilities
+- Deterministic model hashing for cache consistency across runs
+- GPU cache hit rate measurement using NVIDIA profiling tools
+"""
 import torch
 import time
 import re

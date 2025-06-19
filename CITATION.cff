@@ -6,7 +6,7 @@ authors:
     affiliation: "School of Business, Yonsei University"
     email: "mrcha033@yonsei.ac.kr"
 title: "The Orthogonality Fallacy: Iterative Co-Design as a First-Class Principle for Efficient AI"
-version: 1.0.0
+version: 0.1.0
 date-released: 2025-06-17
 repository-code: "https://github.com/mrcha033/iterative-co-design"
 keywords:

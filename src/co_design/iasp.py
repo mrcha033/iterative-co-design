@@ -1,3 +1,16 @@
+"""
+IO-Aware Scan Permutation (IASP) module.
+
+This module implements the IO-Aware Scan Permutation algorithm, which optimizes
+memory layout by finding permutations that maximize modularity. IASP uses spectral
+clustering to group correlated model dimensions into contiguous memory regions,
+improving cache locality and reducing memory access latency.
+
+Key functions:
+- get_activation_correlation: Collect model activations and compute correlation matrix
+- find_optimal_permutation_from_matrix: Find optimal permutation using modularity
+- find_optimal_permutation: End-to-end permutation optimization for models
+"""
 import torch
 import numpy as np
 from tqdm import tqdm

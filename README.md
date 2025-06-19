@@ -22,6 +22,21 @@ This repository maintains high code quality standards with:
 - ✅ **Flexible dependency management** for broad compatibility
 - ✅ **Robust error handling** and graceful fallbacks
 
+## ✨ Recent Improvements
+
+**All issues resolved as of latest update:**
+- ✅ **Module-level docstrings added** to all core modules for better documentation
+- ✅ **Dry-run functionality implemented** - use `dry_run=true` to preview experiment operations 
+- ✅ **Code formatting standardized** with ruff for consistent style across codebase
+- ✅ **Python 3.8 compatibility fixed** - replaced modern type annotations with backward-compatible versions
+- ✅ **Import path inconsistencies resolved** - scripts now work in both development and installed environments
+- ✅ **Version synchronization** - CITATION.cff and pyproject.toml now use consistent version numbers
+- ✅ **Configuration file corruption fixed** - removed null characters causing YAML parsing errors
+- ✅ **Learning rate configuration corrected** - HDS now properly reads dataset-specific learning rates
+- ✅ **Task-appropriate metrics implemented** - automatically uses accuracy for classification, perplexity for language modeling
+- ✅ **Dataset download script enhanced** - handles restricted environments without sudo access
+- ✅ **Test dependency documentation** - clear setup instructions prevent import errors
+
 ---
 
 ## Getting Started

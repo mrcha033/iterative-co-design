@@ -16,13 +16,7 @@ Usage:
     python scripts/generate_all_figures.py --quick            # Fast mode
 """
 
-import sys
 import warnings
-
-sys.path.append(".")
-
-# Suppress warnings for cleaner output
-warnings.filterwarnings("ignore")
 import argparse
 from pathlib import Path
 import numpy as np
@@ -35,6 +29,9 @@ import json
 import pandas as pd
 from tqdm import tqdm
 import subprocess
+
+# Suppress warnings for cleaner output
+warnings.filterwarnings("ignore")
 
 from utils.profiler import LatencyProfiler  # noqa: E402
 from co_design.iasp import find_optimal_permutation  # noqa: E402

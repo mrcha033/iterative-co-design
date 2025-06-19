@@ -1,3 +1,18 @@
+"""
+Quantization co-design experiment runner.
+
+This script tests the iterative co-design principle with quantization instead of
+sparsity. It compares three strategies:
+1. Quant-then-Permute: Apply quantization first, then find optimal permutation
+2. Permute-then-Quant: Find permutation on FP32, then apply quantization
+3. Iterative: Permute, quantize, then re-permute (tests iteration value)
+
+This experiment demonstrates that the co-design principle applies beyond sparsity
+to other model optimization techniques like quantization.
+
+Usage:
+    python scripts/run_quant_test.py model=mamba_3b dataset=wikitext103 method=permute_quant_repermute
+"""
 import json
 from pathlib import Path
 import torch

@@ -1,3 +1,16 @@
+"""
+Model wrapper utilities for permutation and optimization.
+
+This module provides a wrapper class for PyTorch models that enables weight
+permutation and other model transformations required for iterative co-design.
+The wrapper maintains model functionality while allowing for structural changes
+to optimize memory layout and hardware efficiency.
+
+Key components:
+- ModelWrapper: Main wrapper class for model permutation operations
+- Weight permutation utilities that preserve model semantics
+- Device management and tensor handling for wrapped models
+"""
 import torch
 import torch.nn as nn
 from typing import List

@@ -1,3 +1,16 @@
+"""
+Hardware-Native Differentiable Sparsity (HDS) module.
+
+This module implements Hardware-Native Differentiable Sparsity, which learns
+N:M structured sparsity patterns using the Gumbel-Top-K reparameterization trick.
+HDS enables end-to-end training while ensuring hardware compatibility and
+creates opportunities for subsequent memory layout optimization.
+
+Key components:
+- gumbel_topk: Differentiable Top-K selection using Gumbel-Softmax
+- HDSLinear: Linear layer wrapper with learnable N:M sparsity masks
+- apply_hds: Apply HDS to model layers and fine-tune sparsity masks
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -135,7 +148,7 @@ def apply_hds(model: nn.Module, data_loader: torch.utils.data.DataLoader, config
     # Check dataset config first, then fallback to top-level config
     dataset_lr = config.get("dataset", {}).get("learning_rate")
     lr = dataset_lr if dataset_lr is not None else config.get("learning_rate", 1e-5)
-    
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     num_epochs = hds_config.get("fine_tuning_epochs", 1)
 
