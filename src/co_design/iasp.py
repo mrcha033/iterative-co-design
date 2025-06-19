@@ -3,7 +3,7 @@ import numpy as np
 from tqdm import tqdm
 from sklearn.cluster import SpectralClustering
 from .modularity import calculate_modularity
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
@@ -110,7 +110,7 @@ def get_activation_correlation(
 
 def find_permutation_from_matrix(
     correlation_matrix: np.ndarray, n_clusters: int
-) -> list[int]:
+) -> List[int]:
     """
     Finds an optimal permutation from a correlation matrix using spectral clustering.
 
@@ -149,7 +149,7 @@ def find_permutation_from_matrix(
 
 def find_optimal_permutation_from_matrix(
     correlation_matrix: np.ndarray,
-    clusters_range: Optional[tuple[int, int]] = None,
+    clusters_range: Optional[Tuple[int, int]] = None,
     num_clusters: Optional[int] = None,
 ) -> List[int]:
     """
@@ -229,7 +229,7 @@ def find_optimal_permutation(
     model: nn.Module,
     data_loader: DataLoader,
     target_layer_name: str,
-    cluster_size_range: tuple[int, int],
+    cluster_size_range: Tuple[int, int],
 ) -> List[int]:
     """Compute the optimal permutation for a given model layer."""
     correlation_matrix = get_activation_correlation(

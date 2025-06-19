@@ -1,8 +1,9 @@
 import numpy as np
+from typing import List
 
 
 def calculate_modularity(
-    correlation_matrix: np.ndarray, partition: list[list[int]]
+    correlation_matrix: np.ndarray, partition: List[List[int]]
 ) -> float:
     """
     Calculates the modularity of a partitioned graph.
