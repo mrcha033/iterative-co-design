@@ -17,6 +17,12 @@ Usage:
 """
 
 import sys
+import warnings
+
+sys.path.append(".")
+
+# Suppress warnings for cleaner output
+warnings.filterwarnings("ignore")
 import argparse
 from pathlib import Path
 import numpy as np
@@ -30,13 +36,9 @@ import pandas as pd
 from tqdm import tqdm
 import subprocess
 
-# Add project root to the Python path
-project_root = Path(__file__).resolve().parent.parent
-sys.path.append(str(project_root))
-
-from src.utils.profiler import LatencyProfiler  # noqa: E402
-from src.co_design.iasp import find_optimal_permutation  # noqa: E402
-from src.models.wrapper import ModelWrapper  # noqa: E402
+from utils.profiler import LatencyProfiler  # noqa: E402
+from co_design.iasp import find_optimal_permutation  # noqa: E402
+from models.wrapper import ModelWrapper  # noqa: E402
 
 # ================================
 # Figure Generation Functions

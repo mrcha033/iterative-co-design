@@ -110,12 +110,14 @@ This usually means your Python version or pip is too old. The project now uses f
 
 **Error: "No module named 'src'"**
 
-Make sure to set PYTHONPATH or install in editable mode:
+**Fixed!** All user-facing scripts now use correct import paths that work both in development and after package installation. If you encounter this error with older versions, make sure to:
 ```bash
 export PYTHONPATH=$(pwd)  # On Windows: set PYTHONPATH=%cd%
-# OR
+# OR (recommended)
 pip install -e .
 ```
+
+The scripts in `scripts/` automatically use the correct package structure (`utils.`, `co_design.`, `models.`) rather than development paths (`src.utils.`, etc.).
 
 ### 3. Download Datasets
 

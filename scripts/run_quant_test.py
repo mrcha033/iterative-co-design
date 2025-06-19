@@ -8,9 +8,9 @@ import torch.quantization
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
-from src.utils.profiler import LatencyProfiler
-from src.co_design.iasp import find_optimal_permutation
-from src.models.wrapper import ModelWrapper
+from utils.profiler import LatencyProfiler
+from co_design.iasp import find_optimal_permutation
+from models.wrapper import ModelWrapper
 
 profiler = LatencyProfiler()
 

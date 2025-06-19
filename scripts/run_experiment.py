@@ -10,15 +10,15 @@ from transformers import (
 from datasets import load_dataset
 import hydra
 from omegaconf import DictConfig, OmegaConf
-from src.utils.logging import initialize_wandb
+from utils.logging import initialize_wandb
 import wandb
 
-from src.utils.evaluation import calculate_task_metric
-from src.utils.profiler import LatencyProfiler
-from src.co_design.iasp import find_optimal_permutation, get_activation_correlation
-from src.co_design.modularity import calculate_modularity
-from src.models.wrapper import ModelWrapper
-from src.co_design.hds import apply_hds
+from utils.evaluation import calculate_task_metric
+from utils.profiler import LatencyProfiler
+from co_design.iasp import find_optimal_permutation, get_activation_correlation
+from co_design.modularity import calculate_modularity
+from models.wrapper import ModelWrapper
+from co_design.hds import apply_hds
 
 
 def get_model_and_data(cfg: DictConfig):
