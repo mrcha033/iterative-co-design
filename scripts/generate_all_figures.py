@@ -67,7 +67,7 @@ def measure_permutation_latency(model, permutation, dummy_input_dict, profiler):
 
 
 def setup_model_and_data(
-    model_name="state-spaces/mamba-2.8b-slimpj",
+    model_name="state-spaces/mamba-2.8b-hf",
     dataset_name="wikitext",
     dataset_config="wikitext-103-raw-v1",
     sample_size=100,

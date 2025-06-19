@@ -54,7 +54,15 @@ def get_model_and_data(cfg: DictConfig):
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.name)
 
     print(f"Loading dataset: {cfg.dataset.name}")
-    dataset = load_dataset(cfg.dataset.name, cfg.dataset.get("config"))
+    try:
+        dataset = load_dataset(cfg.dataset.name, cfg.dataset.get("config"))
+    except FileNotFoundError as e:
+        print(f"❌ Dataset '{cfg.dataset.name}' not found locally.")
+        print("💡 Please run: bash data/download_datasets.sh")
+        print(
+            f"   Or download manually with: python -c \"from datasets import load_dataset; load_dataset('{cfg.dataset.name}'{', ' + repr(cfg.dataset.get('config')) if cfg.dataset.get('config') else ''})\""
+        )
+        raise e
     sample_dataset = dataset["validation"].select(range(cfg.dataset.sample_size))
 
     def tokenize_function(examples):
@@ -72,9 +80,20 @@ def get_model_and_data(cfg: DictConfig):
     return model, tokenizer, data_loader
 
 
-def apply_ptq(model: torch.nn.Module) -> torch.nn.Module:
-    """Applies Post-Training Dynamic Quantization to the model."""
+def apply_ptq(model: torch.nn.Module, device: str = "cpu") -> torch.nn.Module:
+    """
+    Applies Post-Training Dynamic Quantization to the model.
+
+    Note: PyTorch's dynamic quantization currently only supports CPU inference.
+    This is why quantization experiments measure latency on CPU while other
+    experiments default to GPU when available.
+
+    Args:
+        model: Model to quantize
+        device: Target device ('cpu' only, as GPU quantization not supported)
+    """
     print(">>> Applying Post-Training Quantization (Dynamic)...")
+    print("⚠️  Note: Quantized models will run on CPU (PyTorch limitation)")
     model_cpu = model.cpu()
     quantized_model = torch.quantization.quantize_dynamic(
         model_cpu, {torch.nn.Linear}, dtype=torch.qint8

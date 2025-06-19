@@ -37,15 +37,31 @@ class ModelWrapper(nn.Module):
         """
         Permutes the weights of the model's linear layers and their corresponding
         biases according to the given permutation.
+
+        Args:
+            permutation: List of integers representing the new ordering of dimensions
+
+        Raises:
+            ValueError: If permutation length doesn't match any layer dimensions
         """
         perm_tensor = torch.LongTensor(permutation).to(self.device)
         d_model = len(permutation)
 
-        # Create a map of layers to permute
+        # Create a map of layers to permute and validate dimensions
         layers_to_permute = {}
+        valid_dimensions = set()
         for name, module in self.model.named_modules():
             if isinstance(module, nn.Linear):
                 layers_to_permute[name] = module
+                valid_dimensions.add(module.weight.shape[0])  # output features
+                valid_dimensions.add(module.weight.shape[1])  # input features
+
+        # Validate that permutation length matches at least one layer dimension
+        if d_model not in valid_dimensions:
+            raise ValueError(
+                f"Permutation length {d_model} doesn't match any layer dimensions. "
+                f"Valid dimensions in model: {sorted(valid_dimensions)}"
+            )
 
         for name, layer in layers_to_permute.items():
             # Permute columns (input features)

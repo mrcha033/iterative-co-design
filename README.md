@@ -257,6 +257,11 @@ The project includes comprehensive tests covering all core modules with determin
 
 **⚠️ IMPORTANT: Install dependencies before running tests to avoid import errors.**
 
+**🚀 Quickest Setup (Recommended):**
+```bash
+pip install -e .[test]
+```
+
 Tests require several packages that must be installed first. If you encounter errors like:
 ```
 ModuleNotFoundError: No module named 'yaml'

@@ -71,7 +71,15 @@ def get_model_and_data(cfg: DictConfig):
         tokenizer.pad_token = tokenizer.eos_token
 
     print(f"Loading dataset: {cfg.dataset.name}")
-    dataset = load_dataset(cfg.dataset.name, cfg.dataset.get("config"))
+    try:
+        dataset = load_dataset(cfg.dataset.name, cfg.dataset.get("config"))
+    except FileNotFoundError as e:
+        print(f"❌ Dataset '{cfg.dataset.name}' not found locally.")
+        print("💡 Please run: bash data/download_datasets.sh")
+        print(
+            f"   Or download manually with: python -c \"from datasets import load_dataset; load_dataset('{cfg.dataset.name}'{', ' + repr(cfg.dataset.get('config')) if cfg.dataset.get('config') else ''})\""
+        )
+        raise e
 
     val_dataset = dataset["validation"].select(range(cfg.dataset.sample_size))
 
