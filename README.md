@@ -2,6 +2,10 @@
 
 This repository contains the official implementation for the paper, "The Orthogonality Fallacy." The work dismantles the assumption that algorithmic optimizations (like sparsity) and hardware-level optimizations (like memory layout) are separable problems. It introduces an **Iterative Co-Design** framework that alternates between algorithmic state changes and memory layout optimization to find a more efficient Pareto-optimal model.
 
+## 📄 License
+
+This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details. You are free to use, modify, and distribute this code for academic and commercial purposes with proper attribution.
+
 ## Core Concepts
 
 - **Orthogonality Fallacy**: The mistaken belief that algorithmic and hardware optimizations can be performed independently without loss of optimality.
@@ -232,6 +236,24 @@ All results, including measured metrics (perplexity, latency, modularity, etc.) 
 
 The project includes comprehensive tests covering all core modules with deterministic behavior and robust error handling.
 
+#### Prerequisites for Running Tests
+
+**Before running tests, ensure all dependencies are installed:**
+
+```bash
+# Method 1: Install with test dependencies (Recommended)
+pip install -e .[test]
+
+# Method 2: Use setup script with testing
+python scripts/setup.py --test
+
+# Method 3: Manual installation
+pip install -r requirements.txt -r tests/requirements.txt
+pip install -e .
+```
+
+**⚠️ Common Issue**: If you encounter `ModuleNotFoundError` for `yaml`, `numpy`, `torch`, or other dependencies when running `pytest`, it means the packages aren't installed. Use one of the installation methods above before testing.
+
 #### Quick Testing
 
 ```bash
@@ -252,20 +274,6 @@ The test suite includes:
 - **GPU fallback testing** (automatically skips when CUDA unavailable)
 - **Import validation** for all core modules
 - **Error handling** for edge cases
-
-#### Test Installation
-
-```bash
-# Method 1: Install with test dependencies (Recommended)
-pip install -e .[test]
-
-# Method 2: Use setup script with testing
-python scripts/setup.py --test
-
-# Method 3: Manual installation
-pip install -r requirements.txt -r tests/requirements.txt
-pip install -e .
-```
 
 #### CI Testing
 

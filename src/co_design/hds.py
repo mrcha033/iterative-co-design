@@ -132,9 +132,11 @@ def apply_hds(model: nn.Module, data_loader: torch.utils.data.DataLoader, config
     _replace_linear_with_hds(model, hds_config)
 
     # Fine-tune the model to learn the sparsity masks
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=config.get("learning_rate", 1e-5)
-    )
+    # Check dataset config first, then fallback to top-level config
+    dataset_lr = config.get("dataset", {}).get("learning_rate")
+    lr = dataset_lr if dataset_lr is not None else config.get("learning_rate", 1e-5)
+    
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     num_epochs = hds_config.get("fine_tuning_epochs", 1)
 
     device = next(model.parameters()).device

@@ -13,7 +13,7 @@ from omegaconf import DictConfig, OmegaConf
 from src.utils.logging import initialize_wandb
 import wandb
 
-from src.utils.evaluation import calculate_perplexity
+from src.utils.evaluation import calculate_task_metric
 from src.utils.profiler import LatencyProfiler
 from src.co_design.iasp import find_optimal_permutation, get_activation_correlation
 from src.co_design.modularity import calculate_modularity
@@ -98,9 +98,11 @@ def run_dense(cfg: DictConfig):
         model.cuda()
 
     # --- 2. Run Measurements ---
-    print("Calculating perplexity...")
-    perplexity = calculate_perplexity(model, tokenizer, data_loader)
-    print(f"Perplexity: {perplexity:.4f}")
+    print(f"Calculating evaluation metric for {cfg.model.task}...")
+    task_metric = calculate_task_metric(model, tokenizer, data_loader, cfg.model.task)
+    metric_name = list(task_metric.keys())[0]
+    metric_value = task_metric[metric_name]
+    print(f"{metric_name.title()}: {metric_value:.4f}")
 
     print("Measuring latency...")
     dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
@@ -118,7 +120,7 @@ def run_dense(cfg: DictConfig):
 
     # --- 3. Save Results ---
     metrics = {
-        "perplexity": perplexity,
+        metric_name: metric_value,
         "latency_ms": latency,
         "l2_cache_hit_rate_pct": cache_hits,
         "modularity": modularity,
@@ -145,7 +147,10 @@ def run_sparsity_only(cfg: DictConfig):
         wrapped_model.model, data_loader, OmegaConf.to_container(cfg, resolve=True)
     )
 
-    perplexity = calculate_perplexity(wrapped_model, tokenizer, data_loader)
+    task_metric = calculate_task_metric(wrapped_model, tokenizer, data_loader, cfg.model.task)
+    metric_name = list(task_metric.keys())[0]
+    metric_value = task_metric[metric_name]
+    
     dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
     dummy_dict = {"input_ids": dummy_input}
     latency = profiler.measure_latency(wrapped_model, dummy_dict)
@@ -164,7 +169,7 @@ def run_sparsity_only(cfg: DictConfig):
     modularity = calculate_modularity(correlation_matrix, partition)
 
     metrics = {
-        "perplexity": perplexity,
+        metric_name: metric_value,
         "latency_ms": latency,
         "l2_cache_hit_rate_pct": cache_hits,
         "modularity": modularity,
@@ -196,7 +201,10 @@ def run_permute_only(cfg: DictConfig):
 
     wrapped_model.permute_model_weights(permutation)
 
-    perplexity = calculate_perplexity(wrapped_model, tokenizer, data_loader)
+    task_metric = calculate_task_metric(wrapped_model, tokenizer, data_loader, cfg.model.task)
+    metric_name = list(task_metric.keys())[0]
+    metric_value = task_metric[metric_name]
+    
     dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
     dummy_dict = {"input_ids": dummy_input}
     latency = profiler.measure_latency(wrapped_model, dummy_dict)
@@ -222,7 +230,7 @@ def run_permute_only(cfg: DictConfig):
     modularity = calculate_modularity(correlation_matrix, partition)
 
     metrics = {
-        "perplexity": perplexity,
+        metric_name: metric_value,
         "latency_ms": latency,
         "l2_cache_hit_rate_pct": cache_hits,
         "modularity": modularity,
@@ -257,7 +265,10 @@ def run_linear_pipeline(cfg: DictConfig):
         wrapped_model.model, data_loader, OmegaConf.to_container(cfg, resolve=True)
     )
 
-    perplexity = calculate_perplexity(wrapped_model, tokenizer, data_loader)
+    task_metric = calculate_task_metric(wrapped_model, tokenizer, data_loader, cfg.model.task)
+    metric_name = list(task_metric.keys())[0]
+    metric_value = task_metric[metric_name]
+
     dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
     dummy_dict = {"input_ids": dummy_input}
     latency = profiler.measure_latency(wrapped_model, dummy_dict)
@@ -281,7 +292,7 @@ def run_linear_pipeline(cfg: DictConfig):
     modularity = calculate_modularity(correlation_matrix, partition)
 
     metrics = {
-        "perplexity": perplexity,
+        metric_name: metric_value,
         "latency_ms": latency,
         "l2_cache_hit_rate_pct": cache_hits,
         "modularity": modularity,
@@ -348,8 +359,12 @@ def run_iterative(cfg: DictConfig):
         mod = calculate_modularity(corr_matrix, part)
         iteration_metrics["modularity"].append(mod)
 
+    task_metric = calculate_task_metric(wrapped_model, tokenizer, data_loader, cfg.model.task)
+    metric_name = list(task_metric.keys())[0]
+    metric_value = task_metric[metric_name]
+
     final_metrics = {
-        "perplexity": calculate_perplexity(wrapped_model, tokenizer, data_loader),
+        metric_name: metric_value,
         "latency_ms": iteration_metrics["latency"][-1],
         "l2_cache_hit_rate_pct": iteration_metrics["l2_cache_hit_rate"][-1],
         "modularity": iteration_metrics["modularity"][-1],

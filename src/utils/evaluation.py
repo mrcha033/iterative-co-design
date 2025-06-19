@@ -3,6 +3,29 @@ from tqdm import tqdm
 import math
 
 
+def calculate_task_metric(model, tokenizer, data_loader, task_type):
+    """
+    Calculates the appropriate evaluation metric based on the task type.
+    
+    Args:
+        model: The model to evaluate
+        tokenizer: The tokenizer for the model
+        data_loader: DataLoader with the evaluation data
+        task_type: Either "language_modeling" or "sequence_classification"
+    
+    Returns:
+        dict: A dictionary with the metric name and value
+    """
+    if task_type == "language_modeling":
+        perplexity = calculate_perplexity(model, tokenizer, data_loader)
+        return {"perplexity": perplexity}
+    elif task_type == "sequence_classification":
+        accuracy = calculate_accuracy(model, data_loader)
+        return {"accuracy": accuracy}
+    else:
+        raise ValueError(f"Unknown task type: {task_type}")
+
+
 def calculate_perplexity(model, tokenizer, data_loader):
     """
     Calculates the perplexity of a language model on a given dataset.
