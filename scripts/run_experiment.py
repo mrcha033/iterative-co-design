@@ -212,7 +212,9 @@ def run_permute_only(cfg: DictConfig):
 
     # Calculate cluster size from IASP configuration
     cluster_size_range = cfg.model.iasp.cluster_size_range
-    optimal_cluster_size = min(cluster_size_range[1], max(cluster_size_range[0], d_model // 8))
+    optimal_cluster_size = min(
+        cluster_size_range[1], max(cluster_size_range[0], d_model // 8)
+    )
     n_clusters = d_model // optimal_cluster_size
     nodes_per_cluster = d_model // n_clusters if n_clusters > 0 else d_model
     partition = [
@@ -272,7 +274,9 @@ def run_linear_pipeline(cfg: DictConfig):
     )
     # Calculate cluster size from IASP configuration
     cluster_size_range = cfg.model.iasp.cluster_size_range
-    optimal_cluster_size = min(cluster_size_range[1], max(cluster_size_range[0], d_model // 8))
+    optimal_cluster_size = min(
+        cluster_size_range[1], max(cluster_size_range[0], d_model // 8)
+    )
     n_clusters = d_model // optimal_cluster_size
     nodes_per_cluster = d_model // n_clusters if n_clusters > 0 else d_model
     partition = [
@@ -340,7 +344,9 @@ def run_iterative(cfg: DictConfig):
         )
         # Calculate cluster size from IASP configuration
         cluster_size_range = cfg.model.iasp.cluster_size_range
-        optimal_cluster_size = min(cluster_size_range[1], max(cluster_size_range[0], d_model // 8))
+        optimal_cluster_size = min(
+            cluster_size_range[1], max(cluster_size_range[0], d_model // 8)
+        )
         n_clusters = d_model // optimal_cluster_size
         nodes_per_cluster = d_model // n_clusters if n_clusters > 0 else d_model
         part = [

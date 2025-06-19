@@ -1,0 +1,62 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.8, 3.9, "3.10", "3.11"]
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('**/requirements.txt', '**/tests/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-${{ matrix.python-version }}-
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        # Install PyTorch CPU version first (faster for CI)
+        pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+        # Install main dependencies
+        pip install -r requirements.txt
+        # Install test dependencies
+        pip install -r tests/requirements.txt
+        # Install package in editable mode
+        pip install -e .
+    
+    - name: Lint with ruff
+      run: |
+        pip install ruff
+        # Check formatting
+        ruff format --check .
+        # Check linting
+        ruff check .
+    
+    - name: Test with pytest
+      run: |
+        pytest tests/ -v --tb=short --disable-warnings
+    
+    - name: Test imports work correctly
+      run: |
+        python -c "import torch; import numpy; import yaml; print('✓ Core dependencies available')"
+        python -c "from utils.config import load_yaml_config; print('✓ Config import works')"
+        python -c "from co_design.modularity import calculate_modularity; print('✓ Modularity import works')"
+        python -c "from models.wrapper import ModelWrapper; print('✓ Model wrapper import works')" 

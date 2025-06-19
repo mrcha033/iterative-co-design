@@ -28,21 +28,34 @@ python -m venv venv
 source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
 ```
 
-#### Option A: Install with pip (Recommended for users)
+#### Option A: Automated Setup Script (Recommended)
 
 ```bash
-pip install -e .
+# For CPU-only PyTorch (faster installation, good for testing)
+python scripts/setup.py --device cpu --test
+
+# For GPU PyTorch (required for full experiments with CUDA)
+python scripts/setup.py --device cuda --dev --test
+
+# For development with all dependencies
+python scripts/setup.py --device cuda --dev
 ```
 
-This will install the package and all required dependencies as specified in `pyproject.toml`.
-
-#### Option B: Install from requirements.txt (Development)
+#### Option B: Manual Installation
 
 ```bash
+# Install with pip (uses CPU PyTorch by default)
+pip install -e .
+
+# OR install from requirements.txt (for development)
 pip install -r requirements.txt -r tests/requirements.txt
 ```
 
-*Note: The experiments require PyTorch (`>=2.3.0`), NumPy, PyYAML, and other core dependencies. If you encounter import errors, ensure these are properly installed.*
+#### PyTorch Installation Notes
+
+- **CPU-only**: Faster to install, suitable for testing and development
+- **GPU (CUDA)**: Required for full experiments and NVIDIA Nsight Compute profiling
+- **Installation size**: PyTorch can be 1-3GB. The setup script uses CPU wheels by default for faster CI/development
 
 #### Verify Installation
 
@@ -68,6 +81,15 @@ On Windows (or as an alternative):
 python -c "from datasets import load_dataset; load_dataset('wikitext', 'wikitext-103-raw-v1')"
 python -c "from datasets import load_dataset; load_dataset('glue', 'sst2')"
 ```
+
+#### Dataset Licenses
+
+This project uses standard academic datasets:
+
+- **SST-2 (Stanford Sentiment Treebank)**: Academic benchmark for sentiment analysis. Original paper by Socher et al. (2013). Generally available for research use.
+- **WikiText-103**: Licensed under [Creative Commons Attribution-ShareAlike 4.0](https://creativecommons.org/licenses/by-sa/4.0/). You are free to share and adapt the data with proper attribution.
+
+For complete licensing details, see [`data/LICENSES.md`](data/LICENSES.md).
 
 ---
 
