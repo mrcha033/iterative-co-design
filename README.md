@@ -263,32 +263,37 @@ python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=itera
 
 All results, including measured metrics (perplexity, latency, modularity, etc.) and any generated artifacts, are saved as JSON files in the `outputs/` directory, organized by timestamp (managed by Hydra). 
 
+#### Automatic Cleanup
+
+The experiment runner automatically cleans up old experiment outputs before starting new runs to manage disk space:
+
+- **Default Settings**: Removes experiment directories older than 30 days from `outputs/` and `multirun/` directories
+- **Configuration**: Cleanup settings are defined in `configs/defaults.yaml` under the `storage` section
+- **Dry Run Support**: When using `dry_run=true`, cleanup operations are shown but not executed
+- **Error Handling**: Cleanup failures are logged but don't prevent experiments from running
+
+To modify cleanup behavior, edit `configs/defaults.yaml`:
+```yaml
+storage:
+  cleanup_older_than_days: 14  # Clean up files older than 2 weeks
+```
+
+To disable cleanup entirely, remove or comment out the `cleanup` section in `configs/config.yaml`. 
+
 ### Testing
 
 The project includes comprehensive tests covering all core modules with deterministic behavior and robust error handling.
 
 #### Prerequisites for Running Tests
 
-**⚠️ IMPORTANT: Install dependencies before running tests to avoid import errors.**
-
 **🚀 Quickest Setup (Recommended):**
 ```bash
 pip install -e .[test]
 ```
 
-Tests require several packages that must be installed first. If you encounter errors like:
-```
-ModuleNotFoundError: No module named 'yaml'
-ModuleNotFoundError: No module named 'numpy'  
-ModuleNotFoundError: No module named 'torch'
-```
+This installs all required dependencies including PyTorch, NumPy, and testing frameworks in one command.
 
-This means required dependencies are not installed. **The project cannot run tests in a fresh environment without proper setup.** Follow one of these installation methods:
-
-**Method 1: Install with test dependencies (Recommended)**
-```bash
-pip install -e .[test]
-```
+**Alternative Installation Methods:**
 
 **Method 2: Use setup script with testing**
 ```bash
@@ -320,11 +325,11 @@ pip install -e .[dev]  # Includes test, docs, and development tools
 
 **Troubleshooting Test Issues:**
 
-1. **Import errors**: Ensure all dependencies are installed using one of the methods above
-2. **GPU tests skipped**: Normal on CPU-only systems - tests will skip gracefully 
-3. **Slow tests**: Use `pytest -x` to stop on first failure for faster debugging
-4. **Permission errors**: Run `pip install --user` if you encounter permission issues
-5. **Version conflicts**: Update pip with `python -m pip install --upgrade pip setuptools wheel`
+1. **GPU tests skipped**: Normal on CPU-only systems - tests will skip gracefully 
+2. **Slow tests**: Use `pytest -x` to stop on first failure for faster debugging
+3. **Permission errors**: Run `pip install --user` if you encounter permission issues
+4. **Version conflicts**: Update pip with `python -m pip install --upgrade pip setuptools wheel`
+5. **Import errors**: If you still get import errors after `pip install -e .[test]`, try reinstalling: `pip uninstall iterative-co-design && pip install -e .[test]`
 
 #### Quick Testing
 

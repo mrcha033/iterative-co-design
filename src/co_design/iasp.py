@@ -255,12 +255,30 @@ def find_optimal_permutation(
     data_loader: DataLoader,
     target_layer_name: str,
     cluster_size_range: Tuple[int, int],
+    device: Optional[str] = None,
 ) -> List[int]:
-    """Compute the optimal permutation for a given model layer."""
+    """
+    Compute the optimal permutation for a given model layer.
+    
+    Args:
+        model: The PyTorch model to analyze.
+        data_loader: The dataloader providing data samples.
+        target_layer_name: The name of the layer to hook for activations.
+        cluster_size_range: Tuple of (min_cluster_size, max_cluster_size).
+        device: Device to run the model on. If None, defaults to 'cuda' if available, else 'cpu'.
+        
+    Returns:
+        A list of integers representing the optimal permutation of indices.
+    """
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(f"No device specified, auto-detected: {device}")
+    
     correlation_matrix = get_activation_correlation(
         model=model,
         dataloader=data_loader,
         target_layer_name=target_layer_name,
+        device=device,
     )
 
     d_model = correlation_matrix.shape[0]

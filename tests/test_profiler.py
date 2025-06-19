@@ -315,3 +315,55 @@ sm__cycles_elapsed.avg,cycle,1234.56"""
 
         result = profiler._parse_ncu_output(Path("/nonexistent/file.txt"))
         assert result is None
+
+    def test_parse_ncu_output_scientific_notation(self):
+        """Test parsing of NCU output with scientific notation numbers."""
+        profiler = LatencyProfiler(ncu_metrics=["l2_tex_hit_rate.pct", "dram_read_throughput.avg.pct_of_peak_sustained_elapsed"])
+        
+        # Mock NCU CSV output with scientific notation
+        mock_output = """l2_tex_hit_rate.pct,%,1.23e+02
+dram_read_throughput.avg.pct_of_peak_sustained_elapsed,%,4.56e-01"""
+
+        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
+            f.write(mock_output)
+            f.flush()
+            file_name = f.name
+
+        # Parse after file is closed
+        result = profiler._parse_ncu_output(Path(file_name))
+        
+        # Cleanup after parsing
+        Path(file_name).unlink()
+        
+        # Verify results
+        assert result is not None
+        assert "l2_tex_hit_rate.pct" in result
+        assert "dram_read_throughput.avg.pct_of_peak_sustained_elapsed" in result
+        assert abs(result["l2_tex_hit_rate.pct"] - 123.0) < 1e-6
+        assert abs(result["dram_read_throughput.avg.pct_of_peak_sustained_elapsed"] - 0.456) < 1e-6
+
+    def test_parse_ncu_output_mixed_notation(self):
+        """Test parsing of NCU output with both standard and scientific notation."""
+        profiler = LatencyProfiler(ncu_metrics=["l2_tex_hit_rate.pct", "dram_read_throughput.avg.pct_of_peak_sustained_elapsed"])
+        
+        # Mock NCU CSV output with mixed notation formats
+        mock_output = """l2_tex_hit_rate.pct,%,78.45
+dram_read_throughput.avg.pct_of_peak_sustained_elapsed,%,1.23E+05"""
+
+        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
+            f.write(mock_output)
+            f.flush()
+            file_name = f.name
+
+        # Parse after file is closed
+        result = profiler._parse_ncu_output(Path(file_name))
+        
+        # Cleanup after parsing
+        Path(file_name).unlink()
+        
+        # Verify results
+        assert result is not None
+        assert "l2_tex_hit_rate.pct" in result
+        assert "dram_read_throughput.avg.pct_of_peak_sustained_elapsed" in result
+        assert abs(result["l2_tex_hit_rate.pct"] - 78.45) < 1e-6
+        assert abs(result["dram_read_throughput.avg.pct_of_peak_sustained_elapsed"] - 123000.0) < 1e-6

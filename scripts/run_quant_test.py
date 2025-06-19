@@ -126,6 +126,7 @@ def run_quant_then_permute(cfg, model, tokenizer, data_loader):
         data_loader=data_loader,
         target_layer_name=cfg.model.iasp.target_layer_name,
         cluster_size_range=tuple(cfg.model.iasp.cluster_size_range),
+        device="cpu",  # Quantized models run on CPU
     )
     wrapped_model.permute_model_weights(permutation)
 
@@ -147,6 +148,7 @@ def run_permute_then_quant(cfg, model, tokenizer, data_loader):
         data_loader=data_loader,
         target_layer_name=cfg.model.iasp.target_layer_name,
         cluster_size_range=tuple(cfg.model.iasp.cluster_size_range),
+        device="cuda" if torch.cuda.is_available() else "cpu",  # FP32 model can use GPU
     )
     wrapped_model.permute_model_weights(permutation)
 
@@ -169,6 +171,7 @@ def run_permute_quant_repermute(cfg, model, tokenizer, data_loader):
         data_loader=data_loader,
         target_layer_name=cfg.model.iasp.target_layer_name,
         cluster_size_range=tuple(cfg.model.iasp.cluster_size_range),
+        device="cuda" if torch.cuda.is_available() else "cpu",  # FP32 model can use GPU
     )
     wrapped_model.permute_model_weights(perm1)
 
@@ -180,6 +183,7 @@ def run_permute_quant_repermute(cfg, model, tokenizer, data_loader):
         data_loader=data_loader,
         target_layer_name=cfg.model.iasp.target_layer_name,
         cluster_size_range=tuple(cfg.model.iasp.cluster_size_range),
+        device="cpu",  # Quantized models run on CPU
     )
     wrapped_quant_model.permute_model_weights(perm2)
 

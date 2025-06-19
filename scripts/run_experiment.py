@@ -36,6 +36,7 @@ import wandb
 
 from utils.evaluation import calculate_task_metric
 from utils.profiler import LatencyProfiler
+from utils.cleanup import cleanup_old_runs
 from co_design.iasp import find_optimal_permutation, get_activation_correlation
 from co_design.modularity import calculate_modularity
 from models.wrapper import ModelWrapper
@@ -206,7 +207,9 @@ def run_sparsity_only(cfg: DictConfig):
         wrapped_model.model, data_loader, cfg.model.iasp.target_layer_name
     )
     identity_permutation = list(range(d_model))
-    nodes_per_cluster = d_model // (d_model // 32)  # Heuristic
+    # Safe cluster sizing to avoid division by zero when d_model < 32
+    cluster_step = max(d_model // 32, 1)
+    nodes_per_cluster = d_model // cluster_step
     partition = [
         identity_permutation[i : i + nodes_per_cluster]
         for i in range(0, d_model, nodes_per_cluster)
@@ -428,6 +431,25 @@ def run_iterative(cfg: DictConfig):
         wandb.finish()
 
 
+def run_cleanup_if_configured(cfg: DictConfig, dry_run: bool = False):
+    """Run cleanup of old runs if configured, respecting dry_run flag."""
+    if hasattr(cfg, 'cleanup') and cfg.cleanup:
+        try:
+            print("🧹 Running cleanup of old experiment outputs...")
+            cleanup_old_runs(
+                base_dirs=cfg.cleanup.base_dirs,
+                max_age_days=cfg.cleanup.max_age_days,
+                dry_run=dry_run,
+            )
+            if not dry_run:
+                print("✅ Cleanup completed successfully")
+            else:
+                print("✅ Cleanup dry run completed (no files deleted)")
+        except Exception as e:
+            print(f"⚠️  Cleanup failed: {e}")
+            print("Continuing with experiment...")
+
+
 def print_dry_run_plan(cfg: DictConfig):
     """Print the planned operations for a dry run without executing them."""
     method = cfg.method
@@ -527,6 +549,9 @@ def main(cfg: DictConfig):
     # Add method to config for logging
     OmegaConf.set_struct(cfg, False)
     cfg.method = method
+
+    # Run cleanup before starting experiment (once per run)
+    run_cleanup_if_configured(cfg, dry_run=dry_run)
 
     # Handle dry run mode
     if dry_run:
