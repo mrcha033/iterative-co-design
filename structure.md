@@ -10,7 +10,7 @@ The overall project layout is as follows:
 iterative-co-design/
 ├── .github/                  # CI workflows for automated testing
 │   └── workflows/
-│       └── ci.yml           # Main CI workflow (linting, CPU tests)
+│       └── test.yml         # Comprehensive CI workflow (multi-Python, linting, tests)
 ├── configs/                  # Hydra configuration files for experiments
 │   ├── config.yaml          # Main configuration entry point
 │   ├── defaults.yaml        # Common configurations and target paths
@@ -43,8 +43,13 @@ iterative-co-design/
 │       └── logging.py      # W&B logging with offline mode support
 ├── sweeps/                  # Weights & Biases sweep configurations
 │   └── hds_tuning_sweep.yaml
-├── tests/                   # Automated tests with CUDA markers
-│   └── test_modularity.py
+├── tests/                   # Comprehensive automated tests (39 tests total)
+│   ├── test_config.py      # Configuration loading tests
+│   ├── test_iasp.py        # IASP algorithm and correlation tests  
+│   ├── test_modularity.py  # Modularity calculation tests
+│   ├── test_profiler.py    # Latency profiling and caching tests
+│   ├── test_wrapper.py     # Model wrapper functionality tests
+│   └── requirements.txt    # Test-specific dependencies
 │
 ├── Dockerfile              # Multi-stage build for optimized image size
 ├── docker-compose.yml      # Orchestrates multi-service Docker applications
@@ -76,11 +81,17 @@ Scripts and documentation for dataset management:
 The core logic with improved utilities:
 
 *   **`src/co_design/`**: Core co-design implementations
-*   **`src/models/`**: Model management modules
-*   **`src/utils/`**: Enhanced utilities
-    *   `profiler.py`: Hardware profiling with graceful GPU fallback
+    *   `iasp.py`: IO-Aware Scan Permutation with modularity optimization
+    *   `hds.py`: Hardware-Native Differentiable Sparsity implementation
+    *   `modularity.py`: Graph modularity calculations for cache optimization
+*   **`src/models/`**: Model management modules with enhanced permutation handling
+    *   `wrapper.py`: Streamlined model wrapper with deterministic permutation operations
+    *   `utils.py`: Tensor manipulation utilities
+*   **`src/utils/`**: Enhanced utilities with robust error handling
+    *   `profiler.py`: Hardware profiling with deterministic caching and graceful GPU fallback
     *   `cleanup.py`: Manages experiment outputs with retention policies
     *   `logging.py`: W&B integration with offline mode support
+    *   `evaluation.py`: Perplexity and accuracy calculation with improved data handling
 
 ### 🚀 `scripts/`
 
@@ -107,9 +118,11 @@ Command-line entry points with debug support:
 
 *   **Tests**: 
     - `pytest` markers for CUDA vs CPU tests
-    - Separate CI workflows for GPU/CPU tests
-*   **CI Workflows**:
-    - `ci.yml`: Fast CPU tests and linting
+    - Comprehensive test coverage for all core modules
+    - Deterministic hashing tests for reproducible caching
+*   **CI Workflow**:
+    - `test.yml`: Multi-Python version testing (3.8-3.11), linting with ruff, and import validation
+    - Smart dependency caching for faster CI runs
 
 ### 🐳 Containerization & Environment
 
