@@ -67,6 +67,42 @@ python -c "import torch; import numpy; import yaml; print('All core dependencies
 pytest tests/test_config.py::TestConfigLoader::test_load_yaml_config_basic -v
 ```
 
+#### Troubleshooting Installation Issues
+
+**Error: "Could not find a version that satisfies the requirement numpy==X.X.X"**
+
+This usually means your Python version or pip is too old. Try:
+
+1. **Update pip and build tools:**
+   ```bash
+   python -m pip install --upgrade pip setuptools wheel
+   ```
+
+2. **Check Python version (3.9+ recommended):**
+   ```bash
+   python --version
+   ```
+
+3. **Use flexible versions instead of pinned ones:**
+   ```bash
+   pip install -e .  # Uses flexible requirements from pyproject.toml
+   ```
+
+4. **Manual installation for compatibility:**
+   ```bash
+   pip install 'numpy>=1.21.0' 'torch>=2.0.0' 'transformers>=4.30.0'
+   pip install -e . --no-deps
+   ```
+
+**Error: "No module named 'src'"**
+
+Make sure to set PYTHONPATH or install in editable mode:
+```bash
+export PYTHONPATH=$(pwd)  # On Windows: set PYTHONPATH=%cd%
+# OR
+pip install -e .
+```
+
 ### 3. Download Datasets
 
 The required datasets (`wikitext-103-raw-v1` and `sst2`) are downloaded and cached automatically by the `datasets` library when you run an experiment for the first time. Alternatively, you can pre-download them using the provided script.

@@ -9,19 +9,19 @@ description = "Iterative Co-Design of Sparsity and Permutation Structures for Ha
 authors = [{name = "Research Team"}]
 requires-python = ">=3.8"
 dependencies = [
-    "transformers>=4.38.2",
-    "datasets>=2.18.0",
-    "pyyaml>=6.0.1",
-    "numpy>=1.26.4",
-    "scikit-learn>=1.4.1",
-    "pandas>=2.2.1",
-    "tqdm>=4.66.2",
-    "hydra-core>=1.3.2",
+    "transformers>=4.30.0",
+    "datasets>=2.14.0",
+    "pyyaml>=6.0",
+    "numpy>=1.21.0",
+    "scikit-learn>=1.3.0",
+    "pandas>=1.5.0",
+    "tqdm>=4.64.0",
+    "hydra-core>=1.3.0",
     "omegaconf>=2.3.0",
-    "wandb>=0.16.4",
-    "matplotlib>=3.8.3",
-    "seaborn>=0.13.2",
-    "torch>=2.3.0",
+    "wandb>=0.15.0",
+    "matplotlib>=3.5.0",
+    "seaborn>=0.11.0",
+    "torch>=2.0.0",
 ]
 
 [project.optional-dependencies]

@@ -29,10 +29,11 @@ def run_command(cmd, description=""):
 def install_pytorch(device_type="cpu"):
     """Install PyTorch with CPU or GPU support."""
     if device_type == "cpu":
-        cmd = "pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu"
-        desc = "Installing PyTorch (CPU-only)"
+        # Use more compatible PyTorch version for broader Python support
+        cmd = "pip install 'torch>=2.0.0,<2.5.0' 'torchvision>=0.15.0' 'torchaudio>=2.0.0' --index-url https://download.pytorch.org/whl/cpu"
+        desc = "Installing PyTorch (CPU-only, compatible version)"
     elif device_type == "cuda":
-        cmd = "pip install torch torchvision torchaudio"
+        cmd = "pip install 'torch>=2.0.0' 'torchvision>=0.15.0' 'torchaudio>=2.0.0'"
         desc = "Installing PyTorch (with CUDA support)"
     else:
         print(f"Unknown device type: {device_type}")
@@ -90,12 +91,18 @@ Examples:
     print(f"Python version: {sys.version}")
     print(f"Platform: {platform.platform()}")
     print(f"PyTorch device: {args.device}")
+    
+    # Check for common issues
+    python_version = sys.version_info
+    if python_version < (3, 8):
+        print("WARNING: Python 3.8+ is recommended for best compatibility")
+    
     print()
     
     success = True
     
-    # Step 1: Upgrade pip
-    if not run_command("python -m pip install --upgrade pip", "Upgrading pip"):
+    # Step 1: Upgrade pip and setuptools
+    if not run_command("python -m pip install --upgrade pip setuptools wheel", "Upgrading pip and build tools"):
         success = False
     
     # Step 2: Install PyTorch
@@ -107,6 +114,11 @@ Examples:
     
     # Step 3: Install main dependencies
     if not run_command("pip install -r requirements.txt", "Installing main dependencies"):
+        print("Failed to install from requirements.txt. Trying with --no-deps to diagnose...")
+        print("If this fails, you may need to:")
+        print("1. Update your Python version (3.9+ recommended)")
+        print("2. Update pip: python -m pip install --upgrade pip")
+        print("3. Try installing individual packages")
         success = False
     
     # Step 4: Install test dependencies
@@ -124,7 +136,7 @@ Examples:
     
     if success:
         print("\n" + "=" * 60)
-        print("✓ Installation completed successfully!")
+        print("Installation completed successfully!")
         print("=" * 60)
         
         # Verify installation
@@ -133,9 +145,9 @@ Examples:
             ('python -c "import torch; print(f\'PyTorch version: {torch.__version__}\')"', "PyTorch"),
             ('python -c "import numpy; print(f\'NumPy version: {numpy.__version__}\')"', "NumPy"),
             ('python -c "import yaml; print(\'PyYAML available\')"', "PyYAML"),
-            ('python -c "from utils.config import load_yaml_config; print(\'✓ Config import\')"', "Config module"),
-            ('python -c "from co_design.modularity import calculate_modularity; print(\'✓ Modularity module\')"', "Modularity module"),
-            ('python -c "from models.wrapper import ModelWrapper; print(\'✓ Model wrapper\')"', "Model wrapper"),
+            ('python -c "from utils.config import load_yaml_config; print(\'Config import successful\')"', "Config module"),
+            ('python -c "from co_design.modularity import calculate_modularity; print(\'Modularity module successful\')"', "Modularity module"),
+            ('python -c "from models.wrapper import ModelWrapper; print(\'Model wrapper successful\')"', "Model wrapper"),
         ]
         
         for cmd, desc in verification_commands:
@@ -143,22 +155,22 @@ Examples:
                 success = False
         
         if success:
-            print("\n✓ All components verified successfully!")
+            print("\nAll components verified successfully!")
             
             # Step 7: Run tests if requested
             if args.test:
                 print("\nRunning tests...")
                 if run_command("pytest tests/ -v", "Running test suite"):
-                    print("✓ All tests passed!")
+                    print("All tests passed!")
                 else:
-                    print("✗ Some tests failed")
+                    print("Some tests failed")
                     success = False
         else:
-            print("\n✗ Verification failed")
+            print("\nVerification failed")
             return 1
     else:
         print("\n" + "=" * 60)
-        print("✗ Installation failed!")
+        print("Installation failed!")
         print("=" * 60)
         return 1
     
