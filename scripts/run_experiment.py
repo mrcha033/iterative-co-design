@@ -49,14 +49,17 @@ def get_model_and_data(cfg: DictConfig):
         )
 
     tokenized_dataset = val_dataset.map(tokenize_function, batched=True)
-    tokenized_dataset.set_format(
-        type="torch",
-        columns=[
-            "input_ids",
-            "attention_mask",
-            "label" if "label" in tokenized_dataset.column_names else "labels",
-        ],
-    )
+    # Keep the text column for perplexity calculation
+    format_columns = [
+        "input_ids",
+        "attention_mask",
+        "label" if "label" in tokenized_dataset.column_names else "labels",
+    ]
+    # Add text column if it exists for perplexity calculation
+    if cfg.dataset.text_column in tokenized_dataset.column_names:
+        format_columns.append(cfg.dataset.text_column)
+    
+    tokenized_dataset.set_format(type="torch", columns=format_columns)
 
     if "label" in tokenized_dataset.column_names:
         tokenized_dataset = tokenized_dataset.rename_column("label", "labels")
@@ -133,7 +136,6 @@ def run_sparsity_only(cfg: DictConfig):
     model, tokenizer, data_loader = get_model_and_data(cfg)
     wrapped_model = ModelWrapper(model)
     d_model = model.config.hidden_size
-    temp_state_dict_path = "temp_sparse_state_dict.pt"
     profiler = LatencyProfiler()
 
     if torch.cuda.is_available():
@@ -147,7 +149,6 @@ def run_sparsity_only(cfg: DictConfig):
     dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
     dummy_dict = {"input_ids": dummy_input}
     latency = profiler.measure_latency(wrapped_model, dummy_dict)
-    torch.save(wrapped_model.model.state_dict(), temp_state_dict_path)
     cache_result = profiler.measure_cache_hits(wrapped_model, dummy_dict)
     cache_hits = cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
 
@@ -169,7 +170,6 @@ def run_sparsity_only(cfg: DictConfig):
         "modularity": modularity,
     }
     save_results(cfg, "sparsity_only", metrics)
-    Path(temp_state_dict_path).unlink(missing_ok=True)
 
     if wandb.run:
         wandb.finish()
@@ -182,7 +182,6 @@ def run_permute_only(cfg: DictConfig):
     model, tokenizer, data_loader = get_model_and_data(cfg)
     wrapped_model = ModelWrapper(model)
     d_model = model.config.hidden_size
-    temp_state_dict_path = "temp_permuted_state_dict.pt"
     profiler = LatencyProfiler()
 
     if torch.cuda.is_available():
@@ -201,7 +200,6 @@ def run_permute_only(cfg: DictConfig):
     dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
     dummy_dict = {"input_ids": dummy_input}
     latency = profiler.measure_latency(wrapped_model, dummy_dict)
-    torch.save(wrapped_model.model.state_dict(), temp_state_dict_path)
     cache_result = profiler.measure_cache_hits(wrapped_model, dummy_dict)
     cache_hits = cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
 
@@ -230,7 +228,6 @@ def run_permute_only(cfg: DictConfig):
         "modularity": modularity,
     }
     save_results(cfg, "permute_only", metrics)
-    Path(temp_state_dict_path).unlink(missing_ok=True)
 
     if wandb.run:
         wandb.finish()
@@ -243,7 +240,6 @@ def run_linear_pipeline(cfg: DictConfig):
     model, tokenizer, data_loader = get_model_and_data(cfg)
     wrapped_model = ModelWrapper(model)
     d_model = model.config.hidden_size
-    temp_state_dict_path = "temp_linear_state_dict.pt"
     profiler = LatencyProfiler()
 
     if torch.cuda.is_available():
@@ -265,7 +261,6 @@ def run_linear_pipeline(cfg: DictConfig):
     dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
     dummy_dict = {"input_ids": dummy_input}
     latency = profiler.measure_latency(wrapped_model, dummy_dict)
-    torch.save(wrapped_model.model.state_dict(), temp_state_dict_path)
     cache_result = profiler.measure_cache_hits(wrapped_model, dummy_dict)
     cache_hits = cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
 
@@ -292,7 +287,6 @@ def run_linear_pipeline(cfg: DictConfig):
         "modularity": modularity,
     }
     save_results(cfg, "linear_pipeline", metrics)
-    Path(temp_state_dict_path).unlink(missing_ok=True)
 
     if wandb.run:
         wandb.finish()
@@ -305,7 +299,6 @@ def run_iterative(cfg: DictConfig):
     model, tokenizer, data_loader = get_model_and_data(cfg)
     wrapped_model = ModelWrapper(model)
     d_model = model.config.hidden_size
-    temp_state_dict_path = "temp_iterative_state_dict.pt"
     profiler = LatencyProfiler()
 
     if torch.cuda.is_available():
@@ -332,7 +325,6 @@ def run_iterative(cfg: DictConfig):
         lat = profiler.measure_latency(wrapped_model, dummy_dict)
         iteration_metrics["latency"].append(lat)
 
-        torch.save(wrapped_model.model.state_dict(), temp_state_dict_path)
         cache_result = profiler.measure_cache_hits(wrapped_model, dummy_dict)
         cache_value = (
             cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
@@ -365,7 +357,6 @@ def run_iterative(cfg: DictConfig):
         "iteration_metrics": iteration_metrics,
     }
     save_results(cfg, "iterative", final_metrics)
-    Path(temp_state_dict_path).unlink(missing_ok=True)
 
     if wandb.run:
         wandb.finish()

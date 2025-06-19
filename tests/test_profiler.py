@@ -52,6 +52,42 @@ class TestLatencyProfiler:
         hash3 = profiler._get_model_hash(model1.state_dict())
         assert hash3 != hash1
     
+    def test_model_hash_deterministic(self):
+        """Test that model hashing is deterministic across multiple calls."""
+        # Create two identical models
+        model1 = SimpleTestModel(4)
+        model2 = SimpleTestModel(4)
+        
+        # Set identical weights
+        torch.manual_seed(42)
+        with torch.no_grad():
+            for param in model1.parameters():
+                param.fill_(1.0)
+        
+        with torch.no_grad():
+            for param in model2.parameters():
+                param.fill_(1.0)
+        
+        profiler = LatencyProfiler()
+        
+        # Generate hashes multiple times
+        hash1_first = profiler._get_model_hash(model1.state_dict())
+        hash1_second = profiler._get_model_hash(model1.state_dict())
+        hash2 = profiler._get_model_hash(model2.state_dict())
+        
+        # All hashes should be identical for identical models
+        assert hash1_first == hash1_second, "Hash should be deterministic for same model"
+        assert hash1_first == hash2, "Hash should be identical for models with same weights"
+        
+        # Modify one model slightly
+        with torch.no_grad():
+            list(model2.parameters())[0][0][0] = 2.0
+        
+        hash2_modified = profiler._get_model_hash(model2.state_dict())
+        
+        # Hash should change when model changes
+        assert hash1_first != hash2_modified, "Hash should change when model weights change"
+    
     def test_cache_read_write(self):
         """Test cache read/write functionality."""
         with tempfile.TemporaryDirectory() as temp_dir:

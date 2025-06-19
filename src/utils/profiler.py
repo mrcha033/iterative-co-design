@@ -31,9 +31,24 @@ class LatencyProfiler:
         self.ncu_metrics = ncu_metrics or ["l2_tex_hit_rate.pct"]
 
     def _get_model_hash(self, model_state_dict) -> str:
-        """Creates a SHA256 hash of a model's state_dict."""
-        s = str(model_state_dict)
-        return hashlib.sha256(s.encode()).hexdigest()
+        """Creates a deterministic SHA256 hash of a model's state_dict."""
+        # Create a deterministic hash by sorting keys and using binary tensor data
+        hasher = hashlib.sha256()
+        
+        for key in sorted(model_state_dict.keys()):
+            param = model_state_dict[key]
+            # Add key name to hash
+            hasher.update(key.encode('utf-8'))
+            # Add tensor data to hash (convert to consistent numpy bytes)
+            if isinstance(param, torch.Tensor):
+                # Detach and move to CPU to ensure consistent representation
+                tensor_bytes = param.detach().cpu().numpy().tobytes()
+                hasher.update(tensor_bytes)
+            else:
+                # Handle non-tensor values (though rare in state_dict)
+                hasher.update(str(param).encode('utf-8'))
+        
+        return hasher.hexdigest()
 
     def _read_cache(self) -> Dict:
         """Reads the profiler cache file."""
