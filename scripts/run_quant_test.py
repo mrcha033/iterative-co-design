@@ -13,6 +13,7 @@ to other model optimization techniques like quantization.
 Usage:
     python scripts/run_quant_test.py model=mamba_3b dataset=wikitext103 method=permute_quant_repermute
 """
+
 import json
 from pathlib import Path
 import random
@@ -172,7 +173,7 @@ def run_permute_quant_repermute(cfg, model, tokenizer, data_loader):
 def main(cfg: DictConfig):
     # Initialize random seeds for reproducible experiments
     set_random_seeds(cfg.seed)
-    
+
     method = OmegaConf.select(cfg, "method", default="permute_then_quant")
 
     model, tokenizer, data_loader = get_model_and_data(cfg)

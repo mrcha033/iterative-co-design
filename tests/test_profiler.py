@@ -156,34 +156,36 @@ class TestLatencyProfiler:
     def test_measure_latency_device_agnostic(self):
         """Test latency measurement works on both CPU and GPU when available."""
         profiler = LatencyProfiler()
-        
+
         # Test CPU measurement
         model_cpu = SimpleTestModel(d_model=32)
         model_cpu.eval()
         dummy_input = {"input_ids": torch.randn(2, 10, 32)}
-        
+
         latency_cpu = profiler.measure_latency(model_cpu, dummy_input, num_runs=3)
-        
+
         assert isinstance(latency_cpu, float)
         assert latency_cpu > 0
         assert latency_cpu < 1000  # Should be reasonable
-        
+
         # Test GPU measurement if available
         if torch.cuda.is_available():
             try:
                 model_gpu = SimpleTestModel(d_model=32).cuda()
                 model_gpu.eval()
                 dummy_input_gpu = {"input_ids": torch.randn(2, 10, 32).cuda()}
-                
-                latency_gpu = profiler.measure_latency(model_gpu, dummy_input_gpu, num_runs=3)
-                
+
+                latency_gpu = profiler.measure_latency(
+                    model_gpu, dummy_input_gpu, num_runs=3
+                )
+
                 assert isinstance(latency_gpu, float)
                 assert latency_gpu > 0
-                
+
                 # GPU should generally be faster for same operations (though not always guaranteed)
                 # Just ensure both measurements are reasonable
                 assert latency_gpu < 1000
-                
+
             except RuntimeError:
                 # GPU might have insufficient memory or other issues, just continue
                 pass

@@ -11,6 +11,7 @@ Key functions:
 - find_optimal_permutation_from_matrix: Find optimal permutation using modularity
 - find_optimal_permutation: End-to-end permutation optimization for models
 """
+
 import torch
 import numpy as np
 from tqdm import tqdm
@@ -220,7 +221,9 @@ def find_optimal_permutation_from_matrix(
             if current_modularity > best_modularity:
                 best_modularity = current_modularity
                 best_permutation = [node for cluster in partition for node in cluster]
-                logger.info(f"    - New best modularity found! Optimal clusters so far: {k}")
+                logger.info(
+                    f"    - New best modularity found! Optimal clusters so far: {k}"
+                )
 
         logger.info(f"Finished search. Best modularity {best_modularity:.4f} found.")
         return best_permutation

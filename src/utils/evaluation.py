@@ -29,7 +29,7 @@ def calculate_task_metric(model, tokenizer, data_loader, task_type):
 def calculate_perplexity(model, tokenizer, data_loader):
     """
     Calculates the perplexity of a language model on a given dataset.
-    
+
     Properly accounts for variable sequence lengths by counting actual tokens
     using the attention mask, rather than assuming fixed-length sequences.
     """
@@ -58,7 +58,7 @@ def calculate_perplexity(model, tokenizer, data_loader):
             # Count actual tokens using attention mask (excludes padding tokens)
             # The attention mask has 1s for real tokens and 0s for padding
             batch_tokens = inputs["attention_mask"].sum().item()
-            
+
             # Loss is already averaged over the sequence length and batch size by transformers
             # We need to denormalize it to get the total loss for this batch
             batch_loss = loss.item() * batch_tokens

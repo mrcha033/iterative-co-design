@@ -8,7 +8,7 @@ authors:
     given-names: "Yunmin"
     affiliation: "School of Business, Yonsei University"
     email: "mrcha033@yonsei.ac.kr"
-    orcid: "https://orcid.org/0000-0000-0000-0000"
+    # ORCID will be added when available
 version: 0.1.0
 date-released: 2025-06-30
 license: MIT

@@ -15,7 +15,7 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 ## 🏆 Code Quality & Reliability
 
 This repository maintains high code quality standards with:
-- ✅ **Comprehensive test coverage** (39 tests across all modules)
+- ✅ **Comprehensive test coverage** (41 tests across all modules)
 - ✅ **Deterministic caching** for reproducible results
 - ✅ **Multi-Python support** (3.8, 3.9, 3.10, 3.11)
 - ✅ **Automated linting** with ruff format + check
@@ -264,7 +264,7 @@ ModuleNotFoundError: No module named 'numpy'
 ModuleNotFoundError: No module named 'torch'
 ```
 
-This means required dependencies are not installed. Follow one of these installation methods:
+This means required dependencies are not installed. **The project cannot run tests in a fresh environment without proper setup.** Follow one of these installation methods:
 
 **Method 1: Install with test dependencies (Recommended)**
 ```bash

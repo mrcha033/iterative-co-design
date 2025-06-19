@@ -11,6 +11,7 @@ Key components:
 - HDSLinear: Linear layer wrapper with learnable N:M sparsity masks
 - apply_hds: Apply HDS to model layers and fine-tune sparsity masks
 """
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -106,7 +107,9 @@ def _replace_linear_with_hds(model: nn.Module, hds_config: dict):
     """
     target_patterns = hds_config.get("target_layers", [])
     if not target_patterns:
-        logger.warning("No target_layers specified for HDS. No layers will be replaced.")
+        logger.warning(
+            "No target_layers specified for HDS. No layers will be replaced."
+        )
         return
 
     n = hds_config.get("n", 2)

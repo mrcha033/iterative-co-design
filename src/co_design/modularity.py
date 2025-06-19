@@ -31,7 +31,9 @@ def calculate_modularity(
     for community_idx, community in enumerate(partition):
         for node in community:
             if node >= num_nodes or node < 0:
-                raise ValueError(f"Node index {node} is out of range [0, {num_nodes-1}].")
+                raise ValueError(
+                    f"Node index {node} is out of range [0, {num_nodes - 1}]."
+                )
             if community_membership[node] != -1:
                 raise ValueError(f"Node {node} appears in multiple communities.")
             community_membership[node] = community_idx
@@ -52,12 +54,14 @@ def calculate_modularity(
 
     # Create a matrix indicating which pairs of nodes are in the same community
     # This is the key vectorization: instead of nested loops, we use broadcasting
-    same_community_matrix = community_membership[:, np.newaxis] == community_membership[np.newaxis, :]
-    
+    same_community_matrix = (
+        community_membership[:, np.newaxis] == community_membership[np.newaxis, :]
+    )
+
     # Calculate the null model term: k[i] * k[j] / (2 * m)
     # Using outer product for vectorized computation
     null_model = np.outer(k, k) / (2 * m)
-    
+
     # Calculate modularity: sum over all pairs where nodes are in same community
     # of (A[i,j] - k[i]*k[j]/(2*m))
     modularity_terms = (correlation_matrix - null_model) * same_community_matrix

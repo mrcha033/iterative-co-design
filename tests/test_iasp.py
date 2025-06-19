@@ -223,7 +223,9 @@ class TestIASP:
             )
 
             # Results should be approximately equal between CPU and GPU
-            assert np.allclose(correlation_matrix_cpu, correlation_matrix_gpu, rtol=1e-5)
+            assert np.allclose(
+                correlation_matrix_cpu, correlation_matrix_gpu, rtol=1e-5
+            )
         else:
             # If CUDA not available, just ensure CPU version works
             assert np.allclose(np.diag(correlation_matrix_cpu), 1.0)

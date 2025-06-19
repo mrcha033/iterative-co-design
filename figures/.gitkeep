@@ -1,0 +1,2 @@
+# This file ensures the figures/ directory is tracked in git
+# Generated figures will be saved here by scripts/generate_all_figures.py 
