@@ -1,7 +1,5 @@
 import torch
 import torch.nn as nn
-from collections import OrderedDict
-from .utils import permute_tensor
 from typing import List
 
 
@@ -56,5 +54,3 @@ class ModelWrapper(nn.Module):
         self.device = torch.device("cpu")
         self.model.cpu(*args, **kwargs)
         return self
-
-

@@ -34,11 +34,11 @@ class LatencyProfiler:
         """Creates a deterministic SHA256 hash of a model's state_dict."""
         # Create a deterministic hash by sorting keys and using binary tensor data
         hasher = hashlib.sha256()
-        
+
         for key in sorted(model_state_dict.keys()):
             param = model_state_dict[key]
             # Add key name to hash
-            hasher.update(key.encode('utf-8'))
+            hasher.update(key.encode("utf-8"))
             # Add tensor data to hash (convert to consistent numpy bytes)
             if isinstance(param, torch.Tensor):
                 # Detach and move to CPU to ensure consistent representation
@@ -46,8 +46,8 @@ class LatencyProfiler:
                 hasher.update(tensor_bytes)
             else:
                 # Handle non-tensor values (though rare in state_dict)
-                hasher.update(str(param).encode('utf-8'))
-        
+                hasher.update(str(param).encode("utf-8"))
+
         return hasher.hexdigest()
 
     def _read_cache(self) -> Dict:

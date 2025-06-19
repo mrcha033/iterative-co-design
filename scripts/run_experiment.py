@@ -58,7 +58,7 @@ def get_model_and_data(cfg: DictConfig):
     # Add text column if it exists for perplexity calculation
     if cfg.dataset.text_column in tokenized_dataset.column_names:
         format_columns.append(cfg.dataset.text_column)
-    
+
     tokenized_dataset.set_format(type="torch", columns=format_columns)
 
     if "label" in tokenized_dataset.column_names:
