@@ -143,7 +143,6 @@ class TestIASP:
 
         # Create minimal dataset
         input_data = torch.randn(2, 4, 32)
-        dataset = TensorDataset(input_data)
         dataloader = [{"input_ids": input_data}]
 
         with pytest.raises(ValueError, match="Layer 'nonexistent_layer' not found"):
