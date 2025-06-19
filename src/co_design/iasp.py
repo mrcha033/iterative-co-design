@@ -104,20 +104,26 @@ def get_activation_correlation(
             "No activations were collected. Check the dataloader and model."
         )
 
-    # Concatenate all collected activations. The shape is typically (num_batches, batch_size, seq_len, hidden_dim).
-    # We need to reshape it to (total_tokens, hidden_dim).
+    # Concatenate all collected activations
     all_activations = np.concatenate(activations, axis=0)[:max_samples]
 
-    # Reshape from (total_samples, seq_len, hidden_dim) to (total_tokens, hidden_dim)
-    if all_activations.ndim != 3:
-        raise ValueError(
-            f"Expected 3D activations, but got {all_activations.ndim}D. The hook might be on an incompatible layer."
+    # Handle both 2D and 3D activation tensors
+    if all_activations.ndim == 3:
+        # 3D case: (total_samples, seq_len, hidden_dim) -> (total_tokens, hidden_dim)
+        num_samples, seq_len, hidden_dim = all_activations.shape
+        all_activations_reshaped = all_activations.reshape(
+            num_samples * seq_len, hidden_dim
         )
-
-    num_samples, seq_len, hidden_dim = all_activations.shape
-    all_activations_reshaped = all_activations.reshape(
-        num_samples * seq_len, hidden_dim
-    )
+        logger.info(f"Reshaped 3D activations from {all_activations.shape} to {all_activations_reshaped.shape}")
+    elif all_activations.ndim == 2:
+        # 2D case: (total_samples, hidden_dim) - already in correct format
+        all_activations_reshaped = all_activations
+        logger.info(f"Using 2D activations with shape {all_activations.shape}")
+    else:
+        raise ValueError(
+            f"Expected 2D or 3D activations, but got {all_activations.ndim}D. "
+            f"Shape: {all_activations.shape}. The hook might be on an incompatible layer."
+        )
 
     # Compute Pearson correlation matrix
     correlation_matrix = np.corrcoef(all_activations_reshaped, rowvar=False)
