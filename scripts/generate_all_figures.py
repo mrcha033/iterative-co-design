@@ -274,16 +274,24 @@ def generate_figure2():
         quant_dir = Path("outputs") / "quantization"
         if not quant_dir.exists():
             print("⚠️ WARNING: Figure 2 requires quantization experiment results.")
-            print("   This will run experiments which may take 10-30 minutes per method.")
+            print(
+                "   This will run experiments which may take 10-30 minutes per method."
+            )
             print("   The following experiments will be executed:")
             print("   - python scripts/run_quant_test.py method=quant_then_permute")
-            print("   - python scripts/run_quant_test.py method=permute_then_quant") 
-            print("   - python scripts/run_quant_test.py method=permute_quant_repermute")
+            print("   - python scripts/run_quant_test.py method=permute_then_quant")
+            print(
+                "   - python scripts/run_quant_test.py method=permute_quant_repermute"
+            )
             print()
-            response = input("Do you want to run these experiments? (y/N): ").strip().lower()
-            
-            if response != 'y':
-                print("❌ Figure 2 generation cancelled. Run experiments manually if needed.")
+            response = (
+                input("Do you want to run these experiments? (y/N): ").strip().lower()
+            )
+
+            if response != "y":
+                print(
+                    "❌ Figure 2 generation cancelled. Run experiments manually if needed."
+                )
                 return False
 
             print("🚀 Running quantization experiments...")

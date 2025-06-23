@@ -35,14 +35,14 @@ def initialize_wandb(cfg: DictConfig):
     wandb_mode = OmegaConf.select(cfg, "wandb.mode", default="online")
 
     if wandb_mode == "disabled":
-        print("🚫 W&B logging disabled by configuration")
+        print("W&B logging disabled by configuration")
         wandb.init(mode="disabled")
         return
 
     # Sanitize the config for wandb
     config_dict = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
 
-    print(f"📊 Initializing W&B logging in {wandb_mode} mode")
+    print(f"Initializing W&B logging in {wandb_mode} mode")
     wandb.init(
         project=cfg.project_name,
         config=config_dict,
