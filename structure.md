@@ -43,7 +43,7 @@ iterative-co-design/
 │       └── logging.py      # W&B logging with offline mode support
 ├── sweeps/                  # Weights & Biases sweep configurations
 │   └── hds_tuning_sweep.yaml
-├── tests/                   # Comprehensive automated tests (41 tests total)
+├── tests/                   # Comprehensive automated tests (71 tests total)
 │   ├── test_config.py      # Configuration loading tests
 │   ├── test_iasp.py        # IASP algorithm and correlation tests  
 │   ├── test_modularity.py  # Modularity calculation tests

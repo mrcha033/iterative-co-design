@@ -262,7 +262,7 @@ def generate_figure1(quick_mode=False):
         return False
 
 
-def generate_figure2():
+def generate_figure2(non_interactive=False):
     """
     Figure 2: Quantization Co-Design Strategies
     Bar chart comparing different quantization approaches.
@@ -284,9 +284,16 @@ def generate_figure2():
                 "   - python scripts/run_quant_test.py method=permute_quant_repermute"
             )
             print()
-            response = (
-                input("Do you want to run these experiments? (y/N): ").strip().lower()
-            )
+
+            if non_interactive:
+                print("🚀 Non-interactive mode: Auto-proceeding with experiments...")
+                response = "y"
+            else:
+                response = (
+                    input("Do you want to run these experiments? (y/N): ")
+                    .strip()
+                    .lower()
+                )
 
             if response != "y":
                 print(
@@ -637,6 +644,12 @@ def main():
     parser.add_argument(
         "--quick", action="store_true", help="Quick mode for faster testing"
     )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Auto-confirm all prompts for non-interactive execution",
+    )
 
     args = parser.parse_args()
 
@@ -660,6 +673,8 @@ def main():
         print(f"\n🎨 Generating Figure {args.figure} only...")
         if args.figure == 1:
             success = generators[1](quick_mode=args.quick)
+        elif args.figure == 2:
+            success = generators[2](non_interactive=args.yes)
         else:
             success = generators[args.figure]()
 
@@ -673,6 +688,8 @@ def main():
         for fig_num, generator in generators.items():
             if fig_num == 1:
                 success = generator(quick_mode=args.quick)
+            elif fig_num == 2:
+                success = generator(non_interactive=args.yes)
             else:
                 success = generator()
 

@@ -1,7 +1,7 @@
 """
 Tests for Hardware-Native Differentiable Sparsity (HDS) module.
 
-Note: These tests import from 'src.co_design' which works because pytest
+Note: These tests import from 'co_design' which works because pytest
 is configured in pyproject.toml with 'pythonpath = ["src"]'. This allows
 importing the source modules directly without installing the package.
 If running tests outside pytest, ensure PYTHONPATH includes the src directory.
@@ -234,14 +234,14 @@ class TestApplyHDS:
         config = {"hds": {}}  # No target_layers
         dataloader = self.create_dummy_dataloader()
 
-        with patch("src.co_design.hds.logger") as mock_logger:
+        with patch("co_design.hds.logger") as mock_logger:
             result_model = apply_hds(model, dataloader, config)
             mock_logger.warning.assert_called_once()
 
         # Model should remain unchanged (no HDS applied)
         assert isinstance(result_model.linear, nn.Linear)  # Not HDSLinear
 
-    @patch("src.co_design.hds.tqdm")
+    @patch("co_design.hds.tqdm")
     def test_apply_hds_fine_tuning(self, mock_tqdm):
         """Test that apply_hds performs fine-tuning."""
 
