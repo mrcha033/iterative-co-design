@@ -35,7 +35,9 @@ class ClassificationTestModel(nn.Module):
 
     def forward(self, input_ids):
         # Take mean across sequence dimension to get 2D output
-        x = input_ids.float().mean(dim=1)  # (batch_size, seq_len, input_size) -> (batch_size, input_size)
+        x = input_ids.float().mean(
+            dim=1
+        )  # (batch_size, seq_len, input_size) -> (batch_size, input_size)
         hidden = self.encoder(x)  # (batch_size, hidden_size)
         logits = self.classifier(hidden)  # (batch_size, num_classes)
         return {"logits": logits}
@@ -316,8 +318,12 @@ class TestIASP:
 
         assert isinstance(correlation_matrix, np.ndarray)
         assert correlation_matrix.shape == (6, 6)  # hidden_size x hidden_size
-        assert np.allclose(np.diag(correlation_matrix), 1.0, atol=1e-6)  # Diagonal should be 1
-        assert np.allclose(correlation_matrix, correlation_matrix.T, atol=1e-6)  # Should be symmetric
+        assert np.allclose(
+            np.diag(correlation_matrix), 1.0, atol=1e-6
+        )  # Diagonal should be 1
+        assert np.allclose(
+            correlation_matrix, correlation_matrix.T, atol=1e-6
+        )  # Should be symmetric
 
     def test_get_activation_correlation_3d_activations(self):
         """Test activation correlation computation with 3D activations (sequence models)."""
@@ -340,8 +346,12 @@ class TestIASP:
 
         assert isinstance(correlation_matrix, np.ndarray)
         assert correlation_matrix.shape == (6, 6)  # hidden_size x hidden_size
-        assert np.allclose(np.diag(correlation_matrix), 1.0, atol=1e-6)  # Diagonal should be 1
-        assert np.allclose(correlation_matrix, correlation_matrix.T, atol=1e-6)  # Should be symmetric
+        assert np.allclose(
+            np.diag(correlation_matrix), 1.0, atol=1e-6
+        )  # Diagonal should be 1
+        assert np.allclose(
+            correlation_matrix, correlation_matrix.T, atol=1e-6
+        )  # Should be symmetric
 
     def test_get_activation_correlation_both_2d_3d_consistency(self):
         """Test that 2D and 3D activation handling produces consistent results."""
@@ -358,8 +368,12 @@ class TestIASP:
         model_3d.eval()
 
         batch_size = 2
-        input_data_2d = torch.randn(batch_size, 3, 4)  # Will be averaged to (batch_size, 4)
-        input_data_3d = torch.randn(batch_size, 1, 8)  # (batch_size, seq_len=1, hidden_size)
+        input_data_2d = torch.randn(
+            batch_size, 3, 4
+        )  # Will be averaged to (batch_size, 4)
+        input_data_3d = torch.randn(
+            batch_size, 1, 8
+        )  # (batch_size, seq_len=1, hidden_size)
 
         dataloader_2d = [{"input_ids": input_data_2d}]
         dataloader_3d = [{"input_ids": input_data_3d}]
@@ -397,6 +411,7 @@ class TestIASP:
         def mock_get_activation_correlation(*args, **kwargs):
             # Create mock activations with wrong dimensions (1D)
             import numpy as np
+
             mock_activations = [np.array([1, 2, 3, 4])]  # 1D array
 
             # Simulate the concatenation step that would happen
@@ -406,7 +421,9 @@ class TestIASP:
             if all_activations.ndim == 3:
                 # 3D case: (total_samples, seq_len, hidden_dim) -> (total_tokens, hidden_dim)
                 num_samples, seq_len, hidden_dim = all_activations.shape
-                all_activations_reshaped = all_activations.reshape(num_samples * seq_len, hidden_dim)
+                all_activations_reshaped = all_activations.reshape(
+                    num_samples * seq_len, hidden_dim
+                )
             elif all_activations.ndim == 2:
                 # 2D case: (total_samples, hidden_dim) - already in correct format
                 all_activations_reshaped = all_activations
@@ -419,7 +436,9 @@ class TestIASP:
             return np.corrcoef(all_activations_reshaped, rowvar=False)
 
         # Test the error case
-        with pytest.raises(ValueError, match="Expected 2D or 3D activations, but got 1D"):
+        with pytest.raises(
+            ValueError, match="Expected 2D or 3D activations, but got 1D"
+        ):
             mock_get_activation_correlation()
 
     def test_find_optimal_permutation_cpu_device(self):
@@ -429,21 +448,22 @@ class TestIASP:
 
         # Create a synthetic correlation matrix to avoid activation collection issues
         # Use a well-conditioned matrix that won't produce NaN values
-        correlation_matrix = np.array([
-            [1.0, 0.8, 0.2, 0.1, 0.0, 0.0, 0.0, 0.0],
-            [0.8, 1.0, 0.3, 0.2, 0.0, 0.0, 0.0, 0.0],
-            [0.2, 0.3, 1.0, 0.7, 0.1, 0.0, 0.0, 0.0],
-            [0.1, 0.2, 0.7, 1.0, 0.2, 0.0, 0.0, 0.0],
-            [0.0, 0.0, 0.1, 0.2, 1.0, 0.6, 0.1, 0.0],
-            [0.0, 0.0, 0.0, 0.0, 0.6, 1.0, 0.5, 0.2],
-            [0.0, 0.0, 0.0, 0.0, 0.1, 0.5, 1.0, 0.4],
-            [0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.4, 1.0],
-        ])
+        correlation_matrix = np.array(
+            [
+                [1.0, 0.8, 0.2, 0.1, 0.0, 0.0, 0.0, 0.0],
+                [0.8, 1.0, 0.3, 0.2, 0.0, 0.0, 0.0, 0.0],
+                [0.2, 0.3, 1.0, 0.7, 0.1, 0.0, 0.0, 0.0],
+                [0.1, 0.2, 0.7, 1.0, 0.2, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.1, 0.2, 1.0, 0.6, 0.1, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 0.6, 1.0, 0.5, 0.2],
+                [0.0, 0.0, 0.0, 0.0, 0.1, 0.5, 1.0, 0.4],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.4, 1.0],
+            ]
+        )
 
         # Test that the function works correctly (testing the algorithm, not device handling specifically)
         permutation = find_optimal_permutation_from_matrix(
-            correlation_matrix,
-            num_clusters=3
+            correlation_matrix, num_clusters=3
         )
 
         assert isinstance(permutation, list)

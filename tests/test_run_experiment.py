@@ -5,6 +5,7 @@ from unittest.mock import patch, MagicMock
 from omegaconf import OmegaConf
 from pathlib import Path
 import sys
+
 sys.path.append(str(Path(__file__).parent.parent / "scripts"))
 
 # Import the functions we want to test
@@ -37,7 +38,9 @@ class TestRunExperiment:
         nodes_per_cluster = d_model // cluster_step  # Should be 16 // 1 = 16
 
         assert cluster_step == 1, f"Expected cluster_step=1, got {cluster_step}"
-        assert nodes_per_cluster == 16, f"Expected nodes_per_cluster=16, got {nodes_per_cluster}"
+        assert nodes_per_cluster == 16, (
+            f"Expected nodes_per_cluster=16, got {nodes_per_cluster}"
+        )
 
         # Verify this works for various small d_model values
         for test_d_model in [8, 16, 24, 31]:
@@ -58,54 +61,44 @@ class TestRunExperiment:
         nodes_per_cluster = d_model // cluster_step  # Should be 768 // 24 = 32
 
         assert cluster_step == 24, f"Expected cluster_step=24, got {cluster_step}"
-        assert nodes_per_cluster == 32, f"Expected nodes_per_cluster=32, got {nodes_per_cluster}"
+        assert nodes_per_cluster == 32, (
+            f"Expected nodes_per_cluster=32, got {nodes_per_cluster}"
+        )
 
     def test_cleanup_configured_dry_run(self):
         """Test cleanup functionality in dry run mode."""
         # Create a mock config with cleanup settings
-        cfg = OmegaConf.create({
-            "cleanup": {
-                "base_dirs": ["outputs", "multirun"],
-                "max_age_days": 30
-            }
-        })
+        cfg = OmegaConf.create(
+            {"cleanup": {"base_dirs": ["outputs", "multirun"], "max_age_days": 30}}
+        )
 
         with patch("run_experiment.cleanup_old_runs") as mock_cleanup:
             run_cleanup_if_configured(cfg, dry_run=True)
 
             # Verify cleanup was called with dry_run=True
             mock_cleanup.assert_called_once_with(
-                base_dirs=["outputs", "multirun"],
-                max_age_days=30,
-                dry_run=True
+                base_dirs=["outputs", "multirun"], max_age_days=30, dry_run=True
             )
 
     def test_cleanup_configured_normal_run(self):
         """Test cleanup functionality in normal (non-dry-run) mode."""
         # Create a mock config with cleanup settings
-        cfg = OmegaConf.create({
-            "cleanup": {
-                "base_dirs": ["outputs"],
-                "max_age_days": 15
-            }
-        })
+        cfg = OmegaConf.create(
+            {"cleanup": {"base_dirs": ["outputs"], "max_age_days": 15}}
+        )
 
         with patch("run_experiment.cleanup_old_runs") as mock_cleanup:
             run_cleanup_if_configured(cfg, dry_run=False)
 
             # Verify cleanup was called with dry_run=False
             mock_cleanup.assert_called_once_with(
-                base_dirs=["outputs"],
-                max_age_days=15,
-                dry_run=False
+                base_dirs=["outputs"], max_age_days=15, dry_run=False
             )
 
     def test_cleanup_not_configured(self):
         """Test that cleanup is skipped when not configured."""
         # Create a config without cleanup settings
-        cfg = OmegaConf.create({
-            "other_setting": "value"
-        })
+        cfg = OmegaConf.create({"other_setting": "value"})
 
         with patch("run_experiment.cleanup_old_runs") as mock_cleanup:
             run_cleanup_if_configured(cfg, dry_run=False)
@@ -116,9 +109,7 @@ class TestRunExperiment:
     def test_cleanup_empty_config(self):
         """Test cleanup with empty cleanup config."""
         # Create a config with empty cleanup
-        cfg = OmegaConf.create({
-            "cleanup": None
-        })
+        cfg = OmegaConf.create({"cleanup": None})
 
         with patch("run_experiment.cleanup_old_runs") as mock_cleanup:
             run_cleanup_if_configured(cfg, dry_run=False)
@@ -128,16 +119,13 @@ class TestRunExperiment:
 
     def test_cleanup_exception_handling(self):
         """Test that cleanup exceptions are handled gracefully."""
-        cfg = OmegaConf.create({
-            "cleanup": {
-                "base_dirs": ["outputs"],
-                "max_age_days": 30
-            }
-        })
+        cfg = OmegaConf.create(
+            {"cleanup": {"base_dirs": ["outputs"], "max_age_days": 30}}
+        )
 
-        with patch("run_experiment.cleanup_old_runs") as mock_cleanup, \
-             patch("builtins.print") as mock_print:
-
+        with patch("run_experiment.cleanup_old_runs") as mock_cleanup, patch(
+            "builtins.print"
+        ) as mock_print:
             # Make cleanup raise an exception
             mock_cleanup.side_effect = Exception("Cleanup failed")
 

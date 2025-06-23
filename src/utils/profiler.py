@@ -232,7 +232,9 @@ class LatencyProfiler:
             metrics = {}
             for metric in self.ncu_metrics:
                 # Enhanced regex to support both decimal and scientific notation
-                pattern = f"{metric}\\s*,\\s*[\\w%]+\\s*,\\s*([\\d\\.]+(?:[eE][+-]?\\d+)?)"
+                pattern = (
+                    f"{metric}\\s*,\\s*[\\w%]+\\s*,\\s*([\\d\\.]+(?:[eE][+-]?\\d+)?)"
+                )
                 match = re.search(pattern, content)
                 if match:
                     metrics[metric] = float(match.group(1))

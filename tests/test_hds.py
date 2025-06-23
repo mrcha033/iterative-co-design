@@ -12,7 +12,7 @@ import torch.nn as nn
 import pytest
 from unittest.mock import patch
 
-from src.co_design.hds import gumbel_topk, HDSLinear, apply_hds, _replace_linear_with_hds
+from co_design.hds import gumbel_topk, HDSLinear, apply_hds, _replace_linear_with_hds
 
 
 class TestGumbelTopK:
@@ -47,7 +47,9 @@ class TestGumbelTopK:
 
         # Both should still select exactly k items
         assert torch.allclose(result_low_temp.sum(), torch.tensor(k, dtype=torch.float))
-        assert torch.allclose(result_high_temp.sum(), torch.tensor(k, dtype=torch.float))
+        assert torch.allclose(
+            result_high_temp.sum(), torch.tensor(k, dtype=torch.float)
+        )
 
     def test_gumbel_topk_gradient_flow(self):
         """Test that gradients can flow through gumbel_topk."""
@@ -125,11 +127,7 @@ class TestApplyHDS:
     def create_dummy_model(self):
         """Create a dummy model for testing."""
         model = nn.Sequential(
-            nn.Linear(10, 8),
-            nn.ReLU(),
-            nn.Linear(8, 6),
-            nn.ReLU(),
-            nn.Linear(6, 2)
+            nn.Linear(10, 8), nn.ReLU(), nn.Linear(8, 6), nn.ReLU(), nn.Linear(6, 2)
         )
         return model
 
@@ -153,9 +151,9 @@ class TestApplyHDS:
 
             def __getitem__(self, idx):
                 return {
-                    'input_ids': self.input_ids[idx],
-                    'attention_mask': self.attention_mask[idx],
-                    'labels': self.labels[idx]
+                    "input_ids": self.input_ids[idx],
+                    "attention_mask": self.attention_mask[idx],
+                    "labels": self.labels[idx],
                 }
 
         dataset = DummyDataset(input_ids, attention_mask, labels)
@@ -168,7 +166,7 @@ class TestApplyHDS:
         hds_config = {
             "target_layers": ["0", "2"],  # First and third layers
             "n": 2,
-            "m": 4
+            "m": 4,
         }
 
         _replace_linear_with_hds(model, hds_config)
@@ -181,18 +179,21 @@ class TestApplyHDS:
 
     def test_replace_linear_with_hds_wildcard_patterns(self):
         """Test wildcard pattern matching for layer replacement."""
+
         class TestModel(nn.Module):
             def __init__(self):
                 super().__init__()
-                self.encoder = nn.ModuleDict({
-                    'layer1': nn.Linear(10, 8),
-                    'layer2': nn.Linear(8, 6),
-                })
+                self.encoder = nn.ModuleDict(
+                    {
+                        "layer1": nn.Linear(10, 8),
+                        "layer2": nn.Linear(8, 6),
+                    }
+                )
                 self.decoder = nn.Linear(6, 2)
 
             def forward(self, x):
-                x = self.encoder['layer1'](x)
-                x = self.encoder['layer2'](x)
+                x = self.encoder["layer1"](x)
+                x = self.encoder["layer2"](x)
                 return self.decoder(x)
 
         model = TestModel()
@@ -200,19 +201,20 @@ class TestApplyHDS:
         hds_config = {
             "target_layers": ["encoder.*"],  # All encoder layers
             "n": 2,
-            "m": 4
+            "m": 4,
         }
 
         _replace_linear_with_hds(model, hds_config)
 
         # Check that encoder layers are replaced
-        assert isinstance(model.encoder['layer1'], HDSLinear)
-        assert isinstance(model.encoder['layer2'], HDSLinear)
+        assert isinstance(model.encoder["layer1"], HDSLinear)
+        assert isinstance(model.encoder["layer2"], HDSLinear)
         # Decoder should remain unchanged
         assert isinstance(model.decoder, nn.Linear)
 
     def test_apply_hds_no_target_layers(self):
         """Test apply_hds with no target layers specified."""
+
         # Create a mock model that accepts the expected arguments
         class MockModel(nn.Module):
             def __init__(self):
@@ -224,7 +226,7 @@ class TestApplyHDS:
                 output = self.linear(input_ids.float())
                 if labels is not None:
                     loss = nn.functional.mse_loss(output, labels.float())
-                    return type('obj', (object,), {'loss': loss})()
+                    return type("obj", (object,), {"loss": loss})()
                 return output
 
         model = MockModel()
@@ -232,16 +234,17 @@ class TestApplyHDS:
         config = {"hds": {}}  # No target_layers
         dataloader = self.create_dummy_dataloader()
 
-        with patch('src.co_design.hds.logger') as mock_logger:
+        with patch("src.co_design.hds.logger") as mock_logger:
             result_model = apply_hds(model, dataloader, config)
             mock_logger.warning.assert_called_once()
 
         # Model should remain unchanged (no HDS applied)
         assert isinstance(result_model.linear, nn.Linear)  # Not HDSLinear
 
-    @patch('src.co_design.hds.tqdm')
+    @patch("src.co_design.hds.tqdm")
     def test_apply_hds_fine_tuning(self, mock_tqdm):
         """Test that apply_hds performs fine-tuning."""
+
         # Create a simple model with a mock forward method
         class MockModel(nn.Module):
             def __init__(self):
@@ -253,7 +256,7 @@ class TestApplyHDS:
                 output = self.linear(input_ids.float())
                 if labels is not None:
                     loss = nn.functional.mse_loss(output, labels.float())
-                    return type('obj', (object,), {'loss': loss})()
+                    return type("obj", (object,), {"loss": loss})()
                 return output
 
         model = MockModel()
@@ -263,9 +266,9 @@ class TestApplyHDS:
                 "target_layers": ["linear"],
                 "fine_tuning_epochs": 1,
                 "n": 1,
-                "m": 2
+                "m": 2,
             },
-            "learning_rate": 1e-3
+            "learning_rate": 1e-3,
         }
 
         dataloader = self.create_dummy_dataloader()
@@ -280,6 +283,7 @@ class TestApplyHDS:
 
     def test_apply_hds_with_dataset_learning_rate(self):
         """Test that dataset-specific learning rate is used when available."""
+
         # Create a mock model that accepts the expected arguments
         class MockModel(nn.Module):
             def __init__(self):
@@ -291,30 +295,27 @@ class TestApplyHDS:
                 output = self.linear(input_ids.float())
                 if labels is not None:
                     loss = nn.functional.mse_loss(output, labels.float())
-                    return type('obj', (object,), {'loss': loss})()
+                    return type("obj", (object,), {"loss": loss})()
                 return output
 
         model = MockModel()
 
         config = {
-            "hds": {
-                "target_layers": ["linear"],
-                "fine_tuning_epochs": 1
-            },
+            "hds": {"target_layers": ["linear"], "fine_tuning_epochs": 1},
             "learning_rate": 1e-3,
             "dataset": {
                 "learning_rate": 1e-4  # This should take precedence
-            }
+            },
         }
 
         dataloader = self.create_dummy_dataloader()
 
-        with patch('torch.optim.AdamW') as mock_optimizer:
+        with patch("torch.optim.AdamW") as mock_optimizer:
             apply_hds(model, dataloader, config)
             # Check that the dataset learning rate was used
             mock_optimizer.assert_called_once()
             args, kwargs = mock_optimizer.call_args
-            assert kwargs['lr'] == 1e-4
+            assert kwargs["lr"] == 1e-4
 
 
 if __name__ == "__main__":

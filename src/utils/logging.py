@@ -14,11 +14,11 @@ def setup_logging(cfg: DictConfig, level: str = "INFO") -> None:
     # Setup basic logging
     logging.basicConfig(
         level=getattr(logging, level.upper()),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
     # Initialize W&B if configured
-    if hasattr(cfg, 'wandb'):
+    if hasattr(cfg, "wandb"):
         initialize_wandb(cfg)
 
 
@@ -35,14 +35,14 @@ def initialize_wandb(cfg: DictConfig):
     wandb_mode = OmegaConf.select(cfg, "wandb.mode", default="online")
 
     if wandb_mode == "disabled":
-        print("?“Š W&B logging disabled by configuration")
+        print("ðŸš« W&B logging disabled by configuration")
         wandb.init(mode="disabled")
         return
 
     # Sanitize the config for wandb
     config_dict = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
 
-    print(f"?“Š Initializing W&B logging in {wandb_mode} mode")
+    print(f"ðŸ“Š Initializing W&B logging in {wandb_mode} mode")
     wandb.init(
         project=cfg.project_name,
         config=config_dict,

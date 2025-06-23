@@ -95,7 +95,9 @@ class TestModelWrapper:
         try:
             wrapped.permute_model_weights(invalid_permutation)
             # If we get here without an exception, the test should fail
-            assert False, "Expected an error for invalid permutation length, but none was raised"
+            assert False, (
+                "Expected an error for invalid permutation length, but none was raised"
+            )
         except (IndexError, RuntimeError, ValueError):
             # This is the expected behavior for invalid permutation
             pass

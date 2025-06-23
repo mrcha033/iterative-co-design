@@ -103,7 +103,7 @@ def get_model_and_data(cfg: DictConfig):
         format_columns.append("label")
     elif "labels" in tokenized_dataset.column_names:
         format_columns.append("labels")
-    
+
     # Add text column if it exists for perplexity calculation
     if cfg.dataset.text_column in tokenized_dataset.column_names:
         format_columns.append(cfg.dataset.text_column)
@@ -438,7 +438,7 @@ def run_iterative(cfg: DictConfig):
 
 def run_cleanup_if_configured(cfg: DictConfig, dry_run: bool = False):
     """Run cleanup of old runs if configured, respecting dry_run flag."""
-    if hasattr(cfg, 'cleanup') and cfg.cleanup:
+    if hasattr(cfg, "cleanup") and cfg.cleanup:
         try:
             print("🧹 Running cleanup of old experiment outputs...")
             cleanup_old_runs(

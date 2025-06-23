@@ -114,7 +114,9 @@ def get_activation_correlation(
         all_activations_reshaped = all_activations.reshape(
             num_samples * seq_len, hidden_dim
         )
-        logger.info(f"Reshaped 3D activations from {all_activations.shape} to {all_activations_reshaped.shape}")
+        logger.info(
+            f"Reshaped 3D activations from {all_activations.shape} to {all_activations_reshaped.shape}"
+        )
     elif all_activations.ndim == 2:
         # 2D case: (total_samples, hidden_dim) - already in correct format
         all_activations_reshaped = all_activations
@@ -130,7 +132,9 @@ def get_activation_correlation(
 
     # Handle NaNs that can occur from constant activation dimensions
     if np.any(np.isnan(correlation_matrix)):
-        logger.warning("Found NaN values in correlation matrix, likely due to constant activations. Replacing with identity matrix.")
+        logger.warning(
+            "Found NaN values in correlation matrix, likely due to constant activations. Replacing with identity matrix."
+        )
         # Replace NaN values with 0 correlations, except diagonal which should be 1
         correlation_matrix = np.nan_to_num(correlation_matrix, nan=0.0)
         np.fill_diagonal(correlation_matrix, 1.0)
