@@ -1,5 +1,25 @@
 import wandb
+import logging
 from omegaconf import DictConfig, OmegaConf
+
+
+def setup_logging(cfg: DictConfig, level: str = "INFO") -> None:
+    """
+    Setup logging configuration and optionally initialize W&B.
+    
+    Args:
+        cfg: Configuration object
+        level: Logging level (DEBUG, INFO, WARNING, ERROR)
+    """
+    # Setup basic logging
+    logging.basicConfig(
+        level=getattr(logging, level.upper()),
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    # Initialize W&B if configured
+    if hasattr(cfg, 'wandb'):
+        initialize_wandb(cfg)
 
 
 def initialize_wandb(cfg: DictConfig):

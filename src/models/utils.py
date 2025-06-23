@@ -7,12 +7,23 @@ the core permutation and optimization functionality used throughout the
 iterative co-design framework.
 
 Key functions:
-- apply_permutation_to_tensor: Apply permutation transformations to tensors
+- permute_tensor: Apply permutation transformations to tensors
+- get_device: Get appropriate device (CPU/GPU) for model operations
 - Tensor validation and error handling utilities
 - Device-aware tensor operations for model optimization
 """
 
 import torch
+
+
+def get_device() -> torch.device:
+    """
+    Get the appropriate device (CPU/GPU) for model operations.
+    
+    Returns:
+        torch.device: The best available device (CUDA if available, else CPU)
+    """
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def permute_tensor(tensor: torch.Tensor, permutation: torch.Tensor) -> torch.Tensor:
