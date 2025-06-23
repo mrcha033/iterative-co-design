@@ -1,4 +1,4 @@
-﻿tasks.md: A Step-by-Step Implementation Plan
+tasks.md: A Step-by-Step Implementation Plan
 
 This document breaks down the implementation of the "Iterative Co-Design" project into granular, verifiable tasks. Each task is designed to be a single, indivisible unit of work with a clear verification step.
 

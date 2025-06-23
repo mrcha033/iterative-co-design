@@ -1,11 +1,8 @@
 """Tests for the run_experiment.py script, including division by zero fixes."""
 
-import pytest
-import torch
 import torch.nn as nn
 from unittest.mock import patch, MagicMock
-from omegaconf import DictConfig, OmegaConf
-import tempfile
+from omegaconf import OmegaConf
 from pathlib import Path
 import sys
 sys.path.append(str(Path(__file__).parent.parent / "scripts"))

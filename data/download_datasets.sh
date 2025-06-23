@@ -1,4 +1,4 @@
-﻿#!/bin/bash
+#!/bin/bash
 # This script downloads the required datasets using the Hugging Face datasets library
 # with aria2c for faster downloads and proper caching.
 

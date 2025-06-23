@@ -10,8 +10,7 @@ If running tests outside pytest, ensure PYTHONPATH includes the src directory.
 import torch
 import torch.nn as nn
 import pytest
-from unittest.mock import MagicMock, patch
-from torch.utils.data import DataLoader, TensorDataset
+from unittest.mock import patch
 
 from src.co_design.hds import gumbel_topk, HDSLinear, apply_hds, _replace_linear_with_hds
 
@@ -160,7 +159,7 @@ class TestApplyHDS:
                 }
         
         dataset = DummyDataset(input_ids, attention_mask, labels)
-        return DataLoader(dataset, batch_size=4)
+        return torch.utils.data.DataLoader(dataset, batch_size=4)
 
     def test_replace_linear_with_hds(self):
         """Test that linear layers are correctly replaced with HDSLinear."""
@@ -229,7 +228,6 @@ class TestApplyHDS:
                 return output
         
         model = MockModel()
-        original_param = list(model.parameters())[0].clone()
         
         config = {"hds": {}}  # No target_layers
         dataloader = self.create_dummy_dataloader()
