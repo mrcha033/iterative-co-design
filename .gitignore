@@ -142,6 +142,4 @@ cython_debug/
 outputs/
 *.pt
 ncu_output.txt
-paper.md
-structure.md
-tasks.md 
+paper.md 

@@ -1,4 +1,4 @@
-﻿#!/bin/bash
+#!/bin/bash
 # This script downloads the required datasets using the Hugging Face datasets library
 # with aria2c for faster downloads and proper caching.
 
@@ -42,7 +42,7 @@ if [ "$HELP" = true ]; then
     echo ""
     echo "SUPPORTED PACKAGE MANAGERS:"
     echo "  - apt-get (Ubuntu/Debian)"
-    echo "  - yum (CentOS/RHEL)" 
+    echo "  - yum (CentOS/RHEL)"
     echo "  - brew (macOS)"
     echo "  - conda"
     exit 0
@@ -157,4 +157,4 @@ config.HF_DATASETS_CACHE = '$HF_HOME/datasets'
 load_dataset('glue', 'sst2', cache_dir='$HF_HOME/datasets')
 "
 
-echo "✅ All datasets downloaded and cached in $HF_HOME/datasets"
+echo "✅ All datasets downloaded and cached in $HF_HOME/datasets" 

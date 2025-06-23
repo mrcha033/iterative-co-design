@@ -1,4 +1,4 @@
-﻿site_name: Iterative Co-Design
+site_name: Iterative Co-Design
 theme:
   name: material
   palette:
@@ -38,5 +38,3 @@ nav:
     - 'Co-Design Algorithms': 'api/co_design.md'
     - 'Models': 'api/models.md'
     - 'Utilities': 'api/utils.md' 
-
-

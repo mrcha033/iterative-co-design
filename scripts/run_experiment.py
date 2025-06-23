@@ -97,8 +97,13 @@ def get_model_and_data(cfg: DictConfig):
     format_columns = [
         "input_ids",
         "attention_mask",
-        "label" if "label" in tokenized_dataset.column_names else "labels",
     ]
+    # Add label column if it exists
+    if "label" in tokenized_dataset.column_names:
+        format_columns.append("label")
+    elif "labels" in tokenized_dataset.column_names:
+        format_columns.append("labels")
+    
     # Add text column if it exists for perplexity calculation
     if cfg.dataset.text_column in tokenized_dataset.column_names:
         format_columns.append(cfg.dataset.text_column)

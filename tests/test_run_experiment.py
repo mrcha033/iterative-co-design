@@ -145,5 +145,5 @@ class TestRunExperiment:
             run_cleanup_if_configured(cfg, dry_run=False)
 
             # Verify error message was printed
-            mock_print.assert_any_call("?�️  Cleanup failed: Cleanup failed")
+            mock_print.assert_any_call("⚠️  Cleanup failed: Cleanup failed")
             mock_print.assert_any_call("Continuing with experiment...")
