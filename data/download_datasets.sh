@@ -65,7 +65,7 @@ has_sudo() {
 # Function to warn about sudo operations
 warn_sudo_operation() {
     echo ""
-    echo "?좑툘  WARNING: SUDO OPERATION REQUIRED ?좑툘"
+    echo "⚠️  WARNING: SUDO OPERATION REQUIRED ⚠️"
     echo "This script needs to install aria2 using your system package manager."
     echo "This requires administrative privileges (sudo access)."
     echo ""
@@ -94,7 +94,7 @@ if ! command -v aria2c &> /dev/null; then
     
     if [ "$INSTALL_ARIA2" = false ]; then
         echo ""
-        echo "?뮕 For faster downloads, consider installing aria2:"
+        echo "💡 For faster downloads, consider installing aria2:"
         echo "   - Run with --install-aria2 flag to attempt automatic installation"
         echo "   - Or install manually: sudo apt-get install aria2 (Ubuntu/Debian)"
         echo "   - Or use conda: conda install -c conda-forge aria2"
@@ -120,7 +120,7 @@ if ! command -v aria2c &> /dev/null; then
             echo "Installing aria2 with conda (no sudo required)..."
             conda install -c conda-forge aria2 -y
         else
-            echo "?좑툘  Cannot install aria2 automatically. Supported package managers:"
+            echo "⚠️  Cannot install aria2 automatically. Supported package managers:"
             echo "   - apt-get (Ubuntu/Debian): sudo apt-get install aria2"
             echo "   - yum (CentOS/RHEL): sudo yum install aria2"
             echo "   - brew (macOS): brew install aria2"
@@ -133,11 +133,11 @@ fi
 
 # Configure aria2c if available
 if command -v aria2c &> /dev/null; then
-    echo "??Using aria2c for faster downloads"
+    echo "⚡ Using aria2c for faster downloads"
     export HF_DATASETS_DOWNLOAD_MANAGER_TYPE="aria2c"
     export HF_DATASETS_ARIA2C_OPTS="--max-concurrent-downloads=8 --max-connection-per-server=8 --min-split-size=1M"
 else
-    echo "?뱻 Using standard HTTP downloads (slower)"
+    echo "📥 Using standard HTTP downloads (slower)"
 fi
 
 echo "Using cache directory: $HF_HOME"
@@ -157,6 +157,6 @@ config.HF_DATASETS_CACHE = '$HF_HOME/datasets'
 load_dataset('glue', 'sst2', cache_dir='$HF_HOME/datasets')
 "
 
-echo "??All datasets downloaded and cached in $HF_HOME/datasets" 
+echo "✅ All datasets downloaded and cached in $HF_HOME/datasets" 
 
 

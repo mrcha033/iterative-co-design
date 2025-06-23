@@ -1,5 +1,10 @@
 """
 Tests for Hardware-Native Differentiable Sparsity (HDS) module.
+
+Note: These tests import from 'src.co_design' which works because pytest
+is configured in pyproject.toml with 'pythonpath = ["src"]'. This allows
+importing the source modules directly without installing the package.
+If running tests outside pytest, ensure PYTHONPATH includes the src directory.
 """
 
 import torch
