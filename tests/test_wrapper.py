@@ -84,23 +84,20 @@ class TestModelWrapper:
         )
 
     def test_permutation_validation(self):
-        """Test that invalid permutations are handled."""
+        """Test that invalid permutations are properly rejected."""
         model = SimpleModel(d_model=8)
         wrapped = ModelWrapper(model)
 
         # Test with wrong length permutation
-        invalid_permutation = [0, 1, 2, 3]  # Too short
+        invalid_permutation = [0, 1, 2, 3]  # Too short for d_model=8
 
-        # This should either raise an error or handle gracefully
-        # Depending on implementation, test accordingly
+        # Invalid permutation should raise an error
         try:
             wrapped.permute_model_weights(invalid_permutation)
-            # If no error, check that model still works
-            input_ids = torch.randint(0, 100, (1, 5))
-            output = wrapped(input_ids)
-            assert "logits" in output
+            # If we get here without an exception, the test should fail
+            assert False, "Expected an error for invalid permutation length, but none was raised"
         except (IndexError, RuntimeError, ValueError):
-            # Expected behavior for invalid permutation
+            # This is the expected behavior for invalid permutation
             pass
 
     def test_device_handling(self):

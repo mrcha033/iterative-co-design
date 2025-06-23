@@ -111,7 +111,7 @@ def generate_figure1(quick_mode=False):
         profiler = LatencyProfiler()
 
         # Create dummy input
-        dummy_input = torch.randint(0, 50280, (1, 512))  # Mamba vocab size
+        dummy_input = torch.randint(0, 50277, (1, 512))  # Mamba vocab size
         dummy_input_dict = {"input_ids": dummy_input}
         if torch.cuda.is_available():
             dummy_input_dict = {k: v.cuda() for k, v in dummy_input_dict.items()}
