@@ -131,10 +131,10 @@ def config_to_namespace(config: Dict[str, Any]) -> object:
 def load_config(config_path: Union[str, Path]) -> Dict[str, Any]:
     """
     Load a configuration file. Convenience wrapper for load_yaml_config.
-    
+
     Args:
         config_path: Path to the YAML configuration file
-    
+
     Returns:
         Dictionary containing the configuration data
     """

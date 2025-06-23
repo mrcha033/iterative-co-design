@@ -30,7 +30,7 @@ class TestGumbelTopK:
         logits = torch.randn(2, 8)
         k = 3
         result = gumbel_topk(logits, k)
-        
+
         # Count selected items (should be exactly k per row)
         selected_counts = result.sum(dim=-1)
         assert torch.allclose(selected_counts, torch.tensor(k, dtype=torch.float))
@@ -40,11 +40,11 @@ class TestGumbelTopK:
         torch.manual_seed(42)  # For reproducibility
         logits = torch.randn(1, 10)
         k = 3
-        
+
         # Test with different temperatures
         result_low_temp = gumbel_topk(logits, k, temperature=0.1)
         result_high_temp = gumbel_topk(logits, k, temperature=10.0)
-        
+
         # Both should still select exactly k items
         assert torch.allclose(result_low_temp.sum(), torch.tensor(k, dtype=torch.float))
         assert torch.allclose(result_high_temp.sum(), torch.tensor(k, dtype=torch.float))
@@ -54,11 +54,11 @@ class TestGumbelTopK:
         logits = torch.randn(2, 6, requires_grad=True)
         k = 2
         result = gumbel_topk(logits, k)
-        
+
         # Compute a dummy loss and backpropagate
         loss = result.sum()
         loss.backward()
-        
+
         # Check that gradients exist
         assert logits.grad is not None
         assert logits.grad.shape == logits.shape
@@ -71,7 +71,7 @@ class TestHDSLinear:
         """Test HDSLinear initialization with different configurations."""
         linear = nn.Linear(12, 8)
         hds_linear = HDSLinear(linear, n=2, m=4)
-        
+
         assert hds_linear.n == 2
         assert hds_linear.m == 4
         assert hds_linear.in_features == 12
@@ -82,7 +82,7 @@ class TestHDSLinear:
         """Test HDSLinear initialization when padding is needed."""
         linear = nn.Linear(10, 6)  # 10 is not divisible by 4
         hds_linear = HDSLinear(linear, n=2, m=4)
-        
+
         assert hds_linear.padding == 2  # Need 2 more to make 12
         assert hds_linear.scores.shape == (6, 12)  # Padded dimension
 
@@ -90,17 +90,17 @@ class TestHDSLinear:
         """Test forward pass through HDSLinear."""
         linear = nn.Linear(8, 4)
         hds_linear = HDSLinear(linear, n=2, m=4)
-        
+
         x = torch.randn(3, 8)
         output = hds_linear(x)
-        
+
         assert output.shape == (3, 4)
 
     def test_sparsity_mask_shape(self):
         """Test that sparsity mask has correct shape."""
         linear = nn.Linear(12, 6)
         hds_linear = HDSLinear(linear, n=3, m=4)
-        
+
         mask = hds_linear.get_sparsity_mask()
         assert mask.shape == (6, 12)
 
@@ -108,13 +108,13 @@ class TestHDSLinear:
         """Test that sparsity mask satisfies N:M constraint."""
         linear = nn.Linear(8, 2)
         hds_linear = HDSLinear(linear, n=2, m=4)
-        
+
         mask = hds_linear.get_sparsity_mask()
-        
+
         # Reshape to check N:M constraint
         reshaped_mask = mask.view(2, 2, 4)  # (out_features, groups, m)
         selected_per_group = reshaped_mask.sum(dim=-1)
-        
+
         # Each group should have exactly n=2 selected items
         assert torch.allclose(selected_per_group, torch.tensor(2.0))
 
@@ -140,39 +140,39 @@ class TestApplyHDS:
         input_ids = torch.randint(0, 100, (20, 8))  # Match input dimension
         attention_mask = torch.ones(20, 8)
         labels = torch.randint(0, 2, (20, 2))  # Match output dimension
-        
+
         # Create a custom dataset that returns dictionaries
         class DummyDataset(torch.utils.data.Dataset):
             def __init__(self, input_ids, attention_mask, labels):
                 self.input_ids = input_ids
                 self.attention_mask = attention_mask
                 self.labels = labels
-            
+
             def __len__(self):
                 return len(self.input_ids)
-            
+
             def __getitem__(self, idx):
                 return {
                     'input_ids': self.input_ids[idx],
                     'attention_mask': self.attention_mask[idx],
                     'labels': self.labels[idx]
                 }
-        
+
         dataset = DummyDataset(input_ids, attention_mask, labels)
         return torch.utils.data.DataLoader(dataset, batch_size=4)
 
     def test_replace_linear_with_hds(self):
         """Test that linear layers are correctly replaced with HDSLinear."""
         model = self.create_dummy_model()
-        
+
         hds_config = {
             "target_layers": ["0", "2"],  # First and third layers
             "n": 2,
             "m": 4
         }
-        
+
         _replace_linear_with_hds(model, hds_config)
-        
+
         # Check that specified layers are now HDSLinear
         assert isinstance(model[0], HDSLinear)
         assert isinstance(model[2], HDSLinear)
@@ -189,22 +189,22 @@ class TestApplyHDS:
                     'layer2': nn.Linear(8, 6),
                 })
                 self.decoder = nn.Linear(6, 2)
-            
+
             def forward(self, x):
                 x = self.encoder['layer1'](x)
                 x = self.encoder['layer2'](x)
                 return self.decoder(x)
-        
+
         model = TestModel()
-        
+
         hds_config = {
             "target_layers": ["encoder.*"],  # All encoder layers
             "n": 2,
             "m": 4
         }
-        
+
         _replace_linear_with_hds(model, hds_config)
-        
+
         # Check that encoder layers are replaced
         assert isinstance(model.encoder['layer1'], HDSLinear)
         assert isinstance(model.encoder['layer2'], HDSLinear)
@@ -218,7 +218,7 @@ class TestApplyHDS:
             def __init__(self):
                 super().__init__()
                 self.linear = nn.Linear(8, 2)  # Match input/output dimensions
-            
+
             def forward(self, input_ids, attention_mask=None, labels=None):
                 # Simple mock forward that returns a loss
                 output = self.linear(input_ids.float())
@@ -226,16 +226,16 @@ class TestApplyHDS:
                     loss = nn.functional.mse_loss(output, labels.float())
                     return type('obj', (object,), {'loss': loss})()
                 return output
-        
+
         model = MockModel()
-        
+
         config = {"hds": {}}  # No target_layers
         dataloader = self.create_dummy_dataloader()
-        
+
         with patch('src.co_design.hds.logger') as mock_logger:
             result_model = apply_hds(model, dataloader, config)
             mock_logger.warning.assert_called_once()
-        
+
         # Model should remain unchanged (no HDS applied)
         assert isinstance(result_model.linear, nn.Linear)  # Not HDSLinear
 
@@ -247,7 +247,7 @@ class TestApplyHDS:
             def __init__(self):
                 super().__init__()
                 self.linear = nn.Linear(8, 2)  # Match input/output dimensions
-            
+
             def forward(self, input_ids, attention_mask=None, labels=None):
                 # Simple mock forward that returns a loss
                 output = self.linear(input_ids.float())
@@ -255,9 +255,9 @@ class TestApplyHDS:
                     loss = nn.functional.mse_loss(output, labels.float())
                     return type('obj', (object,), {'loss': loss})()
                 return output
-        
+
         model = MockModel()
-        
+
         config = {
             "hds": {
                 "target_layers": ["linear"],
@@ -267,14 +267,14 @@ class TestApplyHDS:
             },
             "learning_rate": 1e-3
         }
-        
+
         dataloader = self.create_dummy_dataloader()
-        
+
         # Mock tqdm to avoid progress bar output
         mock_tqdm.return_value = dataloader
-        
+
         result_model = apply_hds(model, dataloader, config)
-        
+
         # Check that the model was modified (HDSLinear wrapper added)
         assert isinstance(result_model.linear, HDSLinear)
 
@@ -285,7 +285,7 @@ class TestApplyHDS:
             def __init__(self):
                 super().__init__()
                 self.linear = nn.Linear(8, 2)  # Match input/output dimensions
-            
+
             def forward(self, input_ids, attention_mask=None, labels=None):
                 # Simple mock forward that returns a loss
                 output = self.linear(input_ids.float())
@@ -293,9 +293,9 @@ class TestApplyHDS:
                     loss = nn.functional.mse_loss(output, labels.float())
                     return type('obj', (object,), {'loss': loss})()
                 return output
-        
+
         model = MockModel()
-        
+
         config = {
             "hds": {
                 "target_layers": ["linear"],
@@ -306,9 +306,9 @@ class TestApplyHDS:
                 "learning_rate": 1e-4  # This should take precedence
             }
         }
-        
+
         dataloader = self.create_dummy_dataloader()
-        
+
         with patch('torch.optim.AdamW') as mock_optimizer:
             apply_hds(model, dataloader, config)
             # Check that the dataset learning rate was used
@@ -318,4 +318,4 @@ class TestApplyHDS:
 
 
 if __name__ == "__main__":
-    pytest.main([__file__]) 
+    pytest.main([__file__])

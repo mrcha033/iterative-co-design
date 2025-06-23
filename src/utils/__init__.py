@@ -15,7 +15,7 @@ from .cleanup import cleanup_old_runs
 __all__ = [
     "load_config",
     "calculate_task_metric",
-    "calculate_perplexity", 
+    "calculate_perplexity",
     "calculate_accuracy",
     "setup_logging",
     "LatencyProfiler",

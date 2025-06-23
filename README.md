@@ -15,7 +15,8 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 ## 🏆 Code Quality & Reliability
 
 This repository maintains high code quality standards with:
-- ✅ **Comprehensive test coverage** (41 tests across all modules)
+
+- ✅ **Comprehensive test coverage** (71 tests across all modules)
 - ✅ **Deterministic caching** for reproducible results
 - ✅ **Multi-Python support** (3.8, 3.9, 3.10, 3.11)
 - ✅ **Automated linting** with ruff format + check
@@ -25,8 +26,9 @@ This repository maintains high code quality standards with:
 ## ✨ Recent Improvements
 
 **All issues resolved as of latest update:**
+
 - ✅ **Module-level docstrings added** to all core modules for better documentation
-- ✅ **Dry-run functionality implemented** - use `dry_run=true` to preview experiment operations 
+- ✅ **Dry-run functionality implemented** - use `dry_run=true` to preview experiment operations
 - ✅ **Code formatting standardized** with ruff for consistent style across codebase
 - ✅ **Python 3.8 compatibility fixed** - replaced modern type annotations with backward-compatible versions
 - ✅ **Import path inconsistencies resolved** - scripts now work in both development and installed environments
@@ -98,7 +100,7 @@ pytest tests/test_config.py::TestConfigLoader::test_load_yaml_config_basic -v
 
 #### Troubleshooting Installation Issues
 
-**Error: "Could not find a version that satisfies the requirement numpy==X.X.X"**
+##### Error: "Could not find a version that satisfies the requirement numpy==X.X.X"
 
 This usually means your Python version or pip is too old. The project now uses flexible version requirements for better compatibility:
 
@@ -123,9 +125,10 @@ This usually means your Python version or pip is too old. The project now uses f
    pip install -e . --no-deps
    ```
 
-**Error: "No module named 'src'"**
+##### Error: "No module named 'src'"
 
 **Fixed!** All user-facing scripts now use correct import paths that work both in development and after package installation. If you encounter this error with older versions, make sure to:
+
 ```bash
 export PYTHONPATH=$(pwd)  # On Windows: set PYTHONPATH=%cd%
 # OR (recommended)
@@ -139,11 +142,13 @@ The scripts in `scripts/` automatically use the correct package structure (`util
 The required datasets (`wikitext-103-raw-v1` and `sst2`) are downloaded and cached automatically by the `datasets` library when you run an experiment for the first time. Alternatively, you can pre-download them using the provided script.
 
 On Linux or macOS:
+
 ```bash
 bash data/download_datasets.sh
 ```
 
 **⚠️ SECURITY NOTE for data/download_datasets.sh:**
+
 - The script may attempt to install `aria2` using system package managers (apt-get, yum)
 - This could require `sudo` privileges for system-wide installation
 - **Use `--install-aria2` flag to explicitly consent to potential sudo operations**
@@ -158,6 +163,7 @@ bash data/download_datasets.sh --help
 ```
 
 On Windows (or as an alternative):
+
 ```bash
 python -c "from datasets import load_dataset; load_dataset('wikitext', 'wikitext-103-raw-v1')"
 python -c "from datasets import load_dataset; load_dataset('glue', 'sst2')"
@@ -174,6 +180,28 @@ For complete licensing details, see [`data/LICENSES.md`](data/LICENSES.md).
 
 ---
 
+## Responsible Use
+
+This research focuses on performance optimization techniques for neural networks. While the methods are generally applicable, users should be aware of the following considerations:
+
+**Intended Use**: This codebase is designed for academic research and development of more efficient AI systems. The optimization techniques (sparsity and memory layout) are intended to reduce computational costs and energy consumption.
+
+**Limitations & Biases**:
+
+- Performance improvements may vary significantly across different model architectures, hardware configurations, and datasets
+- The evaluation focuses on specific model families (BERT, Mamba) and tasks (sentiment analysis, language modeling) - results may not generalize to all domains
+- Dataset biases present in SST-2 and WikiText-103 may be preserved or amplified through optimization
+
+**Ethical Considerations**:
+
+- More efficient models can democratize access to AI capabilities, but may also lower barriers to potentially harmful applications
+- Users should evaluate the appropriateness of optimized models for their specific use cases
+- When deploying optimized models, consider the same ethical guidelines that apply to the base models
+
+**Dual Use**: While optimization techniques themselves are neutral, they could potentially be used to make both beneficial and harmful AI systems more efficient. Users are responsible for ensuring their applications align with ethical AI principles.
+
+---
+
 ## Running Experiments
 
 All experiments are orchestrated through the main runner script, `scripts/run_experiment.py`.
@@ -181,6 +209,7 @@ All experiments are orchestrated through the main runner script, `scripts/run_ex
 ### Basic Usage
 
 The script uses Hydra for configuration management. Specify configurations using the `key=value` format:
+
 - `model=<model_config>`: The model configuration name (e.g., `mamba_3b`, `bert_base`).
 - `dataset=<dataset_config>`: The dataset configuration name (e.g., `wikitext103`, `sst2`).
 - `method=<method_name>`: The experimental condition to run.
@@ -216,29 +245,34 @@ python scripts/run_experiment.py model=bert_base dataset=sst2 method=iterative
 
 #### Generating Paper Figures
 
-**All Figures (1-4)**:
+##### All Figures (1-4)
+
 ```bash
 python scripts/generate_all_figures.py
 ```
 
-**Specific Figure**:
+##### Specific Figure
+
 ```bash
 python scripts/generate_all_figures.py --figure 1  # Just Figure 1
 python scripts/generate_all_figures.py --figure 2  # Just Figure 2
 # ... etc
 ```
 
-**Quick Mode** (for testing):
+##### Quick Mode (for testing)
+
 ```bash
 python scripts/generate_all_figures.py --quick
 ```
 
-**Interactive Figure Generation** (Jupyter):
+##### Interactive Figure Generation (Jupyter)
+
 ```bash
 jupyter notebook notebooks/1_explore_correlation.ipynb
 ```
 
 **Available Figures:**
+
 - **Figure 1**: Random vs. Optimized Permutation Latency (~25-35% improvement)
 - **Figure 2**: Quantization Co-Design Strategies (iterative vs. linear)
 - **Figure 3**: Metrics vs. Iteration (causal chain in action)
@@ -261,7 +295,7 @@ python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=itera
 
 ### Results
 
-All results, including measured metrics (perplexity, latency, modularity, etc.) and any generated artifacts, are saved as JSON files in the `outputs/` directory, organized by timestamp (managed by Hydra). 
+All results, including measured metrics (perplexity, latency, modularity, etc.) and any generated artifacts, are saved as JSON files in the `outputs/` directory, organized by timestamp (managed by Hydra).
 
 #### Automatic Cleanup
 
@@ -273,12 +307,13 @@ The experiment runner automatically cleans up old experiment outputs before star
 - **Error Handling**: Cleanup failures are logged but don't prevent experiments from running
 
 To modify cleanup behavior, edit `configs/defaults.yaml`:
+
 ```yaml
 storage:
   cleanup_older_than_days: 14  # Clean up files older than 2 weeks
 ```
 
-To disable cleanup entirely, remove or comment out the `cleanup` section in `configs/config.yaml`. 
+To disable cleanup entirely, remove or comment out the `cleanup` section in `configs/config.yaml`.
 
 ### Testing
 
@@ -286,46 +321,79 @@ The project includes comprehensive tests covering all core modules with determin
 
 #### Prerequisites for Running Tests
 
-**🚀 Quickest Setup (Recommended):**
+**⚠️ Important**: Tests require specific dependencies to be installed. Running `pytest` without proper setup will fail with import errors.
+
+##### 🚀 Quickest Setup (Recommended)
+
 ```bash
 pip install -e .[test]
 ```
 
 This installs all required dependencies including PyTorch, NumPy, and testing frameworks in one command.
 
-**Alternative Installation Methods:**
+##### Required Dependencies for Tests
+
+If `pip install -e .[test]` doesn't work in your environment, install these packages manually:
+
+**Core Dependencies:**
+- `torch` (>=2.0.0) - Neural network framework
+- `numpy` (>=1.21.0) - Numerical computing
+- `scikit-learn` (>=1.0.0) - Machine learning utilities (for SpectralClustering)
+- `transformers` (>=4.30.0) - Pre-trained models
+- `datasets` (>=2.0.0) - Dataset loading
+- `pyyaml` (>=6.0) - Configuration file parsing
+- `hydra-core` (>=1.3.0) - Configuration management
+- `omegaconf` (>=2.3.0) - Configuration framework
+
+**Testing Framework:**
+- `pytest` (>=7.0.0) - Test runner
+- `pytest-cov` (>=4.0.0) - Coverage reporting
+
+**Quick Manual Installation:**
+
+```bash
+pip install torch numpy scikit-learn transformers datasets pyyaml hydra-core omegaconf pytest pytest-cov
+pip install -e .
+```
+
+##### Alternative Installation Methods
 
 **Method 2: Use setup script with testing**
+
 ```bash
 python scripts/setup.py --test
 ```
 
 **Method 3: Manual installation**
+
 ```bash
 pip install -r requirements.txt -r tests/requirements.txt
 pip install -e .
 ```
 
 **Method 4: Development setup (includes all dependencies)**
+
 ```bash
 pip install -e .[dev]  # Includes test, docs, and development tools
 ```
 
 **What gets installed:**
+
 - **Core packages**: torch, numpy, transformers, datasets, pyyaml
-- **Testing framework**: pytest, pytest-cov  
+- **Testing framework**: pytest, pytest-cov
 - **Scientific computing**: scikit-learn, pandas, matplotlib, seaborn
 - **Configuration**: hydra-core, omegaconf
 - **Development tools**: ruff (linting), mkdocs (documentation)
 
 **System Requirements:**
+
 - **Python 3.8+** (3.9+ recommended for best compatibility)
 - **Operating Systems**: Windows, macOS, Linux
 - **Hardware**: CPU-only systems supported (GPU optional for full experiments)
 
 **Troubleshooting Test Issues:**
 
-1. **GPU tests skipped**: Normal on CPU-only systems - tests will skip gracefully 
+1. **GPU tests skipped**: Normal on CPU-only systems - tests will skip gracefully
 2. **Slow tests**: Use `pytest -x` to stop on first failure for faster debugging
 3. **Permission errors**: Run `pip install --user` if you encounter permission issues
 4. **Version conflicts**: Update pip with `python -m pip install --upgrade pip setuptools wheel`
@@ -339,14 +407,15 @@ pytest
 
 # Run specific test categories
 pytest tests/test_config.py -v              # Configuration tests
-pytest tests/test_profiler.py -v            # Profiler and caching tests  
+pytest tests/test_profiler.py -v            # Profiler and caching tests
 pytest tests/test_wrapper.py -v             # Model wrapper tests
 ```
 
 #### Complete Test Suite
 
 The test suite includes:
-- **41 total tests** covering all major components
+
+- **71 total tests** covering all major components
 - **Deterministic hashing tests** for reliable caching
 - **GPU fallback testing** (automatically skips when CUDA unavailable)
 - **Import validation** for all core modules
@@ -355,6 +424,7 @@ The test suite includes:
 #### CI Testing
 
 Our GitHub Actions workflow automatically:
+
 - Tests across Python 3.8, 3.9, 3.10, 3.11
 - Runs linting with ruff (format + check)
 - Validates imports work correctly

@@ -19,7 +19,7 @@ import torch
 def get_device() -> torch.device:
     """
     Get the appropriate device (CPU/GPU) for model operations.
-    
+
     Returns:
         torch.device: The best available device (CUDA if available, else CPU)
     """

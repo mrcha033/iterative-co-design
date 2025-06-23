@@ -12,6 +12,6 @@ from .modularity import calculate_modularity
 
 __all__ = [
     "apply_hds",
-    "find_optimal_permutation", 
+    "find_optimal_permutation",
     "calculate_modularity",
 ]

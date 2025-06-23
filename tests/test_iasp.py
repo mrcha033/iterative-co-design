@@ -27,12 +27,12 @@ class SimpleTestModel(nn.Module):
 
 class ClassificationTestModel(nn.Module):
     """Simple classification model that outputs 2D tensors for testing."""
-    
+
     def __init__(self, input_size=32, hidden_size=16, num_classes=5):
         super().__init__()
         self.encoder = nn.Linear(input_size, hidden_size)
         self.classifier = nn.Linear(hidden_size, num_classes)
-        
+
     def forward(self, input_ids):
         # Take mean across sequence dimension to get 2D output
         x = input_ids.float().mean(dim=1)  # (batch_size, seq_len, input_size) -> (batch_size, input_size)
@@ -348,12 +348,12 @@ class TestIASP:
         # Create a deterministic scenario where we can compare 2D vs reshaped 3D
         torch.manual_seed(42)
         np.random.seed(42)
-        
+
         # Test with classification model (2D)
         model_2d = ClassificationTestModel(input_size=4, hidden_size=8, num_classes=3)
         model_2d.eval()
-        
-        # Test with sequence model (3D) 
+
+        # Test with sequence model (3D)
         model_3d = SimpleTestModel(hidden_size=8)
         model_3d.eval()
 
@@ -372,7 +372,7 @@ class TestIASP:
             max_samples=batch_size,
             device="cpu",
         )
-        
+
         corr_3d = get_activation_correlation(
             model=model_3d,
             dataloader=dataloader_3d,
@@ -391,17 +391,17 @@ class TestIASP:
         """Test error handling for invalid activation dimensions (not 2D or 3D)."""
         # We'll simulate invalid dimensions by directly testing with mock data
         # since creating a real model that produces 1D activations is tricky
-        
+
         # Create a test by directly testing the error handling logic
-        
+
         def mock_get_activation_correlation(*args, **kwargs):
             # Create mock activations with wrong dimensions (1D)
             import numpy as np
             mock_activations = [np.array([1, 2, 3, 4])]  # 1D array
-            
+
             # Simulate the concatenation step that would happen
             all_activations = np.concatenate(mock_activations, axis=0)
-            
+
             # This should trigger our error handling
             if all_activations.ndim == 3:
                 # 3D case: (total_samples, seq_len, hidden_dim) -> (total_tokens, hidden_dim)
@@ -415,9 +415,9 @@ class TestIASP:
                     f"Expected 2D or 3D activations, but got {all_activations.ndim}D. "
                     f"Shape: {all_activations.shape}. The hook might be on an incompatible layer."
                 )
-            
+
             return np.corrcoef(all_activations_reshaped, rowvar=False)
-        
+
         # Test the error case
         with pytest.raises(ValueError, match="Expected 2D or 3D activations, but got 1D"):
             mock_get_activation_correlation()
@@ -426,7 +426,7 @@ class TestIASP:
         """Test that find_optimal_permutation works correctly with CPU device."""
         from co_design.iasp import find_optimal_permutation_from_matrix
         import numpy as np
-        
+
         # Create a synthetic correlation matrix to avoid activation collection issues
         # Use a well-conditioned matrix that won't produce NaN values
         correlation_matrix = np.array([
@@ -454,15 +454,15 @@ class TestIASP:
         """Test that find_optimal_permutation accepts device parameter correctly."""
         from co_design.iasp import find_optimal_permutation
         import inspect
-        
+
         # Test that the function signature includes the device parameter
         sig = inspect.signature(find_optimal_permutation)
         assert "device" in sig.parameters
-        
+
         # Test that the parameter has the correct default value
         device_param = sig.parameters["device"]
         assert device_param.default is None
-        
+
         # Test that the parameter is optional
         assert device_param.default is not inspect.Parameter.empty
 

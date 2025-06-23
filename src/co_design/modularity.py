@@ -1,3 +1,16 @@
+"""
+Modularity calculation module for community detection and graph analysis.
+
+This module provides tools for calculating modularity scores of graph partitions,
+which is essential for evaluating the quality of community detection algorithms.
+Modularity measures how well a partition divides a network into communities by
+comparing the density of edges within communities to what would be expected in
+a random network with the same degree distribution.
+
+Key functions:
+- calculate_modularity: Computes Newman's modularity score for a given partition
+"""
+
 import numpy as np
 from typing import List
 

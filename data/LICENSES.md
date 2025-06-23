@@ -1,4 +1,4 @@
-﻿# Dataset Licensing Information
+# Dataset Licensing Information
 
 This file provides licensing information for the datasets used in this project.
 
@@ -13,4 +13,3 @@ This file provides licensing information for the datasets used in this project.
 - **Description**: WikiText-103 is a large language modeling dataset derived from high-quality Wikipedia articles.
 - **Original Paper**: [Pointer Sentinel Mixture Models](https://arxiv.org/abs/1609.07843) by Merity et al. (2016).
 - **License**: The dataset is licensed under the [Creative Commons Attribution-ShareAlike 4.0 International License](https://creativecommons.org/licenses/by-sa/4.0/). You are free to share and adapt the data for any purpose, even commercially, as long as you give appropriate credit and distribute your contributions under the same license. 
-

@@ -128,6 +128,13 @@ def get_activation_correlation(
     # Compute Pearson correlation matrix
     correlation_matrix = np.corrcoef(all_activations_reshaped, rowvar=False)
 
+    # Handle NaNs that can occur from constant activation dimensions
+    if np.any(np.isnan(correlation_matrix)):
+        logger.warning("Found NaN values in correlation matrix, likely due to constant activations. Replacing with identity matrix.")
+        # Replace NaN values with 0 correlations, except diagonal which should be 1
+        correlation_matrix = np.nan_to_num(correlation_matrix, nan=0.0)
+        np.fill_diagonal(correlation_matrix, 1.0)
+
     return correlation_matrix
 
 
@@ -215,7 +222,10 @@ def find_optimal_permutation_from_matrix(
                 random_state=0,
                 n_init=10,
             )
-            labels = clustering.fit_predict(correlation_matrix)
+            # Use absolute value of correlation as affinity for clustering,
+            # consistent with find_permutation_from_matrix
+            affinity_matrix = np.abs(correlation_matrix)
+            labels = clustering.fit_predict(affinity_matrix)
 
             partition = [[] for _ in range(k)]
             for node_idx, cluster_idx in enumerate(labels):
@@ -240,7 +250,10 @@ def find_optimal_permutation_from_matrix(
             random_state=0,
             n_init=10,
         )
-        labels = clustering.fit_predict(correlation_matrix)
+        # Use absolute value of correlation as affinity for clustering,
+        # consistent with find_permutation_from_matrix
+        affinity_matrix = np.abs(correlation_matrix)
+        labels = clustering.fit_predict(affinity_matrix)
 
         partition = [[] for _ in range(num_clusters)]
         for node_idx, cluster_idx in enumerate(labels):
@@ -259,21 +272,21 @@ def find_optimal_permutation(
 ) -> List[int]:
     """
     Compute the optimal permutation for a given model layer.
-    
+
     Args:
         model: The PyTorch model to analyze.
         data_loader: The dataloader providing data samples.
         target_layer_name: The name of the layer to hook for activations.
         cluster_size_range: Tuple of (min_cluster_size, max_cluster_size).
         device: Device to run the model on. If None, defaults to 'cuda' if available, else 'cpu'.
-        
+
     Returns:
         A list of integers representing the optimal permutation of indices.
     """
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"No device specified, auto-detected: {device}")
-    
+
     correlation_matrix = get_activation_correlation(
         model=model,
         dataloader=data_loader,
