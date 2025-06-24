@@ -237,16 +237,13 @@ except Exception as e:
 """
                 script_path.write_text(script_content)
 
-                # Run NCU with increased timeout
+                # Run NCU with basic options for better compatibility
                 metrics_str = ",".join(self.ncu_metrics)
                 cmd = [
                     "ncu",
                     "--metrics",
                     metrics_str,
                     "--csv",
-                    "--replay-mode",
-                    "kernel",
-                    "--timeout", "30",  # Add timeout
                     "--log-file",
                     str(output_path),
                     "python",

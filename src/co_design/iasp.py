@@ -74,6 +74,13 @@ def get_activation_correlation(
             break
 
     if target_layer is None:
+        # Print available layer names for debugging
+        print(f"\nDEBUG: Layer '{target_layer_name}' not found in the model.")
+        print("Available layers:")
+        for name, module in model.named_modules():
+            if hasattr(module, 'weight') or hasattr(module, 'bias'):  # Only show actual layers
+                print(f"  - {name}: {type(module).__name__}")
+        print()
         raise ValueError(f"Layer '{target_layer_name}' not found in the model.")
 
     handle = target_layer.register_forward_hook(hook_fn)
