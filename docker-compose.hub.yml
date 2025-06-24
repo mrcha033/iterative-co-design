@@ -42,6 +42,72 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - CUDA_VISIBLE_DEVICES=0
 
+  # Complete experiment suite - runs all methods sequentially
+  all-train:
+    image: mrcha033/iterative-co-design:latest
+    command: >
+      bash -c "
+      echo '🚀 Starting complete experiment suite...' &&
+      echo '📊 Experiment 1/5: Dense baseline' &&
+      python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=dense &&
+      echo '📊 Experiment 2/5: Permute only' &&
+      python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=permute_only &&
+      echo '📊 Experiment 3/5: Sparsity only' &&
+      python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=sparsity_only &&
+      echo '📊 Experiment 4/5: Linear pipeline' &&
+      python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=linear_pipeline &&
+      echo '📊 Experiment 5/5: Iterative co-design' &&
+      python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=iterative &&
+      echo '✅ All experiments completed! Check outputs/ and results/ directories.'
+      "
+    volumes:
+      - .:/workspace
+      - ./outputs:/workspace/outputs
+      - ./results:/workspace/results
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+
+  # BERT complete experiment suite
+  bert-all-train:
+    image: mrcha033/iterative-co-design:latest
+    command: >
+      bash -c "
+      echo '🚀 Starting BERT complete experiment suite...' &&
+      echo '📊 Experiment 1/5: Dense baseline' &&
+      python scripts/run_experiment.py model=bert_base dataset=sst2 method=dense &&
+      echo '📊 Experiment 2/5: Permute only' &&
+      python scripts/run_experiment.py model=bert_base dataset=sst2 method=permute_only &&
+      echo '📊 Experiment 3/5: Sparsity only' &&
+      python scripts/run_experiment.py model=bert_base dataset=sst2 method=sparsity_only &&
+      echo '📊 Experiment 4/5: Linear pipeline' &&
+      python scripts/run_experiment.py model=bert_base dataset=sst2 method=linear_pipeline &&
+      echo '📊 Experiment 5/5: Iterative co-design' &&
+      python scripts/run_experiment.py model=bert_base dataset=sst2 method=iterative &&
+      echo '✅ All BERT experiments completed! Check outputs/ and results/ directories.'
+      "
+    volumes:
+      - .:/workspace
+      - ./outputs:/workspace/outputs
+      - ./results:/workspace/results
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+
   # Interactive shell
   shell:
     image: mrcha033/iterative-co-design:latest
@@ -62,19 +128,40 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
 
-  # Jupyter notebook service
+  # Enhanced Jupyter notebook with visualization and analysis tools
   jupyter:
     image: mrcha033/iterative-co-design:latest
     command: >
       bash -c "
-      pip install jupyter notebook ipykernel &&
-      jupyter notebook --ip 0.0.0.0 --port 8888 --no-browser --allow-root --NotebookApp.token=''
+      echo '📦 Installing enhanced Jupyter environment...' &&
+      pip install --no-cache-dir \
+        jupyter \
+        jupyterlab \
+        notebook \
+        ipykernel \
+        tensorboard \
+        matplotlib \
+        seaborn \
+        plotly \
+        bokeh \
+        altair \
+        ipywidgets \
+        tqdm \
+        pandas-profiling \
+        ydata-profiling &&
+      echo '🚀 Starting Jupyter Lab with TensorBoard support...' &&
+      jupyter lab --ip 0.0.0.0 --port 8888 --no-browser --allow-root \
+        --ServerApp.token='' --ServerApp.password='' \
+        --ServerApp.allow_origin='*' --ServerApp.allow_remote_access=True
       "
     volumes:
       - .:/workspace
       - ./notebooks:/workspace/notebooks
+      - ./outputs:/workspace/outputs
+      - ./results:/workspace/results
     ports:
       - "8888:8888"
+      - "6006:6006"  # TensorBoard port
     deploy:
       resources:
         reservations:
@@ -82,5 +169,21 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+
+  # TensorBoard service for experiment monitoring
+  tensorboard:
+    image: mrcha033/iterative-co-design:latest
+    command: >
+      bash -c "
+      pip install tensorboard &&
+      tensorboard --logdir=./outputs --host=0.0.0.0 --port=6006 --reload_interval=30
+      "
+    volumes:
+      - ./outputs:/workspace/outputs
+      - ./results:/workspace/results
+    ports:
+      - "6007:6006"
     environment:
       - NVIDIA_VISIBLE_DEVICES=all 

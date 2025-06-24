@@ -19,7 +19,7 @@ seaborn>=0.11.0
 
 # Transformers (use stable version first)
 datasets>=2.14.0
-transformers>=4.36.0,<4.39.0  # Use stable version compatible with current PyTorch
+transformers>=4.42.4  # Use stable version compatible with current PyTorch
 
 # Testing
 pytest>=8.0.2

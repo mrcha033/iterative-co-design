@@ -108,4 +108,4 @@ print("  Mamba: python scripts/run_experiment.py model=mamba_3b dataset=wikitext
 PY
 
 ########################  Default entrypoint  ###########################
-CMD ["python", "-c", "print('🐳 Docker container ready! Use docker-compose commands to run experiments.')"] 
+ENTRYPOINT ["/bin/bash"]

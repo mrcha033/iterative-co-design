@@ -14,7 +14,7 @@
 
 ### Step 1: Clone Repository
 ```bash
-git clone https://github.com/yunmin-cha/iterative-co-design.git
+git clone https://github.com/mrcha033/iterative-co-design.git
 cd iterative-co-design
 ```
 
@@ -103,18 +103,24 @@ docker run --rm --gpus all nvidia/cuda:11.8-base-ubuntu22.04 nvidia-smi
 # Environment verification
 docker-compose -f docker-compose.hub.yml run base
 
-# BERT experiments
-docker-compose -f docker-compose.hub.yml run trainer
+# Individual experiments
+docker-compose -f docker-compose.hub.yml run trainer          # BERT single experiment
+docker-compose -f docker-compose.hub.yml run mamba-trainer    # Mamba single experiment
 
-# Mamba experiments (GPU required)
-docker-compose -f docker-compose.hub.yml run mamba-trainer
+# Complete experiment suites (NEW!)
+docker-compose -f docker-compose.hub.yml run all-train        # All Mamba methods
+docker-compose -f docker-compose.hub.yml run bert-all-train   # All BERT methods
 
 # Interactive shell
 docker-compose -f docker-compose.hub.yml run shell
 
-# Jupyter notebook
+# Enhanced Jupyter Lab with visualization tools (NEW!)
 docker-compose -f docker-compose.hub.yml up jupyter
 # Access at http://localhost:8888
+
+# TensorBoard for experiment monitoring (NEW!)
+docker-compose -f docker-compose.hub.yml up tensorboard
+# Access at http://localhost:6007
 ```
 
 #### With Local Build
@@ -122,17 +128,24 @@ docker-compose -f docker-compose.hub.yml up jupyter
 # Environment verification
 docker-compose run base
 
-# BERT experiments
-docker-compose run trainer
+# Individual experiments
+docker-compose run trainer          # BERT single experiment
+docker-compose run mamba-trainer    # Mamba single experiment
 
-# Mamba experiments (GPU required)
-docker-compose run mamba-trainer
+# Complete experiment suites (NEW!)
+docker-compose run all-train        # All Mamba methods
+docker-compose run bert-all-train   # All BERT methods
 
 # Interactive shell
 docker-compose run shell
 
-# Jupyter notebook
+# Enhanced Jupyter Lab with visualization tools (NEW!)
 docker-compose up jupyter
+# Access at http://localhost:8888
+
+# TensorBoard for experiment monitoring (NEW!)
+docker-compose up tensorboard
+# Access at http://localhost:6007
 ```
 
 #### CPU-Only Mode
@@ -398,4 +411,72 @@ After following this guide, you should achieve:
 
 ---
 
-**Goal**: Enable researchers worldwide to immediately start iterative co-design experiments without complex environment setup! 
+**Goal**: Enable researchers worldwide to immediately start iterative co-design experiments without complex environment setup!
+
+## 🛠️ Enhanced Features
+
+### Complete Experiment Suites (NEW!)
+
+Run all 5 co-design methods automatically:
+
+**Mamba Complete Suite:**
+```bash
+# Runs: dense → permute_only → sparsity_only → linear_pipeline → iterative
+docker-compose -f docker-compose.hub.yml run all-train
+```
+
+**BERT Complete Suite:**
+```bash
+# Runs: dense → permute_only → sparsity_only → linear_pipeline → iterative
+docker-compose -f docker-compose.hub.yml run bert-all-train
+```
+
+**Progress Tracking:**
+- 📊 Real-time progress updates
+- ✅ Clear completion status
+- 📁 Results automatically saved to `outputs/` and `results/`
+
+### Enhanced Jupyter Environment (NEW!)
+
+**Included Visualization Libraries:**
+- 📊 **matplotlib, seaborn**: Statistical plotting
+- 🎨 **plotly, bokeh**: Interactive visualizations
+- 📈 **altair**: Grammar of graphics
+- 🔧 **ipywidgets**: Interactive widgets
+- 📋 **pandas-profiling**: Data analysis reports
+- 📊 **tensorboard**: Experiment monitoring
+
+**Features:**
+- 🚀 **Jupyter Lab** (modern interface)
+- 🔍 **TensorBoard integration** on port 6006
+- 📁 **Auto-mounted volumes** for outputs/results
+- 🌐 **No authentication** for quick access
+
+### TensorBoard Monitoring (NEW!)
+
+**Real-time Experiment Tracking:**
+```bash
+# Start TensorBoard
+docker-compose -f docker-compose.hub.yml up tensorboard
+
+# Access at http://localhost:6007
+```
+
+**Features:**
+- 📊 Live experiment metrics
+- 📈 Loss and accuracy curves  
+- 🔄 Auto-refresh every 30 seconds
+- 📁 Monitors `outputs/` directory
+
+### Available Services Summary
+
+| Service | Purpose | Access |
+|---------|---------|--------|
+| `base` | Environment verification | Terminal output |
+| `trainer` | Single BERT experiment | Terminal logs |
+| `mamba-trainer` | Single Mamba experiment | Terminal logs |
+| `all-train` | **All Mamba methods** | Terminal progress |
+| `bert-all-train` | **All BERT methods** | Terminal progress |
+| `shell` | Interactive development | Terminal access |
+| `jupyter` | **Enhanced analysis** | http://localhost:8888 |
+| `tensorboard` | **Experiment monitoring** | http://localhost:6007 | 
