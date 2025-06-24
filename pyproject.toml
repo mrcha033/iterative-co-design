@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "iterative-co-design"
 version = "0.1.0"
 description = "Iterative Co-Design of Sparsity and Permutation Structures for Hardware-Accelerated Inference"
-authors = [{name = "Yunmin Cha"}, {email="mrcha033@yonsei.ac.kr}]
+authors = [{name = "Yunmin Cha", email = "mrcha033@yonsei.ac.kr"}]
 license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.8"
