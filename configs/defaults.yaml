@@ -8,3 +8,11 @@ storage:
 
 # Enable experiment mode for faster testing
 experiment: null  # Set to "debug" for quick runs 
+
+# Hardware-Native Differentiable Sparsity (HDS) Configuration
+hds:
+  target_layers: ["*.query", "*.key", "*.value", "*.dense", "*linear*"] # Common layer patterns
+  n: 2                    # Keep 2 out of every M weights (N:M sparsity)
+  m: 4                    # Block size for N:M sparsity
+  fine_tuning_epochs: 1   # Number of epochs to fine-tune sparsity masks
+  gumbel_temp: 1.0       # Temperature for Gumbel-Top-K sampling

@@ -2,6 +2,65 @@
 
 This directory contains unit tests for the iterative co-design framework.
 
+## Quick Start - Minimal Test Setup
+
+For a minimal setup to run tests immediately:
+
+```bash
+# 1. Install minimal dependencies
+pip install pytest torch numpy scikit-learn transformers datasets pyyaml hydra-core omegaconf
+
+# 2. Install package in development mode
+pip install -e .
+
+# 3. Run a single test to verify setup
+python -m pytest tests/test_config.py::test_load_config -v
+
+# 4. Run all tests (if setup is working)
+python -m pytest tests/ -v
+```
+
+### Minimal Test Environment Check
+
+Create a simple test file to verify your environment:
+
+```python
+# test_minimal.py
+import torch
+import numpy as np
+from pathlib import Path
+
+def test_basic_imports():
+    """Test that basic imports work."""
+    from src.co_design.modularity import calculate_modularity
+    from src.models.wrapper import ModelWrapper
+    from src.utils.config import load_yaml_config
+    print("✅ All core imports successful")
+
+def test_torch_functionality():
+    """Test basic PyTorch functionality."""
+    x = torch.randn(3, 4)
+    y = torch.mm(x, x.T)
+    assert y.shape == (3, 3)
+    print("✅ PyTorch working correctly")
+
+def test_config_loading():
+    """Test configuration loading."""
+    from src.utils.config import load_yaml_config
+    config_path = Path("configs/defaults.yaml")
+    if config_path.exists():
+        config = load_yaml_config(config_path)
+        assert 'wandb' in config
+        print("✅ Configuration loading works")
+    else:
+        print("⚠️  configs/defaults.yaml not found, skipping config test")
+
+if __name__ == "__main__":
+    test_basic_imports()
+    test_torch_functionality()
+    test_config_loading()
+    print("\n🎉 Minimal test setup verified!")
+
 ## Prerequisites
 
 Before running tests, ensure all dependencies are installed:

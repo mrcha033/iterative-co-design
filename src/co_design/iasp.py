@@ -30,7 +30,7 @@ def get_activation_correlation(
     dataloader: DataLoader,
     target_layer_name: str,
     max_samples: int = 512,
-    device: str = "cuda",
+    device: Optional[str] = None,
 ) -> np.ndarray:
     """
     Computes the activation correlation matrix for a target layer's output.
@@ -45,12 +45,16 @@ def get_activation_correlation(
         target_layer_name: The name of the layer to hook for activations
             (e.g., 'bert.encoder.layer.0.output.dense').
         max_samples: The maximum number of samples to use for calculation.
-        device: The device to run the model on.
+        device: The device to run the model on. If None, auto-detects CUDA availability.
 
     Returns:
         A 2D numpy array representing the Pearson correlation matrix of the
         layer's output activations.
     """
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(f"No device specified, auto-detected: {device}")
+    
     model.to(device)
     model.eval()
 
