@@ -74,12 +74,23 @@ def get_activation_correlation(
             break
 
     if target_layer is None:
-        # Print available layer names for debugging
+        # Print debugging information
         print(f"\nDEBUG: Layer '{target_layer_name}' not found in the model.")
+        print(f"DEBUG: Model type: {type(model)}")
+        print(f"DEBUG: Model class: {model.__class__}")
+        print(f"DEBUG: Has 'model' attribute: {hasattr(model, 'model')}")
+        if hasattr(model, 'model'):
+            print(f"DEBUG: Inner model type: {type(model.model)}")
+        
         print("Available layers:")
+        layer_count = 0
         for name, module in model.named_modules():
             if hasattr(module, 'weight') or hasattr(module, 'bias'):  # Only show actual layers
                 print(f"  - {name}: {type(module).__name__}")
+                layer_count += 1
+                if layer_count > 20:  # Limit output
+                    print("  ... (showing first 20 layers)")
+                    break
         print()
         raise ValueError(f"Layer '{target_layer_name}' not found in the model.")
 
