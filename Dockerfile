@@ -108,4 +108,4 @@ print("  Mamba: python scripts/run_experiment.py model=mamba_3b dataset=wikitext
 PY
 
 ########################  Default entrypoint  ###########################
-ENTRYPOINT ["/bin/bash"]
+CMD ["sleep", "infinity"]
