@@ -1,0 +1,71 @@
+# Build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Experiment outputs (don't copy into image)
+outputs/
+results/
+wandb/
+*.log
+
+# Large model files
+*.bin
+*.pt
+*.pth
+*.ckpt
+
+# Cache
+.cache/
+.pytest_cache/
+
+# Documentation build
+docs/_build/
+site/
+
+# Windows
+*.exe
+*.dll 

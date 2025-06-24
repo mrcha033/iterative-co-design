@@ -1,16 +1,26 @@
+version: '3.8'
+
 services:
+  # Base service - builds the image
   base:
     build:
       context: .
       dockerfile: Dockerfile
-    image: co-design-base
+    image: iterative-co-design:latest
+    command: /bin/bash /workspace/verify_env.sh
 
+  # Trainer service - runs experiments
   trainer:
-    image: co-design-base
-    command: python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=iterative
+    image: iterative-co-design:latest
+    command: >
+      bash -c "
+      source /opt/conda/bin/activate iterative-co-design &&
+      python scripts/run_experiment.py model=bert_base dataset=sst2 method=dense dry_run=true
+      "
     volumes:
       - .:/workspace
-    # Enable GPU access
+      - ./outputs:/workspace/outputs
+      - ./results:/workspace/results
     deploy:
       resources:
         reservations:
@@ -18,11 +28,77 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
 
-  jupyter:
-    image: co-design-base
-    command: jupyter notebook --ip 0.0.0.0 --port 8888 --no-browser --allow-root
+  # Mamba trainer (for advanced users)
+  mamba-trainer:
+    image: iterative-co-design:latest
+    command: >
+      bash -c "
+      source /opt/conda/bin/activate iterative-co-design &&
+      python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=dense dry_run=true
+      "
     volumes:
       - .:/workspace
+      - ./outputs:/workspace/outputs
+      - ./results:/workspace/results
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+
+  # Interactive shell
+  shell:
+    image: iterative-co-design:latest
+    command: >
+      bash -c "
+      source /opt/conda/bin/activate iterative-co-design &&
+      /bin/bash
+      "
+    volumes:
+      - .:/workspace
+      - ./outputs:/workspace/outputs
+      - ./results:/workspace/results
+    stdin_open: true
+    tty: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+
+  # Jupyter notebook service
+  jupyter:
+    image: iterative-co-design:latest
+    command: >
+      bash -c "
+      source /opt/conda/bin/activate iterative-co-design &&
+      pip install jupyter notebook ipykernel &&
+      jupyter notebook --ip 0.0.0.0 --port 8888 --no-browser --allow-root --NotebookApp.token=''
+      "
+    volumes:
+      - .:/workspace
+      - ./notebooks:/workspace/notebooks
     ports:
-      - "8888:8888" 
+      - "8888:8888"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all 

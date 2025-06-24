@@ -89,14 +89,19 @@ pip install -r requirements.txt -r tests/requirements.txt
 - **Installation size**: CUDA PyTorch can be 2-3GB. For CI/testing, use CPU-only version to save disk space
 - **Disk space issues**: If you encounter "No space left on device" errors, use the minimal installation option above
 
-#### Mamba Model Support
+#### Mamba Model Support (Optional)
 
-This project uses **Mamba** models from `state-spaces/mamba-2.8b-hf`. Requirements:
+This project supports **Mamba** models from `state-spaces/mamba-2.8b-hf`, but due to compilation complexity, they are **optional**.
 
-- **Transformers**: >=4.39.0 (Mamba support added in 4.39.0)
-- **CUDA dependencies**: `causal-conv1d>=1.2.0` and `mamba-ssm>=1.2.0` for optimized performance
-- **CPU fallback**: Works without CUDA but uses slower implementations
-- **Memory**: A100 40GB recommended for full 2.8B model experiments
+**For stable usage (recommended):**
+- Use BERT models: `python scripts/run_experiment.py model=bert_base`
+- Transformers 4.36+ (stable version)
+
+**For Mamba models (advanced users only):**
+- **Requirements**: A100 GPU, CUDA 12.1, compilation tools
+- **Transformers**: >=4.39.0 (Mamba support)
+- **CUDA dependencies**: `causal-conv1d>=1.2.0`, `mamba-ssm>=1.2.0`
+- **Installation**: Use the dedicated script below
 
 #### Verify Installation
 
@@ -132,9 +137,30 @@ This usually means your Python version or pip is too old. The project now uses f
 4. **Manual installation for older environments:**
    ```bash
    pip install 'numpy>=1.21.0' 'torch>=2.0.0' 'transformers>=4.39.0'
-   pip install 'causal-conv1d>=1.2.0' 'mamba-ssm>=1.2.0'  # Mamba dependencies
    pip install -e . --no-deps
    ```
+
+### Advanced: Mamba Model Installation
+
+**⚠️ Warning**: Mamba installation is complex and may fail. Use BERT models for stable experiments.
+
+**On A100 GPU (Ubuntu/Linux):**
+```bash
+# Method 1: Use dedicated installation script
+bash scripts/install_mamba.sh
+
+# Method 2: Manual installation
+pip install torch==2.3.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install transformers>=4.39.0
+pip install causal-conv1d>=1.2.0 --no-build-isolation
+pip install mamba-ssm>=1.2.0 --no-build-isolation
+```
+
+**Troubleshooting Mamba Installation:**
+- **CUDA version mismatch**: Use `torch==2.3.1` with CUDA 12.1
+- **Compilation errors**: Install build tools: `apt-get install build-essential`
+- **404 errors**: Try `--no-build-isolation` flag
+- **Alternative**: Use BERT models instead
 
 ##### Error: "No module named 'src'"
 
@@ -214,6 +240,62 @@ This research focuses on performance optimization techniques for neural networks
 ---
 
 ## Running Experiments
+
+### 🐳 Docker Method (Recommended)
+
+Docker provides a stable environment for running experiments without dependency issues.
+
+#### Basic Method
+
+```bash
+# 1. Build Image
+docker-compose build base
+
+# 2. 
+docker-compose run base
+
+# 3. BERT 실험 실행 (안정적)
+docker-compose run trainer
+
+# 4. Mamba 실험 실행 (고급)
+docker-compose run mamba-trainer
+
+# 5. 대화형 셸
+docker-compose run shell
+
+# 6. Jupyter 노트북 (http://localhost:8888)
+docker-compose up jupyter
+```
+
+#### 커스텀 실험 실행
+
+```bash
+# 특정 실험 명령어로 실행
+docker-compose run --rm trainer bash -c "
+  source /opt/conda/bin/activate iterative-co-design &&
+  python scripts/run_experiment.py model=bert_base dataset=sst2 method=iterative
+"
+
+# 결과 파일 확인
+ls outputs/
+ls results/
+```
+
+#### Docker 장점
+
+✅ **환경 격리**: 호스트 시스템과 독립적인 실행 환경  
+✅ **의존성 해결**: CUDA, PyTorch, Mamba 등 모든 의존성 자동 설치  
+✅ **재현성**: 동일한 환경에서 실험 결과 재현 가능  
+✅ **A100 GPU 지원**: NVIDIA Docker를 통한 GPU 접근  
+✅ **Mamba 옵션**: 컴파일 실패 시 BERT 모델로 자동 폴백
+
+#### Docker 요구사항
+
+- **NVIDIA Docker**: A100 GPU 사용 시 필요
+- **메모리**: 최소 8GB RAM (이미지 빌드용)
+- **디스크**: 최소 10GB 여유 공간
+
+### 💻 로컬 설치 방법
 
 All experiments are orchestrated through the main runner script, `scripts/run_experiment.py`.
 
