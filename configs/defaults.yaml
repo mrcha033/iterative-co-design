@@ -1,7 +1,7 @@
 # Default shared configurations
 wandb:
   mode: "offline"  # Set to "online" for cloud logging, "disabled" to disable W&B
-  project: "iterative-co-design"
+  project: "iterative-co-design"  # Must match project_name in config.yaml
 
 storage:
   cleanup_older_than_days: 30  # Cleanup runs older than this
