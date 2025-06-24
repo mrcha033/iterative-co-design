@@ -15,7 +15,6 @@ pyyaml>=6.0
 hydra-core>=1.3.0
 omegaconf>=2.3.0
 
-# Mamba dependencies for testing (CPU fallback)
-# Note: These will use slower implementations without CUDA
-causal-conv1d>=1.2.0
-mamba-ssm>=1.2.0
+# Note: causal-conv1d and mamba-ssm require CUDA/nvcc to build
+# They are not included in test dependencies to allow CPU-only testing
+# For full functionality, install them separately in a CUDA environment
