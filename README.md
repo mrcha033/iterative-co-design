@@ -95,11 +95,11 @@ This project supports **Mamba** models from `state-spaces/mamba-2.8b-hf`, but du
 
 **For stable usage (recommended):**
 - Use BERT models: `python scripts/run_experiment.py model=bert_base`
-- Transformers 4.36+ (stable version)
+- Transformers 4.42.4+ (stable version)
 
 **For Mamba models (advanced users only):**
 - **Requirements**: A100 GPU, CUDA 12.1, compilation tools
-- **Transformers**: >=4.39.0 (Mamba support)
+- **Transformers**: >=4.42.4 (Mamba support)
 - **CUDA dependencies**: `causal-conv1d>=1.2.0`, `mamba-ssm>=1.2.0`
 - **Installation**: Use the dedicated script below
 
@@ -145,7 +145,7 @@ This usually means your Python version or pip is too old. The project now uses f
 
 4. **Manual installation for older environments:**
    ```bash
-   pip install 'numpy>=1.21.0' 'torch>=2.0.0' 'transformers>=4.39.0'
+   pip install 'numpy>=1.21.0' 'torch>=2.0.0' 'transformers>=4.42.4'
    pip install -e . --no-deps
    ```
 
@@ -160,7 +160,7 @@ bash scripts/install_mamba.sh
 
 # Method 2: Manual installation
 pip install torch==2.3.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-pip install transformers>=4.39.0
+pip install transformers>4.42.4
 pip install causal-conv1d>=1.2.0 --no-build-isolation
 pip install mamba-ssm>=1.2.0 --no-build-isolation
 ```

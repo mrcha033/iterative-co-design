@@ -38,16 +38,18 @@ WORKDIR /workspace
 COPY requirements.txt .
 
 # 1) pip upgrade
-RUN pip install --no-cache-dir --upgrade pip 'setuptools<70' wheel packaging numpy
+RUN pip install --no-cache-dir --upgrade pip 'setuptools<70' wheel packaging
 
 # 2) PyTorch & friends - official CU118 index
 RUN pip install --no-cache-dir "torch==${TORCH_VERSION}+${CU_TAG}" \
         "torchvision==0.17.2+${CU_TAG}" "torchaudio==2.2.2+${CU_TAG}" \
         --index-url https://download.pytorch.org/whl/${CU_TAG}
 
-# 3) Core dependencies
+# 3) Core dependencies - Install NumPy first to ensure compatibility
+RUN pip install --no-cache-dir numpy>=1.21.0,<2.0.0
+
+# 4) Other dependencies
 RUN pip install --no-cache-dir \
-    numpy>=1.21.0 \
     scikit-learn>=1.3.0 \
     pandas>=1.5.0 \
     tqdm>=4.64.0 \
@@ -60,7 +62,7 @@ RUN pip install --no-cache-dir \
     pytest>=8.0.2 \
     datasets>=2.14.0
 
-# 4) Install mamba-ssm wheel + transformers
+# 5) Install mamba-ssm wheel + transformers
 ENV MAMBA_SKIP_CUDA_BUILD=TRUE
 RUN wget -q https://github.com/state-spaces/mamba/releases/download/v2.2.4/${MAMBA_WHL} \
         && pip install --no-cache-dir ${MAMBA_WHL} \
@@ -72,10 +74,10 @@ RUN pip install --no-cache-dir causal-conv1d>=1.2.0
 # Install transformers with Mamba support
 RUN pip install --no-cache-dir "transformers>=4.42.4"
 
-# 5) Copy application source
+# 6) Copy application source
 COPY . .
 
-# 6) Install the package
+# 7) Install the package
 RUN pip install --no-cache-dir -e .
 
 ########################  Diagnostic script  ###########################
