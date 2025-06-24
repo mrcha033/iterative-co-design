@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "iterative-co-design"
 version = "0.1.0"
 description = "Iterative Co-Design of Sparsity and Permutation Structures for Hardware-Accelerated Inference"
-authors = [{name = "Research Team"}]
+authors = [{name = "Yunmin Cha"}, {email="mrcha033@yonsei.ac.kr}]
 license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.8"
@@ -43,10 +43,10 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/yunmin-cha/iterative-co-design"
-"Bug Reports" = "https://github.com/yunmin-cha/iterative-co-design/issues"
-"Source" = "https://github.com/yunmin-cha/iterative-co-design"
-"Documentation" = "https://yunmin-cha.github.io/iterative-co-design"
+"Homepage" = "https://github.com/mrcha033/iterative-co-design"
+"Bug Reports" = "https://github.com/mrcha033/iterative-co-design/issues"
+"Source" = "https://github.com/mrcha033/iterative-co-design"
+"Documentation" = "https://mrcha033.github.io/iterative-co-design"
 
 [project.optional-dependencies]
 test = [

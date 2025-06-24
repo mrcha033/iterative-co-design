@@ -209,7 +209,7 @@ def run_sparsity_only(cfg: DictConfig):
     cache_hits = cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
 
     correlation_matrix = get_activation_correlation(
-        wrapped_model.model, data_loader, cfg.model.iasp.target_layer_name
+        wrapped_model, data_loader, cfg.model.iasp.target_layer_name
     )
     identity_permutation = list(range(d_model))
     # Safe cluster sizing to avoid division by zero when d_model < 32
@@ -266,9 +266,9 @@ def run_permute_only(cfg: DictConfig):
     cache_result = profiler.measure_cache_hits(wrapped_model, dummy_dict)
     cache_hits = cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
 
-    # Use the same model instance (wrapped_model.model) for consistency
+    # Use the same model instance (wrapped_model) for consistency
     correlation_matrix = get_activation_correlation(
-        wrapped_model.model, data_loader, cfg.model.iasp.target_layer_name
+        wrapped_model, data_loader, cfg.model.iasp.target_layer_name
     )
 
     # Calculate cluster size from IASP configuration
@@ -333,7 +333,7 @@ def run_linear_pipeline(cfg: DictConfig):
     cache_hits = cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
 
     correlation_matrix = get_activation_correlation(
-        wrapped_model.model, data_loader, cfg.model.iasp.target_layer_name
+        wrapped_model, data_loader, cfg.model.iasp.target_layer_name
     )
     # Calculate cluster size from IASP configuration
     cluster_size_range = cfg.model.iasp.cluster_size_range
@@ -400,7 +400,7 @@ def run_iterative(cfg: DictConfig):
         iteration_metrics["l2_cache_hit_rate"].append(cache_value)
 
         corr_matrix = get_activation_correlation(
-            wrapped_model.model, data_loader, cfg.model.iasp.target_layer_name
+            wrapped_model, data_loader, cfg.model.iasp.target_layer_name
         )
         # Calculate cluster size from IASP configuration
         cluster_size_range = cfg.model.iasp.cluster_size_range
