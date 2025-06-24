@@ -60,4 +60,3 @@ jobs:
         python -c "from utils.config import load_yaml_config; print('✓ Config import works')"
         python -c "from co_design.modularity import calculate_modularity; print('✓ Modularity import works')"
         python -c "from models.wrapper import ModelWrapper; print('✓ Model wrapper import works')"
-        

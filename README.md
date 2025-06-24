@@ -109,8 +109,17 @@ This project supports **Mamba** models from `state-spaces/mamba-2.8b-hf`, but du
 # Quick verification
 python -c "import torch; import numpy; import yaml; print('All core dependencies available')"
 
+# Comprehensive dependency check (recommended)
+python scripts/check_test_dependencies.py
+
+# Auto-install missing dependencies if needed
+python scripts/check_test_dependencies.py --install
+
 # Run basic functional test
 pytest tests/test_config.py::TestConfigLoader::test_load_yaml_config_basic -v
+
+# Or use the automated test script (handles dependencies)
+bash scripts/run_tests.sh
 ```
 
 #### Troubleshooting Installation Issues
@@ -245,7 +254,7 @@ This research focuses on performance optimization techniques for neural networks
 
 Docker provides a stable environment for running experiments without dependency issues.
 
-📖 **[Docker Quick Start Guide](DOCKER_QUICKSTART.md)**
+📖 **[Docker Guide](DOCKER_GUIDE.md)**
 
 #### Option 1: Use Pre-built Image (Recommended)
 

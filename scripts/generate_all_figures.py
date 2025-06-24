@@ -19,6 +19,7 @@ Usage:
 import warnings
 import argparse
 from pathlib import Path
+import random
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -32,6 +33,19 @@ import subprocess
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings("ignore")
+
+
+def set_deterministic_seeds(seed: int = 42):
+    """Set deterministic seeds for reproducible figure generation."""
+    print(f"🌱 Setting deterministic seeds to {seed} for reproducible figures")
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 from utils.profiler import LatencyProfiler  # noqa: E402
 from co_design.iasp import find_optimal_permutation  # noqa: E402
@@ -650,11 +664,20 @@ def main():
         action="store_true",
         help="Auto-confirm all prompts for non-interactive execution",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducible figure generation (default: 42)",
+    )
 
     args = parser.parse_args()
 
     print("🎯 Paper Figure Generation Suite")
     print("=" * 60)
+    
+    # Set deterministic seeds for reproducible figures
+    set_deterministic_seeds(args.seed)
 
     # Define figure generators
     generators = {

@@ -37,4 +37,4 @@ def main():
     print("  Mamba: python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=dense")
 
 if __name__ == "__main__":
-    main() 
+    main()

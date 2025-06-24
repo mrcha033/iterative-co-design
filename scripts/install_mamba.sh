@@ -23,7 +23,7 @@ pip install torch==2.3.1 torchvision torchaudio --index-url https://download.pyt
 
 echo ""
 echo "🔧 Step 2: Installing Transformers (latest version)..."
-pip install transformers>=4.39.0
+pip install transformers>=4.42.4
 
 echo ""
 echo "🔧 Step 3: Installing Mamba dependencies..."
@@ -74,4 +74,4 @@ except ImportError as e:
 echo ""
 echo "🎉 Mamba installation complete!"
 echo ""
-echo "🚀 Test with: python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=dense dry_run=true" 
+echo "🚀 Test with: python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=dense dry_run=true"

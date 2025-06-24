@@ -95,9 +95,13 @@ def apply_ptq(model: torch.nn.Module, device: str = "cpu") -> torch.nn.Module:
     print(">>> Applying Post-Training Quantization (Dynamic)...")
     print("⚠️  Note: Quantized models will run on CPU (PyTorch limitation)")
     model_cpu = model.cpu()
+    # Ensure model is in evaluation mode for quantization
+    model_cpu.eval()
     quantized_model = torch.quantization.quantize_dynamic(
         model_cpu, {torch.nn.Linear}, dtype=torch.qint8
     )
+    # Keep quantized model in evaluation mode for inference
+    quantized_model.eval()
     return quantized_model
 
 
@@ -208,6 +212,9 @@ def main(cfg: DictConfig):
         run_permute_then_quant(cfg, model, tokenizer, data_loader)
     elif method == "permute_quant_repermute":
         run_permute_quant_repermute(cfg, model, tokenizer, data_loader)
+    else:
+        raise ValueError(f"Unknown quantization method: {method}. "
+                        f"Supported methods: quant_then_permute, permute_then_quant, permute_quant_repermute")
 
 
 if __name__ == "__main__":

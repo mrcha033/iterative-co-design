@@ -157,4 +157,4 @@ config.HF_DATASETS_CACHE = '$HF_HOME/datasets'
 load_dataset('glue', 'sst2', cache_dir='$HF_HOME/datasets')
 "
 
-echo "✅ All datasets downloaded and cached in $HF_HOME/datasets" 
+echo "✅ All datasets downloaded and cached in $HF_HOME/datasets"
