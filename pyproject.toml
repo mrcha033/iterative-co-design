@@ -26,12 +26,6 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
-[project.urls]
-"Homepage" = "https://github.com/yunmin-cha/iterative-co-design"
-"Bug Reports" = "https://github.com/yunmin-cha/iterative-co-design/issues"
-"Source" = "https://github.com/yunmin-cha/iterative-co-design"
-"Documentation" = "https://yunmin-cha.github.io/iterative-co-design"
-
 dependencies = [
     "transformers>=4.30.0",
     "datasets>=2.14.0",
@@ -47,6 +41,12 @@ dependencies = [
     "seaborn>=0.11.0",
     "torch>=2.0.0",
 ]
+
+[project.urls]
+"Homepage" = "https://github.com/yunmin-cha/iterative-co-design"
+"Bug Reports" = "https://github.com/yunmin-cha/iterative-co-design/issues"
+"Source" = "https://github.com/yunmin-cha/iterative-co-design"
+"Documentation" = "https://yunmin-cha.github.io/iterative-co-design"
 
 [project.optional-dependencies]
 test = [
