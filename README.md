@@ -331,6 +331,46 @@ pip install -e .[test]
 
 This installs all required dependencies including PyTorch, NumPy, and testing frameworks in one command.
 
+##### Environment Isolation (Highly Recommended)
+
+For best results, use a virtual environment to avoid dependency conflicts:
+
+```bash
+# Create and activate virtual environment
+python -m venv test_env
+source test_env/bin/activate  # On Windows: test_env\Scripts\activate
+
+# Install test dependencies
+pip install -e .[test]
+
+# Verify installation
+python -c "import torch, numpy, co_design; print('✅ All test dependencies available')"
+```
+
+##### Dependency Verification
+
+Before running tests, verify all required packages are available:
+
+```bash
+# Quick verification command
+python -c "
+import sys
+required = ['torch', 'numpy', 'sklearn', 'transformers', 'datasets', 'yaml', 'hydra', 'omegaconf', 'pytest']
+missing = []
+for pkg in required:
+    try:
+        __import__(pkg)
+    except ImportError:
+        missing.append(pkg)
+if missing:
+    print(f'❌ Missing packages: {missing}')
+    print('Run: pip install -e .[test]')
+    sys.exit(1)
+else:
+    print('✅ All required test dependencies are available')
+"
+```
+
 ##### Required Dependencies for Tests
 
 If `pip install -e .[test]` doesn't work in your environment, install these packages manually:
@@ -391,6 +431,13 @@ pip install -e .[dev]  # Includes test, docs, and development tools
 - **Operating Systems**: Windows, macOS, Linux
 - **Hardware**: CPU-only systems supported (GPU optional for full experiments)
 
+**Test Performance Expectations:**
+
+- **Total runtime**: ~15-30 seconds on modern CPU (varies by system)
+- **Test count**: 71 tests across 6 test modules
+- **Skipped tests**: 2 GPU tests will be skipped on CPU-only systems (normal behavior)
+- **Memory usage**: Peak ~1-2GB RAM (PyTorch model loading)
+
 **Troubleshooting Test Issues:**
 
 1. **GPU tests skipped**: Normal on CPU-only systems - tests will skip gracefully
@@ -398,6 +445,16 @@ pip install -e .[dev]  # Includes test, docs, and development tools
 3. **Permission errors**: Run `pip install --user` if you encounter permission issues
 4. **Version conflicts**: Update pip with `python -m pip install --upgrade pip setuptools wheel`
 5. **Import errors**: If you still get import errors after `pip install -e .[test]`, try reinstalling: `pip uninstall iterative-co-design && pip install -e .[test]`
+6. **PyTorch version issues**: If you get tensor operation errors, ensure PyTorch >= 2.0.0 with `pip install torch>=2.0.0`
+7. **Windows path issues**: On Windows, use forward slashes or raw strings in paths
+8. **Conda environment conflicts**: If using conda, consider `conda install pytorch` instead of pip for PyTorch
+
+**Environment-Specific Notes:**
+
+- **macOS Apple Silicon**: PyTorch MPS backend may cause warnings (safe to ignore)
+- **Windows**: Some tests may run slower due to Windows Defender scanning
+- **Docker/CI**: Use `pytest --tb=short -q` for cleaner output in automated environments
+- **Corporate networks**: Some tests download small datasets - ensure internet access or pre-download datasets
 
 #### Quick Testing
 
