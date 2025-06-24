@@ -84,9 +84,19 @@ pip install -r requirements.txt -r tests/requirements.txt
 
 #### PyTorch Installation Notes
 
-- **CPU-only**: Faster to install, suitable for testing and development
-- **GPU (CUDA)**: Required for full experiments and NVIDIA Nsight Compute profiling
-- **Installation size**: PyTorch can be 1-3GB. The setup script uses CPU wheels by default for faster CI/development
+- **CPU-only**: Faster to install (~300MB), suitable for testing and development
+- **GPU (CUDA)**: Required for full experiments and NVIDIA Nsight Compute profiling (~2-3GB)
+- **Installation size**: CUDA PyTorch can be 2-3GB. For CI/testing, use CPU-only version to save disk space
+- **Disk space issues**: If you encounter "No space left on device" errors, use the minimal installation option above
+
+#### Mamba Model Support
+
+This project uses **Mamba** models from `state-spaces/mamba-2.8b-hf`. Requirements:
+
+- **Transformers**: >=4.39.0 (Mamba support added in 4.39.0)
+- **CUDA dependencies**: `causal-conv1d>=1.2.0` and `mamba-ssm>=1.2.0` for optimized performance
+- **CPU fallback**: Works without CUDA but uses slower implementations
+- **Memory**: A100 40GB recommended for full 2.8B model experiments
 
 #### Verify Installation
 
@@ -121,7 +131,8 @@ This usually means your Python version or pip is too old. The project now uses f
 
 4. **Manual installation for older environments:**
    ```bash
-   pip install 'numpy>=1.21.0' 'torch>=2.0.0' 'transformers>=4.30.0'
+   pip install 'numpy>=1.21.0' 'torch>=2.0.0' 'transformers>=4.39.0'
+   pip install 'causal-conv1d>=1.2.0' 'mamba-ssm>=1.2.0'  # Mamba dependencies
    pip install -e . --no-deps
    ```
 

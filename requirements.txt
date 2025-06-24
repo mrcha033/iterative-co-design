@@ -1,19 +1,23 @@
 # Pinned versions for reproducibility
-transformers==4.38.2
-datasets==2.18.0
-pyyaml==6.0.1
-numpy==1.24.4
-scikit-learn==1.3.2
-pandas==2.0.3
-tqdm==4.66.2
-hydra-core==1.3.2
-omegaconf==2.3.0
-wandb==0.16.4
+transformers>=4.39.0  # Mamba support since 4.39.0
+datasets>=2.14.0
+pyyaml>=6.0
+numpy>=1.21.0
+scikit-learn>=1.3.0
+pandas>=1.5.0
+tqdm>=4.64.0
+hydra-core>=1.3.0
+omegaconf>=2.3.0
+wandb>=0.15.0
 pytest==8.0.2
 mkdocs==1.5.3
 mkdocs-material==9.5.13
 mkdocstrings[python]==0.24.1
 ruff==0.12.0
-matplotlib==3.7.5
-seaborn==0.13.2
+matplotlib>=3.5.0
+seaborn>=0.11.0
 torch>=2.0.0  # Keep flexible for CUDA compatibility 
+
+# Mamba specific dependencies for CUDA optimization
+causal-conv1d>=1.2.0
+mamba-ssm>=1.2.0
