@@ -1,32 +1,10 @@
-# @package _global_
-defaults:
-  - override /model: base_model
+# Mamba-3B Model Configuration
+name: "state-spaces/mamba-2.8b-hf"
+vocab_size: 50277
+hidden_size: 2560
+task: "language_modeling"
 
-# Mamba-3B model configuration
-model:
-  name: "state-spaces/mamba-2.8b-hf"  # Using available 2.8B model
-  type: "mamba"
-  precision: "float16"
-  device: "cuda"
-  max_length: 2048
-
-# Co-design specific parameters
-co_design:
-  # Target layer for IASP analysis - using correct Mamba layer structure
+# IASP Configuration
+iasp:
   target_layer_name: "backbone.layers.0.mixer.x_proj"
-  
-  # HDS parameters
-  hds:
-    target_sparsity: 0.5
-    block_size: 16
-    magnitude_based: true
-    
-  # IASP parameters  
-  iasp:
-    num_samples: 100
-    correlation_threshold: 0.7
-    
-  # Iterative parameters
-  iterative:
-    max_iterations: 5
-    convergence_threshold: 0.01
+  cluster_size_range: [16, 128] 
