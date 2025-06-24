@@ -288,9 +288,15 @@ if __name__ == "__main__":
                         cache[model_hash] = metrics
                         self._write_cache(cache)
                         return metrics
+                elif result.returncode == 255 and "ERR_NVGPUCTRPERM" in result.stdout:
+                    # NCU permission error - try nvprof as fallback
+                    warnings.warn("NCU requires elevated permissions. Trying nvprof as fallback...")
+                    nvprof_metrics = self._profile_with_nvprof(temp_dir, script_path, cache, model_hash)
+                    if nvprof_metrics:
+                        return nvprof_metrics
                 
-                # If NCU fails, return estimated values based on model characteristics
-                warnings.warn("NCU profiling failed, using estimated cache hit rates")
+                # If both NCU and nvprof fail, return estimated values
+                warnings.warn("GPU profiling failed, using estimated cache hit rates")
                 estimated_metrics = {
                     "l2_tex_hit_rate.pct": 72.5,  # Conservative estimate for transformer models
                     "l1tex__t_sectors_hit.pct": 82.0
