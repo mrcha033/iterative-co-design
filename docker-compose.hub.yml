@@ -1,44 +1,12 @@
-version: '3.8'
-
 services:
-  # Base service - builds the image
+  # Base service - uses pre-built image from Docker Hub
   base:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: iterative-co-design:latest
-    command: >
-      python -c "
-      import torch;
-      print('🔍 Environment Verification');
-      print('===========================');
-      print('PyTorch:', torch.__version__);
-      print('CUDA available:', torch.cuda.is_available());
-      print('CUDA devices:', torch.cuda.device_count() if torch.cuda.is_available() else 0);
-      try:
-        from transformers import BertModel;
-        print('✅ BERT models: Available');
-      except ImportError as e:
-        print('❌ BERT models: Failed -', e);
-      try:
-        from mamba_ssm import MambaLMHeadModel;
-        print('✅ mamba-ssm: Import successful');
-      except ImportError as e:
-        print('❌ mamba-ssm: Failed -', e);
-      try:
-        from transformers import MambaForCausalLM;
-        print('✅ Transformers Mamba: Available');
-      except ImportError as e:
-        print('❌ Transformers Mamba: Failed -', e);
-      print();
-      print('🚀 Ready to run experiments!');
-      print('  BERT: python scripts/run_experiment.py model=bert_base dataset=sst2 method=dense');
-      print('  Mamba: python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=dense');
-      "
+    image: mrcha033/iterative-co-design:latest
+    command: echo "🐳 Using pre-built image from Docker Hub - Environment ready!"
 
   # Trainer service - runs BERT experiments
   trainer:
-    image: iterative-co-design:latest
+    image: mrcha033/iterative-co-design:latest
     command: python scripts/run_experiment.py model=bert_base dataset=sst2 method=dense dry_run=true
     volumes:
       - .:/workspace
@@ -57,7 +25,7 @@ services:
 
   # Mamba trainer (stable with pre-built wheel)
   mamba-trainer:
-    image: iterative-co-design:latest
+    image: mrcha033/iterative-co-design:latest
     command: python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=dense dry_run=true
     volumes:
       - .:/workspace
@@ -76,7 +44,7 @@ services:
 
   # Interactive shell
   shell:
-    image: iterative-co-design:latest
+    image: mrcha033/iterative-co-design:latest
     command: /bin/bash
     volumes:
       - .:/workspace
@@ -96,7 +64,7 @@ services:
 
   # Jupyter notebook service
   jupyter:
-    image: iterative-co-design:latest
+    image: mrcha033/iterative-co-design:latest
     command: >
       bash -c "
       pip install jupyter notebook ipykernel &&

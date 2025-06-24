@@ -1,0 +1,45 @@
+services:
+  # Base service - uses pre-built image from Docker Hub (CPU only)
+  base:
+    image: mrcha033/iterative-co-design:latest
+    command: echo "🐳 Pre-built image from Docker Hub ready! (CPU mode)"
+
+  # Trainer service - runs BERT experiments (CPU only)
+  trainer:
+    image: mrcha033/iterative-co-design:latest
+    command: python scripts/run_experiment.py model=bert_base dataset=sst2 method=dense dry_run=true
+    volumes:
+      - .:/workspace
+      - ./outputs:/workspace/outputs
+      - ./results:/workspace/results
+    environment:
+      - CUDA_VISIBLE_DEVICES=""
+
+  # Interactive shell (CPU only)
+  shell:
+    image: mrcha033/iterative-co-design:latest
+    command: /bin/bash
+    volumes:
+      - .:/workspace
+      - ./outputs:/workspace/outputs
+      - ./results:/workspace/results
+    stdin_open: true
+    tty: true
+    environment:
+      - CUDA_VISIBLE_DEVICES=""
+
+  # Jupyter notebook service (CPU only)
+  jupyter:
+    image: mrcha033/iterative-co-design:latest
+    command: >
+      bash -c "
+      pip install jupyter notebook ipykernel &&
+      jupyter notebook --ip 0.0.0.0 --port 8888 --no-browser --allow-root --NotebookApp.token=''
+      "
+    volumes:
+      - .:/workspace
+      - ./notebooks:/workspace/notebooks
+    ports:
+      - "8888:8888"
+    environment:
+      - CUDA_VISIBLE_DEVICES="" 

@@ -1,61 +1,53 @@
 # Multi-stage Docker build for iterative-co-design with Mamba support
 # Compatible with CUDA 12.1 and A100 GPU
 
-# Build stage for CUDA tools
-FROM nvidia/cuda:12.1-devel-ubuntu22.04 as cuda_tools
+########################  Build-time arguments  ########################
+ARG CUDA_VERSION=11.8.0
+ARG CUDNN_VERSION=8
+ARG UBUNTU_VERSION=22.04
+ARG TORCH_VERSION=2.2.2
+ARG CU_TAG=cu118
+ARG PYVER=cp310
+ARG MAMBA_WHL=mamba_ssm-2.2.4+cu11torch2.2cxx11abiFALSE-${PYVER}-${PYVER}-linux_x86_64.whl
 
-# Install build tools and NVIDIA tools
+########################  Base image  ##################################
+FROM nvidia/cuda:${CUDA_VERSION}-cudnn${CUDNN_VERSION}-devel-ubuntu${UBUNTU_VERSION}
+
+ARG TORCH_VERSION CU_TAG PYVER MAMBA_WHL
+
+########################  Env & flags  #################################
+ENV DEBIAN_FRONTEND=noninteractive \
+    HF_HOME=/root/.cache/huggingface \
+    PYTHONUNBUFFERED=1 \
+    CUDA_HOME=/usr/local/cuda \
+    PATH=/usr/local/cuda/bin:$PATH \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
+    TOKENIZERS_PARALLELISM=false \
+    MAX_JOBS=4 \
+    MAMBA_SKIP_CUDA_BUILD=TRUE
+
+########################  System packages  #############################
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    cuda-nsight-compute-12-1 \
-    && rm -rf /var/lib/apt/lists/*
+        build-essential python3 python3-pip python-is-python3 \
+        git wget curl unzip vim cmake ninja-build pkg-config \
+        libgl1 libgfortran5 && \
+    rm -rf /var/lib/apt/lists/*
 
-# Final stage
-FROM nvidia/cuda:12.1-base-ubuntu22.04
+########################  Python deps  #################################
+WORKDIR /workspace
+COPY requirements.txt .
 
-# Set non-interactive frontend
-ENV DEBIAN_FRONTEND=noninteractive
+# 1) pip upgrade
+RUN pip install --no-cache-dir --upgrade pip 'setuptools<70' wheel packaging numpy
 
-# Install essential packages and build tools for compilation
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    wget \
-    bzip2 \
-    build-essential \
-    ninja-build \
-    pkg-config \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+# 2) PyTorch & friends - official CU118 index
+RUN pip install --no-cache-dir "torch==${TORCH_VERSION}+${CU_TAG}" \
+        "torchvision==0.17.2+${CU_TAG}" "torchaudio==2.2.2+${CU_TAG}" \
+        --index-url https://download.pytorch.org/whl/${CU_TAG}
 
-# Copy NVIDIA tools from build stage
-COPY --from=cuda_tools /usr/local/cuda-12.1/nsight-compute-2023.3.1 /usr/local/cuda-12.1/nsight-compute-2023.3.1
-ENV PATH=/usr/local/cuda-12.1/nsight-compute-2023.3.1:$PATH
-
-# Install Miniconda efficiently
-ENV CONDA_DIR /opt/conda
-RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh \
-    && /bin/bash ~/miniconda.sh -b -p /opt/conda \
-    && rm ~/miniconda.sh
-
-ENV PATH=$CONDA_DIR/bin:$PATH
-
-# Create and activate environment
-RUN conda create -n iterative-co-design python=3.10 -y \
-    && conda clean -afy
-
-# Activate environment and install core dependencies
-ENV CONDA_DEFAULT_ENV=iterative-co-design
-ENV PATH=/opt/conda/envs/iterative-co-design/bin:$PATH
-
-# Install PyTorch with CUDA 12.1 support
-RUN /opt/conda/envs/iterative-co-design/bin/pip install \
-    torch==2.3.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-
-# Install core dependencies
-RUN /opt/conda/envs/iterative-co-design/bin/pip install \
+# 3) Core dependencies
+RUN pip install --no-cache-dir \
     numpy>=1.21.0 \
-    transformers>=4.36.0 \
-    datasets>=2.14.0 \
     scikit-learn>=1.3.0 \
     pandas>=1.5.0 \
     tqdm>=4.64.0 \
@@ -65,39 +57,55 @@ RUN /opt/conda/envs/iterative-co-design/bin/pip install \
     wandb>=0.15.0 \
     matplotlib>=3.5.0 \
     seaborn>=0.11.0 \
-    pytest>=8.0.2
+    pytest>=8.0.2 \
+    datasets>=2.14.0
 
-# Set up workspace
-WORKDIR /workspace
+# 4) Install mamba-ssm wheel + transformers
+ENV MAMBA_SKIP_CUDA_BUILD=TRUE
+RUN wget -q https://github.com/state-spaces/mamba/releases/download/v2.2.4/${MAMBA_WHL} \
+        && pip install --no-cache-dir ${MAMBA_WHL} \
+        && rm ${MAMBA_WHL}
+
+# Install causal-conv1d
+RUN pip install --no-cache-dir causal-conv1d>=1.2.0
+
+# Install transformers with Mamba support
+RUN pip install --no-cache-dir "transformers>=4.42.4"
+
+# 5) Copy application source
 COPY . .
 
-# Install the package
-RUN /opt/conda/envs/iterative-co-design/bin/pip install -e .
+# 6) Install the package
+RUN pip install --no-cache-dir -e .
 
-# Optional: Install Mamba dependencies (may fail, but will continue)
-RUN /opt/conda/envs/iterative-co-design/bin/pip install \
-    transformers>=4.39.0 \
-    causal-conv1d>=1.2.0 \
-    mamba-ssm>=1.2.0 \
-    --no-build-isolation || echo "⚠️ Mamba installation failed, continuing with BERT support only"
+########################  Diagnostic script  ###########################
+RUN python - <<'PY'
+import torch
+print("✅ PyTorch:", torch.__version__, "| CUDA available:", torch.cuda.is_available())
+print("✅ CUDA devices:", torch.cuda.device_count() if torch.cuda.is_available() else 0)
 
-# Verification script
-RUN echo '#!/bin/bash\n\
-echo "🔍 Environment Verification"\n\
-echo "==========================="\n\
-python -c "import torch; print(f\"PyTorch: {torch.__version__}\")"\n\
-python -c "import torch; print(f\"CUDA available: {torch.cuda.is_available()}\")"\n\
-python -c "import torch; print(f\"CUDA devices: {torch.cuda.device_count() if torch.cuda.is_available() else 0}\")"\n\
-python -c "from transformers import BertModel; print(\"✅ BERT models: Available\")"\n\
-python -c "from transformers import MambaForCausalLM; print(\"✅ Mamba models: Available\")" 2>/dev/null || echo "❌ Mamba models: Not available (use BERT instead)"\n\
-echo ""\n\
-echo "🚀 Ready to run experiments!"\n\
-echo "  BERT: python scripts/run_experiment.py model=bert_base dataset=sst2 method=dense"\n\
-echo "  Mamba: python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=dense"\n\
-' > /workspace/verify_env.sh && chmod +x /workspace/verify_env.sh
+try:
+    from transformers import BertModel
+    print("✅ BERT models: Available")
+except ImportError as e:
+    print("❌ BERT models: Failed -", e)
 
-# Set default shell to use conda environment  
-SHELL ["/opt/conda/envs/iterative-co-design/bin/python", "-c"]
+try:
+    from mamba_ssm import MambaLMHeadModel
+    print("✅ mamba-ssm: Import successful")
+except ImportError as e:
+    print("❌ mamba-ssm: Failed -", e)
 
-# Default command
-CMD ["/bin/bash", "/workspace/verify_env.sh"] 
+try:
+    from transformers import MambaForCausalLM
+    print("✅ Transformers Mamba: Available")
+except ImportError as e:
+    print("❌ Transformers Mamba: Failed -", e)
+
+print("\n🚀 Environment ready!")
+print("  BERT: python scripts/run_experiment.py model=bert_base dataset=sst2 method=dense")
+print("  Mamba: python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=dense")
+PY
+
+########################  Default entrypoint  ###########################
+CMD ["python", "-c", "print('🐳 Docker container ready! Use docker-compose commands to run experiments.')"] 

@@ -245,57 +245,82 @@ This research focuses on performance optimization techniques for neural networks
 
 Docker provides a stable environment for running experiments without dependency issues.
 
-#### Basic Method
+📖 **[Docker Quick Start Guide](DOCKER_QUICKSTART.md)**
+
+#### Option 1: Use Pre-built Image (Recommended)
 
 ```bash
-# 1. Build Image
+# 1. Pull pre-built image from Docker Hub
+docker pull mrcha033/iterative-co-design:latest
+
+# 2. Use pre-built image with docker-compose
+# For GPU environments:
+docker-compose -f docker-compose.hub.yml run base
+
+# For CPU-only environments (Windows/WSL):
+docker-compose -f docker-compose.cpu.yml run base
+
+# Run experiments:
+docker-compose -f docker-compose.cpu.yml run trainer
+```
+
+**Available Images:**
+- `mrcha033/iterative-co-design:latest` - Latest stable build
+- `mrcha033/iterative-co-design:v1.0-mamba` - Version with Mamba support
+
+#### Option 2: Build Locally
+
+```bash
+# 1. Build image locally
 docker-compose build base
 
-# 2. 
+# 2. Verify environment
 docker-compose run base
 
-# 3. BERT 실험 실행 (안정적)
+# 3. Run BERT experiment (stable)
 docker-compose run trainer
 
-# 4. Mamba 실험 실행 (고급)
+# 4. Run Mamba experiment (advanced)
 docker-compose run mamba-trainer
 
-# 5. 대화형 셸
+# 5. Interactive shell
 docker-compose run shell
 
-# 6. Jupyter 노트북 (http://localhost:8888)
+# 6. Jupyter notebook (http://localhost:8888)
 docker-compose up jupyter
 ```
 
-#### 커스텀 실험 실행
+#### Custom Experiment Execution
 
 ```bash
-# 특정 실험 명령어로 실행
+# Run specific experiment command
 docker-compose run --rm trainer bash -c "
   source /opt/conda/bin/activate iterative-co-design &&
   python scripts/run_experiment.py model=bert_base dataset=sst2 method=iterative
 "
 
-# 결과 파일 확인
+# Check result files
 ls outputs/
 ls results/
 ```
 
-#### Docker 장점
+#### Docker Advantages
 
-✅ **환경 격리**: 호스트 시스템과 독립적인 실행 환경  
-✅ **의존성 해결**: CUDA, PyTorch, Mamba 등 모든 의존성 자동 설치  
-✅ **재현성**: 동일한 환경에서 실험 결과 재현 가능  
-✅ **A100 GPU 지원**: NVIDIA Docker를 통한 GPU 접근  
-✅ **Mamba 옵션**: 컴파일 실패 시 BERT 모델로 자동 폴백
+✅ **Environment Isolation**: Independent execution environment from host system  
+✅ **Stable Mamba Support**: Pre-built mamba-ssm wheel (v2.2.4) for reliable installation  
+✅ **CUDA 11.8 Compatibility**: Proven stable configuration with PyTorch 2.2.2  
+✅ **Reproducibility**: Consistent experiment results in identical environment  
+✅ **GPU Support**: NVIDIA Docker with CUDA 11.8 + cuDNN 8  
+✅ **No Conda Overhead**: Direct pip installation for faster builds
 
-#### Docker 요구사항
+#### Docker Requirements
 
-- **NVIDIA Docker**: A100 GPU 사용 시 필요
-- **메모리**: 최소 8GB RAM (이미지 빌드용)
-- **디스크**: 최소 10GB 여유 공간
+- **NVIDIA Docker**: Required for GPU usage
+- **CUDA Driver**: Compatible with CUDA 11.8 (driver ≥ 520.61.05)
+- **Memory**: Minimum 8GB RAM (for image building)
+- **Disk**: Minimum 12GB free space
 
-### 💻 로컬 설치 방법
+### 💻 Local Installation Method
 
 All experiments are orchestrated through the main runner script, `scripts/run_experiment.py`.
 
