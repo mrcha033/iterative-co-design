@@ -46,7 +46,7 @@ RUN pip install --no-cache-dir "torch==${TORCH_VERSION}+${CU_TAG}" \
         --index-url https://download.pytorch.org/whl/${CU_TAG}
 
 # 3) Core dependencies - Install NumPy first to ensure compatibility
-RUN pip install --no-cache-dir numpy>=1.21.0,<2.0.0
+RUN pip install --no-cache-dir "numpy>=1.21.0,<2.0.0"
 
 # 4) Other dependencies
 RUN pip install --no-cache-dir \

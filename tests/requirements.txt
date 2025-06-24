@@ -1,7 +1,6 @@
 # CPU-only testing dependencies (reduced disk usage)
-# Install PyTorch CPU version first to avoid CUDA dependencies
---index-url https://download.pytorch.org/whl/cpu
-torch>=2.0.0,<=2.3.1
+# Note: Install PyTorch CPU version separately with:
+# pip install torch>=2.0.0,<=2.3.1 --index-url https://download.pytorch.org/whl/cpu
 
 # Core testing dependencies
 pytest>=8.0.2
