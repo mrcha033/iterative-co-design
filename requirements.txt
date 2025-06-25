@@ -1,6 +1,6 @@
 # Core dependencies (install order matters!)
-numpy>=1.21.0
-torch>=2.0.0,<=2.3.1  # Compatible with CUDA 12.1
+numpy>=1.21.0,<2.0.0
+torch>=2.0.0,<3.0.0  # Compatible with CUDA 12.8
 
 # Basic ML dependencies  
 scikit-learn>=1.3.0

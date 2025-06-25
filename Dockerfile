@@ -1,14 +1,14 @@
 # Multi-stage Docker build for iterative-co-design with Mamba support
-# Compatible with CUDA 12.1 and A100 GPU
+# Compatible with CUDA 12.8 and A100 GPU
 
 ########################  Build-time arguments  ########################
-ARG CUDA_VERSION=11.8.0
+ARG CUDA_VERSION=12.8.0
 ARG CUDNN_VERSION=8
 ARG UBUNTU_VERSION=22.04
 ARG TORCH_VERSION=2.2.2
 ARG CU_TAG=cu118
 ARG PYVER=cp310
-ARG MAMBA_WHL=mamba_ssm-2.2.4+cu11torch2.2cxx11abiFALSE-${PYVER}-${PYVER}-linux_x86_64.whl
+ARG MAMBA_WHL=mamba_ssm-2.2.4+cu12torch2.2cxx11abiFALSE-${PYVER}-${PYVER}-linux_x86_64.whl
 
 ########################  Base image  ##################################
 FROM nvidia/cuda:${CUDA_VERSION}-cudnn${CUDNN_VERSION}-devel-ubuntu${UBUNTU_VERSION}
