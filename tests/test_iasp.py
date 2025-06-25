@@ -94,7 +94,6 @@ class TestIASP:
         
         if block_structure != "identity" and n_clusters > 1:
             # Verify that the permutation groups correlated elements
-            perm_array = np.array(permutation)
             # Check that highly correlated elements are grouped together
             # This is a simplified check - just verify valid permutation for now
             assert len(set(permutation)) == matrix_size

@@ -7,7 +7,6 @@ importing the source modules directly without installing the package.
 If running tests outside pytest, ensure PYTHONPATH includes the src directory.
 """
 
-import pytest
 import torch
 import torch.nn as nn
 from unittest.mock import patch, MagicMock
@@ -324,5 +323,4 @@ class TestApplyHDS:
             assert kwargs["lr"] == 1e-4
 
 
-if __name__ == "__main__":
-    pytest.main([__file__])
+

@@ -24,12 +24,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from datasets import load_dataset
 import json
 import pandas as pd
 from tqdm import tqdm
 import subprocess
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from datasets import load_dataset
+from utils.config import load_config
+from utils.profiler import LatencyProfiler
+from co_design.iasp import find_optimal_permutation
+from models.wrapper import ModelWrapper
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings("ignore")
@@ -47,10 +51,63 @@ def set_deterministic_seeds(seed: int = 42):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-from utils.config import load_config
-from utils.profiler import LatencyProfiler  # noqa: E402
-from co_design.iasp import find_optimal_permutation  # noqa: E402
-from models.wrapper import ModelWrapper  # noqa: E402
+
+# ================================
+# Figure Generation Functions
+# ================================
+
+def generate_random_permutations(model_size: int, n_samples: int = 20) -> list:
+    """Generate multiple random permutations for comparison."""
+    permutations = []
+    for _ in range(n_samples):
+        perm = list(range(model_size))
+        np.random.shuffle(perm)
+        permutations.append(perm)
+    return permutations
+
+def measure_permutation_latency(model, permutation, dummy_input_dict, profiler):
+    """Measure latency for a specific permutation."""
+    wrapped_model = ModelWrapper(model)
+    if torch.cuda.is_available():
+        wrapped_model.cuda()
+
+    # Apply permutation
+    wrapped_model.permute_model_weights(permutation)
+
+    # Measure latency
+    latency = profiler.measure_latency(wrapped_model, dummy_input_dict)
+    return latency
+
+def setup_model_and_data(
+    model_name="state-spaces/mamba-2.8b-hf",
+    dataset_name="wikitext",
+    dataset_config="wikitext-103-raw-v1",
+    sample_size=100,
+):
+    """Common setup for model and data loading."""
+    print("📥 Loading model and data...")
+
+    model = AutoModelForCausalLM.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    if not tokenizer.pad_token:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    dataset = load_dataset(dataset_name, dataset_config)
+    sample_dataset = dataset["validation"].select(range(sample_size))
+
+    def tokenize_function(examples):
+        return tokenizer(
+            examples["text"], padding="max_length", truncation=True, max_length=512
+        )
+
+    tokenized_dataset = sample_dataset.map(tokenize_function, batched=True)
+    tokenized_dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
+    data_loader = torch.utils.data.DataLoader(tokenized_dataset, batch_size=4)
+
+    if torch.cuda.is_available():
+        model.cuda()
+
+    return model, tokenizer, data_loader
 
 def generate_figure1(quick_mode=False):
     """

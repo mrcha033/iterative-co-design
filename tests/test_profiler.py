@@ -266,7 +266,7 @@ class TestLatencyProfiler:
 
                 # Verify subprocess was called with correct arguments
                 mock_subprocess_run.assert_called_once()
-                call_args = mock_subprocess.call_args[0][0]
+                call_args = mock_subprocess_run.call_args[0][0]
                 assert call_args[0] == "ncu"
                 assert "--metrics" in call_args
                 assert "l2_tex_hit_rate.pct" in call_args

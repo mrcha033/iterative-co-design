@@ -134,7 +134,6 @@ class TestQuantizationStrategies:
         
         # Mock the key components that each strategy should use
         mock_model = MockModel()
-        mock_dataloader = [{"input_ids": torch.randint(0, 100, (2, 8))}]
         
         # Verify that quantization can be applied
         quantized_model = apply_ptq(mock_model)
