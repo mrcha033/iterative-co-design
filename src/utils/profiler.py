@@ -35,7 +35,7 @@ DEFAULT_NUM_LATENCY_RUNS = 100
 GPU_WARMUP_RUNS = 10
 CPU_WARMUP_RUNS = 10
 DEFAULT_CACHE_DIR = "./outputs/profiler_cache"
-DEFAULT_NCU_METRICS = ["l2_tex_hit_rate.pct"]
+DEFAULT_NCU_METRICS = ["lts__t_sector_hit_rate.pct"]
 
 # Cache hit rate defaults (for fallback when profiling fails)
 TYPICAL_L2_CACHE_HIT_RATE = 75.0
@@ -49,7 +49,7 @@ MINIMAL_L1_CACHE_HIT_RATE = 78.0
 
 # NCU profiling settings
 NCU_TIMEOUT_SECONDS = 60  # Reduced timeout for faster profiling
-NCU_CSV_METRICS = "l2_cache_hit_rate,sm__sass_average_data_bytes_per_sector_mem_global_op_ld.pct"
+NCU_CSV_METRICS = "lts__t_sector_hit_rate.pct,sm__sass_average_data_bytes_per_sector_mem_global_op_ld.pct"
 
 # Add retry settings
 NCU_MAX_RETRIES = 2
@@ -185,7 +185,7 @@ class LatencyProfiler:
         # Skip GPU profiling if disabled via parameter or environment variable
         if not self.enable_gpu_profiling or os.getenv("DISABLE_GPU_PROFILING", "").lower() in ["true", "1", "yes"]:
             logger.info("GPU profiling disabled (via parameter or DISABLE_GPU_PROFILING env var), using typical cache hit rate values")
-            return {"l2_tex_hit_rate.pct": TYPICAL_L2_CACHE_HIT_RATE}
+            return {"lts__t_sector_hit_rate.pct": TYPICAL_L2_CACHE_HIT_RATE}
             
         if not torch.cuda.is_available():
             warnings.warn("CUDA not available - skipping hardware profiling")
@@ -280,7 +280,7 @@ if __name__ == "__main__":
             output_file = temp_dir / "ncu_output.csv"
             command_str = (
                 f"sudo -E {ncu_path} "
-                f"--metrics l2_cache_hit_rate,lts__t_sectors_miss_rate.pct,lts__t_sectors_hit_rate.pct "
+                f"--metrics lts__t_sector_hit_rate.pct "
                 f"--csv --log-file {output_file} "
                 f"--force-overwrite "
                 f"{python_path} {str(script_path)}"
@@ -319,7 +319,7 @@ if __name__ == "__main__":
                 if result.returncode == 0 and csv_content:
                     metrics = self._parse_ncu_csv_output(csv_content)
                     if metrics:
-                        logger.info(f"🎉 GPU Profiling successful! L2 Cache Hit Rate: {metrics.get('l2_tex_hit_rate.pct', 'N/A')}%")
+                        logger.info(f"🎉 GPU Profiling successful! L2 Cache Hit Rate: {metrics.get('lts__t_sector_hit_rate.pct', 'N/A')}%")
                         cache[model_hash] = metrics
                         self._write_cache(cache)
                         return metrics
@@ -335,10 +335,10 @@ if __name__ == "__main__":
 
             except subprocess.TimeoutExpired:
                 warnings.warn("GPU profiling timed out.")
-                return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
+                return {"lts__t_sector_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
             except Exception as e:
                 warnings.warn(f"An unexpected error occurred during profiling: {e}")
-                return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
+                return {"lts__t_sector_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
 
 
 
@@ -353,10 +353,10 @@ if __name__ == "__main__":
             metrics = {}
             
             for line in lines:
-                if "l2_tex_hit_rate.pct" in line:
+                if "lts__t_sector_hit_rate.pct" in line:
                     try:
                         value = float(line.split(",")[2])
-                        metrics["l2_tex_hit_rate.pct"] = value
+                        metrics["lts__t_sector_hit_rate.pct"] = value
                         logger.info(f"Found L2 cache hit rate: {value}%")
                     except (ValueError, IndexError):
                         continue
@@ -457,8 +457,8 @@ if __name__ == "__main__":
         for model_hash, metrics in cache.items():
             if "latency_ms" in metrics:
                 latencies.append(metrics["latency_ms"])
-            if "l2_tex_hit_rate.pct" in metrics:
-                cache_hits.append(metrics["l2_tex_hit_rate.pct"])
+            if "lts__t_sector_hit_rate.pct" in metrics:
+                cache_hits.append(metrics["lts__t_sector_hit_rate.pct"])
         
         summary = {
             "num_models_profiled": len(cache),

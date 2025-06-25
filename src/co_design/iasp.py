@@ -39,126 +39,102 @@ DEBUG_LAYER_DISPLAY_LIMIT = 20
 def get_activation_correlation(
     model: nn.Module,
     dataloader: DataLoader,
-    target_layer_name: str,
+    target_layer_names: List[str],
     max_samples: int = DEFAULT_MAX_ACTIVATION_SAMPLES,
     device: Optional[str] = None,
 ) -> np.ndarray:
     """
-    Computes the activation correlation matrix for a target layer's output.
-
-    This function hooks into the specified model layer, collects activations
-    as the model processes data from the dataloader, and then computes a
-    Pearson correlation matrix of the activations.
+    Computes the average activation correlation matrix across multiple target layers.
 
     Args:
         model: The PyTorch model to analyze.
         dataloader: The dataloader providing data samples.
-        target_layer_name: The name of the layer to hook for activations
-            (e.g., 'bert.encoder.layer.0.output.dense').
+        target_layer_names: A list of layer names to hook for activations.
         max_samples: The maximum number of samples to use for calculation.
-        device: The device to run the model on. If None, auto-detects CUDA availability.
+        device: The device to run the model on.
 
     Returns:
-        A 2D numpy array representing the Pearson correlation matrix of the
-        layer's output activations.
+        A 2D numpy array representing the average Pearson correlation matrix.
     """
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"No device specified, auto-detected: {device}")
-    
+
     model.to(device)
     model.eval()
 
-    activations = []
+    correlation_matrices = []
 
-    def hook_fn(module, input, output):
-        # We handle both tensor and tuple outputs (common in transformers)
-        act = output[0] if isinstance(output, tuple) else output
-        # Detach and move to CPU to avoid GPU memory buildup
-        activations.append(act.detach().cpu().numpy())
+    for target_layer_name in target_layer_names:
+        activations = []
 
-    # Find the target layer and register the hook
-    target_layer = None
-    for name, module in model.named_modules():
-        if name == target_layer_name:
-            target_layer = module
-            break
+        def hook_fn(module, input, output):
+            act = output[0] if isinstance(output, tuple) else output
+            activations.append(act.detach().cpu().numpy())
 
-    if target_layer is None:
-        logger.error(f"Layer '{target_layer_name}' not found in the model.")
-        # Log available layers for debugging
-        available_layers = [name for name, module in model.named_modules() if hasattr(module, 'weight') or hasattr(module, 'bias')]
-        logger.debug(f"Available layers: {available_layers[:DEBUG_LAYER_DISPLAY_LIMIT]}")
-        raise ValueError(f"Layer '{target_layer_name}' not found in the model.")
+        target_layer = None
+        for name, module in model.named_modules():
+            if name == target_layer_name:
+                target_layer = module
+                break
 
-    handle = target_layer.register_forward_hook(hook_fn)
+        if target_layer is None:
+            logger.error(f"Layer '{target_layer_name}' not found in the model.")
+            available_layers = [name for name, module in model.named_modules() if hasattr(module, 'weight') or hasattr(module, 'bias')]
+            logger.debug(f"Available layers: {available_layers[:DEBUG_LAYER_DISPLAY_LIMIT]}")
+            raise ValueError(f"Layer '{target_layer_name}' not found in the model.")
 
-    # Pass data through the model to collect activations
-    samples_collected = 0
-    for batch in tqdm(dataloader, desc="Collecting activations"):
-        if samples_collected >= max_samples:
-            break
+        handle = target_layer.register_forward_hook(hook_fn)
 
-        inputs = {
-            k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()
-        }
-        with torch.no_grad():
-            _ = model(**inputs)
+        samples_collected = 0
+        for batch in tqdm(dataloader, desc=f"Collecting activations for {target_layer_name}"):
+            if samples_collected >= max_samples:
+                break
 
-        # Determine how many samples were just processed using the first tensor
-        first_tensor = next((v for v in inputs.values() if torch.is_tensor(v)), None)
-        if first_tensor is not None:
-            samples_collected += first_tensor.size(0)
+            inputs = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
+            with torch.no_grad():
+                _ = model(**inputs)
+
+            first_tensor = next((v for v in inputs.values() if torch.is_tensor(v)), None)
+            if first_tensor is not None:
+                samples_collected += first_tensor.size(0)
+            else:
+                samples_collected += activations[-1].shape[0]
+
+            if samples_collected >= max_samples:
+                break
+
+        handle.remove()
+
+        if not activations:
+            raise ValueError(f"No activations were collected for layer {target_layer_name}.")
+
+        all_activations = np.concatenate(activations, axis=0)[:max_samples]
+
+        if all_activations.ndim == 3:
+            num_samples, seq_len, hidden_dim = all_activations.shape
+            all_activations_reshaped = all_activations.reshape(num_samples * seq_len, hidden_dim)
+        elif all_activations.ndim == 2:
+            all_activations_reshaped = all_activations
         else:
-            # Fallback: use the last collected activation's batch size
-            samples_collected += activations[-1].shape[0]
+            raise ValueError(f"Expected 2D or 3D activations, but got {all_activations.ndim}D.")
 
-        if samples_collected >= max_samples:
-            break
+        correlation_matrix = np.corrcoef(all_activations_reshaped, rowvar=False)
 
-    handle.remove()  # Ensure the hook is removed to prevent memory leaks
+        if np.any(np.isnan(correlation_matrix)):
+            logger.warning(f"Found NaN values in correlation matrix for layer {target_layer_name}, replacing with identity.")
+            correlation_matrix = np.nan_to_num(correlation_matrix, nan=NAN_REPLACEMENT_VALUE)
+            np.fill_diagonal(correlation_matrix, DIAGONAL_CORRELATION_VALUE)
+        
+        correlation_matrices.append(correlation_matrix)
 
-    if not activations:
-        raise ValueError(
-            "No activations were collected. Check the dataloader and model."
-        )
+    if not correlation_matrices:
+        raise ValueError("No correlation matrices were computed.")
 
-    # Concatenate all collected activations
-    all_activations = np.concatenate(activations, axis=0)[:max_samples]
-
-    # Handle both 2D and 3D activation tensors
-    if all_activations.ndim == 3:
-        # 3D case: (total_samples, seq_len, hidden_dim) -> (total_tokens, hidden_dim)
-        num_samples, seq_len, hidden_dim = all_activations.shape
-        all_activations_reshaped = all_activations.reshape(
-            num_samples * seq_len, hidden_dim
-        )
-        logger.info(
-            f"Reshaped 3D activations from {all_activations.shape} to {all_activations_reshaped.shape}"
-        )
-    elif all_activations.ndim == 2:
-        # 2D case: (total_samples, hidden_dim) - already in correct format
-        all_activations_reshaped = all_activations
-        logger.info(f"Using 2D activations with shape {all_activations.shape}")
-    else:
-        raise ValueError(
-            f"Expected 2D or 3D activations, but got {all_activations.ndim}D. "
-            f"Shape: {all_activations.shape}. The hook might be on an incompatible layer."
-        )
-
-    # Compute Pearson correlation matrix
-    correlation_matrix = np.corrcoef(all_activations_reshaped, rowvar=False)
-
-    # Handle NaNs that can occur from constant activation dimensions
-    if np.any(np.isnan(correlation_matrix)):
-        logger.warning(
-            "Found NaN values in correlation matrix, likely due to constant activations. Replacing with identity matrix."
-        )
-        # Replace NaN values with 0 correlations, except diagonal which should be 1
-        correlation_matrix = np.nan_to_num(correlation_matrix, nan=NAN_REPLACEMENT_VALUE)
-        np.fill_diagonal(correlation_matrix, DIAGONAL_CORRELATION_VALUE)
-
-    return correlation_matrix
+    # Return the average correlation matrix
+    avg_correlation_matrix = np.mean(correlation_matrices, axis=0)
+    logger.info(f"Computed average correlation matrix from {len(correlation_matrices)} layers.")
+    return avg_correlation_matrix
 
 
 def find_permutation_from_matrix(
@@ -289,7 +265,7 @@ def find_optimal_permutation_from_matrix(
 def find_optimal_permutation(
     model: nn.Module,
     data_loader: DataLoader,
-    target_layer_name: str,
+    target_layer_names: List[str],
     cluster_size_range: Tuple[int, int],
     device: Optional[str] = None,
 ) -> List[int]:
@@ -313,7 +289,7 @@ def find_optimal_permutation(
     correlation_matrix = get_activation_correlation(
         model=model,
         dataloader=data_loader,
-        target_layer_name=target_layer_name,
+        target_layer_names=target_layer_names,
         device=device,
     )
 
