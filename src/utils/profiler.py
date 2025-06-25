@@ -224,7 +224,7 @@ def run_model_inference():
         _ = torch.nn.functional.linear(x, torch.randn(hidden_size, vocab_size, device=device, dtype=torch.float16))
         torch.cuda.synchronize()
 if name == "main":
-run_model_inference()
+    run_model_inference()
 """
             script_path.write_text(script_content)
             python_path = shutil.which("python3")
