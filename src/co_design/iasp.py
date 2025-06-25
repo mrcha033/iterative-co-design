@@ -24,12 +24,23 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Constants for IASP algorithm
+DEFAULT_MAX_ACTIVATION_SAMPLES = 512
+MIN_CLUSTER_SIZE = 2
+DEFAULT_MIN_CLUSTERS_DIVISOR = 128  # d_model // 128
+DEFAULT_MAX_CLUSTERS_DIVISOR = 16   # d_model // 16
+SPECTRAL_CLUSTERING_N_INIT = 10
+SPECTRAL_CLUSTERING_RANDOM_STATE = 0  # For reproducibility
+NAN_REPLACEMENT_VALUE = 0.0
+DIAGONAL_CORRELATION_VALUE = 1.0
+DEBUG_LAYER_DISPLAY_LIMIT = 20
+
 
 def get_activation_correlation(
     model: nn.Module,
     dataloader: DataLoader,
     target_layer_name: str,
-    max_samples: int = 512,
+    max_samples: int = DEFAULT_MAX_ACTIVATION_SAMPLES,
     device: Optional[str] = None,
 ) -> np.ndarray:
     """
@@ -88,8 +99,8 @@ def get_activation_correlation(
             if hasattr(module, 'weight') or hasattr(module, 'bias'):  # Only show actual layers
                 print(f"  - {name}: {type(module).__name__}")
                 layer_count += 1
-                if layer_count > 20:  # Limit output
-                    print("  ... (showing first 20 layers)")
+                if layer_count > DEBUG_LAYER_DISPLAY_LIMIT:  # Limit output
+                    print(f"  ... (showing first {DEBUG_LAYER_DISPLAY_LIMIT} layers)")
                     break
         print()
         raise ValueError(f"Layer '{target_layer_name}' not found in the model.")
@@ -158,8 +169,8 @@ def get_activation_correlation(
             "Found NaN values in correlation matrix, likely due to constant activations. Replacing with identity matrix."
         )
         # Replace NaN values with 0 correlations, except diagonal which should be 1
-        correlation_matrix = np.nan_to_num(correlation_matrix, nan=0.0)
-        np.fill_diagonal(correlation_matrix, 1.0)
+        correlation_matrix = np.nan_to_num(correlation_matrix, nan=NAN_REPLACEMENT_VALUE)
+        np.fill_diagonal(correlation_matrix, DIAGONAL_CORRELATION_VALUE)
 
     return correlation_matrix
 
@@ -190,7 +201,7 @@ def find_permutation_from_matrix(
     clustering = SpectralClustering(
         n_clusters=n_clusters,
         affinity="precomputed",
-        random_state=0,  # for reproducibility
+        random_state=SPECTRAL_CLUSTERING_RANDOM_STATE,  # for reproducibility
     ).fit(affinity_matrix)
 
     labels = clustering.labels_
@@ -228,8 +239,8 @@ def find_optimal_permutation_from_matrix(
     if num_clusters is None:
         # Determine search bounds
         if clusters_range is None:
-            min_clusters = max(2, correlation_matrix.shape[0] // 128)
-            max_clusters = max(2, correlation_matrix.shape[0] // 16)
+            min_clusters = max(MIN_CLUSTER_SIZE, correlation_matrix.shape[0] // DEFAULT_MIN_CLUSTERS_DIVISOR)
+            max_clusters = max(MIN_CLUSTER_SIZE, correlation_matrix.shape[0] // DEFAULT_MAX_CLUSTERS_DIVISOR)
         else:
             min_clusters, max_clusters = clusters_range
 
@@ -245,8 +256,8 @@ def find_optimal_permutation_from_matrix(
             clustering = SpectralClustering(
                 n_clusters=k,
                 affinity="precomputed",
-                random_state=0,
-                n_init=10,
+                random_state=SPECTRAL_CLUSTERING_RANDOM_STATE,
+                n_init=SPECTRAL_CLUSTERING_N_INIT,
             )
             # Use absolute value of correlation as affinity for clustering,
             # consistent with find_permutation_from_matrix
@@ -273,8 +284,8 @@ def find_optimal_permutation_from_matrix(
         clustering = SpectralClustering(
             n_clusters=num_clusters,
             affinity="precomputed",
-            random_state=0,
-            n_init=10,
+            random_state=SPECTRAL_CLUSTERING_RANDOM_STATE,
+            n_init=SPECTRAL_CLUSTERING_N_INIT,
         )
         # Use absolute value of correlation as affinity for clustering,
         # consistent with find_permutation_from_matrix
@@ -322,8 +333,8 @@ def find_optimal_permutation(
 
     d_model = correlation_matrix.shape[0]
     min_size, max_size = cluster_size_range
-    min_clusters = max(2, d_model // max_size)
-    max_clusters = max(2, d_model // min_size)
+    min_clusters = max(MIN_CLUSTER_SIZE, d_model // max_size)
+    max_clusters = max(MIN_CLUSTER_SIZE, d_model // min_size)
 
     return find_optimal_permutation_from_matrix(
         correlation_matrix,

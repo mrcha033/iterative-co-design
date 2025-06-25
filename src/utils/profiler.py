@@ -21,16 +21,40 @@ from pathlib import Path
 import shutil
 import warnings
 import numpy as np
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 import torch.nn as nn
 import hashlib
 import json
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Constants for profiling
+DEFAULT_NUM_LATENCY_RUNS = 100
+GPU_WARMUP_RUNS = 10
+CPU_WARMUP_RUNS = 10
+DEFAULT_CACHE_DIR = "./outputs/profiler_cache"
+DEFAULT_NCU_METRICS = ["l2_tex_hit_rate.pct"]
+
+# Cache hit rate defaults (for fallback when profiling fails)
+TYPICAL_L2_CACHE_HIT_RATE = 75.0
+TYPICAL_L1_CACHE_HIT_RATE = 85.0
+CONSERVATIVE_L2_CACHE_HIT_RATE = 72.5
+CONSERVATIVE_L1_CACHE_HIT_RATE = 82.0
+FALLBACK_L2_CACHE_HIT_RATE = 70.0
+FALLBACK_L1_CACHE_HIT_RATE = 80.0
+MINIMAL_L2_CACHE_HIT_RATE = 68.0
+MINIMAL_L1_CACHE_HIT_RATE = 78.0
+
+# NCU profiling settings
+NCU_TIMEOUT_SECONDS = 180
+NCU_CSV_METRICS = "l2_cache_hit_rate,sm__sass_average_data_bytes_per_sector_mem_global_op_ld.pct"
 
 
 class LatencyProfiler:
     def __init__(
         self,
-        cache_dir: str = "./outputs/profiler_cache",
+        cache_dir: str = DEFAULT_CACHE_DIR,
         ncu_metrics: Optional[list] = None,
     ):
         """Initialize the profiler with configurable cache directory and metrics.
@@ -42,7 +66,7 @@ class LatencyProfiler:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.cache_file = self.cache_dir / "profiler_cache.json"
-        self.ncu_metrics = ncu_metrics or ["l2_tex_hit_rate.pct"]
+        self.ncu_metrics = ncu_metrics or DEFAULT_NCU_METRICS
 
     def _get_model_hash(self, model_state_dict) -> str:
         """Creates a deterministic SHA256 hash of a model's state_dict."""
@@ -83,7 +107,7 @@ class LatencyProfiler:
         self,
         model: nn.Module,
         dummy_input: Dict[str, torch.Tensor],
-        num_runs: int = 100,
+        num_runs: int = DEFAULT_NUM_LATENCY_RUNS,
     ) -> float:
         """Measures the average inference latency of a model.
 
@@ -117,7 +141,7 @@ class LatencyProfiler:
         timings = np.zeros((num_runs, 1))
 
         # Warmup
-        for _ in range(10):
+        for _ in range(GPU_WARMUP_RUNS):
             _ = model(**dummy_input)
         torch.cuda.synchronize()
 
@@ -136,7 +160,7 @@ class LatencyProfiler:
     ) -> float:
         """CPU-specific latency measurement using time.perf_counter."""
         # Warmup
-        for _ in range(10):
+        for _ in range(CPU_WARMUP_RUNS):
             _ = model(**dummy_input)
 
         # Measurement
@@ -167,8 +191,8 @@ class LatencyProfiler:
             warnings.warn("NVIDIA Nsight Compute (ncu) not found in PATH")
             # Return reasonable default cache hit rates for modern GPUs
             return {
-                "l2_tex_hit_rate.pct": 75.0,  # Typical L2 cache hit rate for deep learning
-                "l1tex__t_sectors_hit.pct": 85.0  # Typical L1 texture cache hit rate
+                "l2_tex_hit_rate.pct": TYPICAL_L2_CACHE_HIT_RATE,  # Typical L2 cache hit rate for deep learning
+                "l1tex__t_sectors_hit.pct": TYPICAL_L1_CACHE_HIT_RATE  # Typical L1 texture cache hit rate
             }
 
         # Check cache
@@ -256,7 +280,7 @@ if __name__ == "__main__":
                 # Run NCU with proper metrics
                 cmd = [
                     "ncu",
-                    "--metrics", "l2_cache_hit_rate,sm__sass_average_data_bytes_per_sector_mem_global_op_ld.pct",
+                    "--metrics", NCU_CSV_METRICS,
                     "--csv",
                     "--target-processes", "all",
                     "--kernel-name", "regex:.*",
@@ -271,13 +295,13 @@ if __name__ == "__main__":
                 
                 if test_result.returncode != 0:
                     warnings.warn("NCU not accessible or requires elevated privileges")
-                    return {"l2_tex_hit_rate.pct": 75.0}
+                    return {"l2_tex_hit_rate.pct": TYPICAL_L2_CACHE_HIT_RATE}
 
                 result = subprocess.run(
                     cmd, 
                     capture_output=True, 
                     text=True, 
-                    timeout=180,
+                    timeout=NCU_TIMEOUT_SECONDS,
                     cwd=temp_dir
                 )
                 
@@ -298,8 +322,8 @@ if __name__ == "__main__":
                 # If both NCU and nvprof fail, return estimated values
                 warnings.warn("GPU profiling failed, using estimated cache hit rates")
                 estimated_metrics = {
-                    "l2_tex_hit_rate.pct": 72.5,  # Conservative estimate for transformer models
-                    "l1tex__t_sectors_hit.pct": 82.0
+                    "l2_tex_hit_rate.pct": CONSERVATIVE_L2_CACHE_HIT_RATE,  # Conservative estimate for transformer models
+                    "l1tex__t_sectors_hit.pct": CONSERVATIVE_L1_CACHE_HIT_RATE
                 }
                 return estimated_metrics
                     
@@ -307,15 +331,15 @@ if __name__ == "__main__":
                 warnings.warn(f"NCU profiling failed: {getattr(e, 'stderr', str(e))}")
                 # Return realistic fallback cache metrics
                 fallback_metrics = {
-                    "l2_tex_hit_rate.pct": 70.0,  # Realistic L2 hit rate
-                    "l1tex__t_sectors_hit.pct": 80.0  # Realistic L1 hit rate
+                    "l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE,  # Realistic L2 hit rate
+                    "l1tex__t_sectors_hit.pct": FALLBACK_L1_CACHE_HIT_RATE  # Realistic L1 hit rate
                 }
                 return fallback_metrics
             except Exception as e:
                 warnings.warn(f"Unexpected error in NCU profiling: {e}")
                 return {
-                    "l2_tex_hit_rate.pct": 68.0,  # Conservative realistic value
-                    "l1tex__t_sectors_hit.pct": 78.0
+                    "l2_tex_hit_rate.pct": MINIMAL_L2_CACHE_HIT_RATE,  # Conservative realistic value
+                    "l1tex__t_sectors_hit.pct": MINIMAL_L1_CACHE_HIT_RATE
                 }
 
     def _parse_ncu_csv_output(self, csv_output: str) -> Optional[Dict[str, float]]:
@@ -372,3 +396,127 @@ if __name__ == "__main__":
         except Exception as e:
             warnings.warn(f"Failed to parse NCU CSV output: {e}")
             return None
+    
+    def profile_memory_usage(self, model: nn.Module, 
+                           dummy_input: Dict[str, torch.Tensor]) -> Dict[str, float]:
+        """
+        Profile memory usage of the model.
+        
+        Args:
+            model: The PyTorch model to profile
+            dummy_input: Dictionary of input tensors
+            
+        Returns:
+            Dictionary with memory usage statistics
+        """
+        device = next(model.parameters()).device
+        dummy_input = {k: v.to(device) for k, v in dummy_input.items()}
+        
+        memory_stats = {}
+        
+        if device.type == "cuda":
+            # Clear cache and get baseline
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            memory_before = torch.cuda.memory_allocated()
+            
+            # Run inference
+            with torch.no_grad():
+                _ = model(**dummy_input)
+            
+            torch.cuda.synchronize()
+            memory_after = torch.cuda.memory_allocated()
+            
+            # Get peak memory
+            peak_memory = torch.cuda.max_memory_allocated()
+            
+            memory_stats = {
+                "memory_before_mb": memory_before / 1024 / 1024,
+                "memory_after_mb": memory_after / 1024 / 1024,
+                "memory_delta_mb": (memory_after - memory_before) / 1024 / 1024,
+                "peak_memory_mb": peak_memory / 1024 / 1024,
+            }
+            
+            # Reset peak memory counter
+            torch.cuda.reset_peak_memory_stats()
+        else:
+            # For CPU, we can only provide basic info
+            import psutil
+            process = psutil.Process()
+            memory_info = process.memory_info()
+            
+            memory_stats = {
+                "memory_rss_mb": memory_info.rss / 1024 / 1024,
+                "memory_vms_mb": memory_info.vms / 1024 / 1024,
+            }
+        
+        return memory_stats
+    
+    def get_profiling_summary(self) -> Dict[str, Any]:
+        """
+        Get a summary of all cached profiling results.
+        
+        Returns:
+            Dictionary with profiling statistics
+        """
+        cache = self._read_cache()
+        
+        if not cache:
+            return {
+                "num_models_profiled": 0,
+                "avg_latency_ms": 0.0,
+                "avg_l2_cache_hit_rate": 0.0,
+            }
+        
+        latencies = []
+        cache_hits = []
+        
+        for model_hash, metrics in cache.items():
+            if "latency_ms" in metrics:
+                latencies.append(metrics["latency_ms"])
+            if "l2_tex_hit_rate.pct" in metrics:
+                cache_hits.append(metrics["l2_tex_hit_rate.pct"])
+        
+        summary = {
+            "num_models_profiled": len(cache),
+            "avg_latency_ms": np.mean(latencies) if latencies else 0.0,
+            "std_latency_ms": np.std(latencies) if latencies else 0.0,
+            "avg_l2_cache_hit_rate": np.mean(cache_hits) if cache_hits else 0.0,
+            "std_l2_cache_hit_rate": np.std(cache_hits) if cache_hits else 0.0,
+        }
+        
+        return summary
+    
+    def clear_cache(self):
+        """Clear the profiler cache."""
+        if self.cache_file.exists():
+            self.cache_file.unlink()
+            logger.info("Profiler cache cleared")
+    
+    def profile_all_metrics(self, model: nn.Module, 
+                           dummy_input: Dict[str, torch.Tensor]) -> Dict[str, Any]:
+        """
+        Profile all available metrics for a model.
+        
+        Args:
+            model: The PyTorch model to profile
+            dummy_input: Dictionary of input tensors
+            
+        Returns:
+            Dictionary with all profiling metrics
+        """
+        all_metrics = {}
+        
+        # Latency
+        all_metrics["latency_ms"] = self.measure_latency(model, dummy_input)
+        
+        # Cache hits
+        cache_metrics = self.measure_cache_hits(model, dummy_input)
+        if cache_metrics:
+            all_metrics.update(cache_metrics)
+        
+        # Memory usage
+        memory_metrics = self.profile_memory_usage(model, dummy_input)
+        all_metrics.update(memory_metrics)
+        
+        return all_metrics

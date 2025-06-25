@@ -21,8 +21,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Constants for HDS algorithm
+DEFAULT_N_SPARSITY = 2  # N in N:M sparsity
+DEFAULT_M_SPARSITY = 4  # M in N:M sparsity
+DEFAULT_GUMBEL_TEMPERATURE = 1.0
+DEFAULT_FINE_TUNING_EPOCHS = 1
+DEFAULT_LEARNING_RATE = 1e-5
+GUMBEL_EPSILON = 1e-10  # For numerical stability in Gumbel sampling
 
-def gumbel_topk(logits: torch.Tensor, k: int, temperature: float = 1.0) -> torch.Tensor:
+
+def gumbel_topk(logits: torch.Tensor, k: int, temperature: float = DEFAULT_GUMBEL_TEMPERATURE) -> torch.Tensor:
     """
     Differentiable Top-K selection using the Gumbel-Softmax trick.
 
@@ -37,7 +45,7 @@ def gumbel_topk(logits: torch.Tensor, k: int, temperature: float = 1.0) -> torch
         The gradients can flow back to the original logits.
     """
     # Gumbel-Softmax sampling
-    gumbels = -torch.log(-torch.log(torch.rand_like(logits) + 1e-10) + 1e-10)
+    gumbels = -torch.log(-torch.log(torch.rand_like(logits) + GUMBEL_EPSILON) + GUMBEL_EPSILON)
     gumbels = (logits + gumbels) / temperature
     y_soft = F.softmax(gumbels, dim=-1)
 
@@ -59,7 +67,7 @@ class HDSLinear(nn.Module):
     """
 
     def __init__(
-        self, linear_layer: nn.Linear, n: int = 2, m: int = 4, gumbel_temp: float = 1.0
+        self, linear_layer: nn.Linear, n: int = DEFAULT_N_SPARSITY, m: int = DEFAULT_M_SPARSITY, gumbel_temp: float = DEFAULT_GUMBEL_TEMPERATURE
     ):
         super().__init__()
         self.linear = linear_layer
@@ -112,8 +120,8 @@ def _replace_linear_with_hds(model: nn.Module, hds_config: dict):
         )
         return
 
-    n = hds_config.get("n", 2)
-    m = hds_config.get("m", 4)
+    n = hds_config.get("n", DEFAULT_N_SPARSITY)
+    m = hds_config.get("m", DEFAULT_M_SPARSITY)
 
     # Find all linear layers that match the target patterns
     layers_to_replace = []
@@ -151,10 +159,10 @@ def apply_hds(model: nn.Module, data_loader: torch.utils.data.DataLoader, config
     # Fine-tune the model to learn the sparsity masks
     # Check dataset config first, then fallback to top-level config
     dataset_lr = config.get("dataset", {}).get("learning_rate")
-    lr = dataset_lr if dataset_lr is not None else config.get("learning_rate", 1e-5)
+    lr = dataset_lr if dataset_lr is not None else config.get("learning_rate", DEFAULT_LEARNING_RATE)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    num_epochs = hds_config.get("fine_tuning_epochs", 1)
+    num_epochs = hds_config.get("fine_tuning_epochs", DEFAULT_FINE_TUNING_EPOCHS)
 
     device = next(model.parameters()).device
     model.train()

@@ -41,6 +41,133 @@ from co_design.iasp import find_optimal_permutation, get_activation_correlation
 from co_design.modularity import calculate_modularity
 from models.wrapper import ModelWrapper
 from co_design.hds import apply_hds
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class ExperimentRunner:
+    """Base class for running co-design experiments with common functionality."""
+    
+    def __init__(self, cfg: DictConfig):
+        """Initialize the experiment runner with configuration."""
+        self.cfg = cfg
+        self.profiler = LatencyProfiler()
+        self.model = None
+        self.tokenizer = None
+        self.data_loader = None
+        self.wrapped_model = None
+        self.d_model = None
+        
+        # Setup logging
+        self._setup_logging()
+        
+        # Setup reproducibility
+        self._set_random_seeds(self.cfg.seed)
+        
+    def _setup_logging(self):
+        """Setup experiment logging."""
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        logger.info(f"Starting experiment with method: {self.cfg.method}")
+        
+    def _set_random_seeds(self, seed: int):
+        """Set random seeds for reproducible experiments."""
+        logger.info(f"Setting random seeds to {seed} for reproducible results")
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+    
+    def load_model_and_data(self):
+        """Load model, tokenizer, and dataset based on configuration."""
+        self.model, self.tokenizer, self.data_loader = get_model_and_data(self.cfg)
+        self.d_model = self.model.config.hidden_size
+        
+        # Move model to GPU if available
+        if torch.cuda.is_available():
+            self.model.cuda()
+            logger.info("Model moved to CUDA")
+    
+    def save_results(self, method: str, metrics: dict):
+        """Save experiment results."""
+        save_results(self.cfg, method, metrics)
+        
+        if wandb.run:
+            wandb.finish()
+    
+    def measure_performance(self, model, include_modularity=True, 
+                          permutation=None, partition=None):
+        """Measure common performance metrics."""
+        # Task-specific metric
+        logger.info(f"Calculating evaluation metric for {self.cfg.model.task}...")
+        task_metric = calculate_task_metric(model, self.tokenizer, 
+                                          self.data_loader, self.cfg.model.task)
+        metric_name = list(task_metric.keys())[0]
+        metric_value = task_metric[metric_name]
+        logger.info(f"{metric_name.title()}: {metric_value:.4f}")
+        
+        # Latency measurement
+        logger.info("Measuring latency...")
+        dummy_input = torch.randint(0, self.cfg.model.vocab_size, (1, 512))
+        dummy_input_dict = {"input_ids": dummy_input}
+        latency = self.profiler.measure_latency(model, dummy_input_dict)
+        logger.info(f"Latency: {latency:.2f} ms")
+        
+        # Cache hit rate
+        logger.info("Measuring L2 cache hit rate...")
+        cache_result = self.profiler.measure_cache_hits(model, dummy_input_dict)
+        cache_hits = cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
+        
+        metrics = {
+            metric_name: metric_value,
+            "latency_ms": latency,
+            "l2_cache_hit_rate_pct": cache_hits,
+        }
+        
+        # Modularity calculation if requested
+        if include_modularity:
+            logger.info("Calculating modularity...")
+            if permutation is None and partition is None:
+                # Dense baseline case
+                modularity = 0.0
+                logger.info(f"Modularity: {modularity:.4f} (by definition for dense model)")
+            else:
+                correlation_matrix = get_activation_correlation(
+                    model, self.data_loader, self.cfg.model.iasp.target_layer_name
+                )
+                
+                if partition is None:
+                    # Calculate partition from permutation
+                    partition = self._calculate_partition_from_permutation(permutation)
+                
+                modularity = calculate_modularity(correlation_matrix, partition)
+                logger.info(f"Modularity: {modularity:.4f}")
+            
+            metrics["modularity"] = modularity
+        
+        return metrics
+    
+    def _calculate_partition_from_permutation(self, permutation):
+        """Calculate partition from permutation for modularity calculation."""
+        cluster_size_range = self.cfg.model.iasp.cluster_size_range
+        optimal_cluster_size = min(
+            cluster_size_range[1], max(cluster_size_range[0], self.d_model // 8)
+        )
+        n_clusters = self.d_model // optimal_cluster_size
+        nodes_per_cluster = self.d_model // n_clusters if n_clusters > 0 else self.d_model
+        
+        partition = [
+            permutation[i : i + nodes_per_cluster]
+            for i in range(0, self.d_model, nodes_per_cluster)
+        ]
+        return partition
 
 
 def set_random_seeds(seed: int):
@@ -138,162 +265,82 @@ def save_results(cfg: DictConfig, method: str, metrics: dict):
 def run_dense(cfg: DictConfig):
     """Runs the dense baseline experiment."""
     print("\n--- Running Method: (1) Dense Baseline ---")
-
-    # --- 1. Setup ---
-    model, tokenizer, data_loader = get_model_and_data(cfg)
-    profiler = LatencyProfiler()
-
-    if torch.cuda.is_available():
-        model.cuda()
-
-    # --- 2. Run Measurements ---
-    print(f"Calculating evaluation metric for {cfg.model.task}...")
-    task_metric = calculate_task_metric(model, tokenizer, data_loader, cfg.model.task)
-    metric_name = list(task_metric.keys())[0]
-    metric_value = task_metric[metric_name]
-    print(f"{metric_name.title()}: {metric_value:.4f}")
-
-    print("Measuring latency...")
-    dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
-    dummy_input_dict = {"input_ids": dummy_input}
-    latency = profiler.measure_latency(model, dummy_input_dict)
-    print(f"Latency: {latency:.2f} ms")
-
-    print("Measuring L2 cache hit rate...")
-    cache_result = profiler.measure_cache_hits(model, dummy_input_dict)
-    cache_hits = cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
-
-    print("Calculating modularity...")
-    modularity = 0.0
-    print(f"Modularity: {modularity:.4f} (by definition for dense model)")
-
-    # --- 3. Save Results ---
-    metrics = {
-        metric_name: metric_value,
-        "latency_ms": latency,
-        "l2_cache_hit_rate_pct": cache_hits,
-        "modularity": modularity,
-    }
-    save_results(cfg, "dense", metrics)
-
-    if wandb.run:
-        wandb.finish()
+    
+    # Use ExperimentRunner for common functionality
+    runner = ExperimentRunner(cfg)
+    runner.load_model_and_data()
+    
+    # Measure performance metrics
+    metrics = runner.measure_performance(runner.model, include_modularity=True)
+    
+    # Save results
+    runner.save_results("dense", metrics)
 
 
 def run_sparsity_only(cfg: DictConfig):
     """Runs the sparsity-only (HDS) baseline experiment."""
     print("\n--- Running Method: (2) Sparsity-Only (HDS) ---")
-
-    model, tokenizer, data_loader = get_model_and_data(cfg)
-    wrapped_model = ModelWrapper(model)
-    d_model = model.config.hidden_size
-    profiler = LatencyProfiler()
-
+    
+    # Use ExperimentRunner for common functionality
+    runner = ExperimentRunner(cfg)
+    runner.load_model_and_data()
+    
+    # Wrap model and apply HDS
+    wrapped_model = ModelWrapper(runner.model)
     if torch.cuda.is_available():
         wrapped_model.cuda()
-
+    
     wrapped_model.model = apply_hds(
-        wrapped_model.model, data_loader, OmegaConf.to_container(cfg, resolve=True)
+        wrapped_model.model, runner.data_loader, OmegaConf.to_container(cfg, resolve=True)
     )
-
-    task_metric = calculate_task_metric(
-        wrapped_model, tokenizer, data_loader, cfg.model.task
-    )
-    metric_name = list(task_metric.keys())[0]
-    metric_value = task_metric[metric_name]
-
-    dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
-    dummy_dict = {"input_ids": dummy_input}
-    latency = profiler.measure_latency(wrapped_model, dummy_dict)
-    cache_result = profiler.measure_cache_hits(wrapped_model, dummy_dict)
-    cache_hits = cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
-
-    correlation_matrix = get_activation_correlation(
-        wrapped_model, data_loader, cfg.model.iasp.target_layer_name
-    )
-    identity_permutation = list(range(d_model))
-    # Safe cluster sizing to avoid division by zero when d_model < 32
-    cluster_step = max(d_model // 32, 1)
-    nodes_per_cluster = d_model // cluster_step
+    
+    # Calculate partition for modularity (identity permutation)
+    identity_permutation = list(range(runner.d_model))
+    cluster_step = max(runner.d_model // 32, 1)
+    nodes_per_cluster = runner.d_model // cluster_step
     partition = [
         identity_permutation[i : i + nodes_per_cluster]
-        for i in range(0, d_model, nodes_per_cluster)
+        for i in range(0, runner.d_model, nodes_per_cluster)
     ]
-    modularity = calculate_modularity(correlation_matrix, partition)
-
-    metrics = {
-        metric_name: metric_value,
-        "latency_ms": latency,
-        "l2_cache_hit_rate_pct": cache_hits,
-        "modularity": modularity,
-    }
-    save_results(cfg, "sparsity_only", metrics)
-
-    if wandb.run:
-        wandb.finish()
+    
+    # Measure performance
+    metrics = runner.measure_performance(wrapped_model, include_modularity=True,
+                                       permutation=identity_permutation, 
+                                       partition=partition)
+    
+    # Save results
+    runner.save_results("sparsity_only", metrics)
 
 
 def run_permute_only(cfg: DictConfig):
     """Runs the permutation-only baseline experiment."""
     print("\n--- Running Method: (3) Permutation-Only (IASP) ---")
-
-    model, tokenizer, data_loader = get_model_and_data(cfg)
-    wrapped_model = ModelWrapper(model)
-    d_model = model.config.hidden_size
-    profiler = LatencyProfiler()
-
+    
+    # Use ExperimentRunner for common functionality
+    runner = ExperimentRunner(cfg)
+    runner.load_model_and_data()
+    
+    # Wrap model
+    wrapped_model = ModelWrapper(runner.model)
     if torch.cuda.is_available():
         wrapped_model.cuda()
-
+    
+    # Find and apply optimal permutation
     permutation = find_optimal_permutation(
         model=wrapped_model,
-        data_loader=data_loader,
+        data_loader=runner.data_loader,
         target_layer_name=cfg.model.iasp.target_layer_name,
         cluster_size_range=tuple(cfg.model.iasp.cluster_size_range),
     )
-
+    
     wrapped_model.permute_model_weights(permutation)
-
-    task_metric = calculate_task_metric(
-        wrapped_model, tokenizer, data_loader, cfg.model.task
-    )
-    metric_name = list(task_metric.keys())[0]
-    metric_value = task_metric[metric_name]
-
-    dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
-    dummy_dict = {"input_ids": dummy_input}
-    latency = profiler.measure_latency(wrapped_model, dummy_dict)
-    cache_result = profiler.measure_cache_hits(wrapped_model, dummy_dict)
-    cache_hits = cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
-
-    # Use the same model instance (wrapped_model) for consistency
-    correlation_matrix = get_activation_correlation(
-        wrapped_model, data_loader, cfg.model.iasp.target_layer_name
-    )
-
-    # Calculate cluster size from IASP configuration
-    cluster_size_range = cfg.model.iasp.cluster_size_range
-    optimal_cluster_size = min(
-        cluster_size_range[1], max(cluster_size_range[0], d_model // 8)
-    )
-    n_clusters = d_model // optimal_cluster_size
-    nodes_per_cluster = d_model // n_clusters if n_clusters > 0 else d_model
-    partition = [
-        permutation[i : i + nodes_per_cluster]
-        for i in range(0, d_model, nodes_per_cluster)
-    ]
-    modularity = calculate_modularity(correlation_matrix, partition)
-
-    metrics = {
-        metric_name: metric_value,
-        "latency_ms": latency,
-        "l2_cache_hit_rate_pct": cache_hits,
-        "modularity": modularity,
-    }
-    save_results(cfg, "permute_only", metrics)
-
-    if wandb.run:
-        wandb.finish()
+    
+    # Measure performance with modularity
+    metrics = runner.measure_performance(wrapped_model, include_modularity=True,
+                                       permutation=permutation)
+    
+    # Save results
+    runner.save_results("permute_only", metrics)
 
 
 def run_linear_pipeline(cfg: DictConfig):
