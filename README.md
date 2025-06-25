@@ -164,6 +164,19 @@ This project uses standard academic datasets:
 
 For complete licensing details, see [`data/LICENSES.md`](data/LICENSES.md).
 
+### 4. Experiements
+```
+#(Baseline 1) Dense
+python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=dense
+#(Baseline 2) Sparsity-Only(HDS)
+python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=sparsity_only
+#(Baseline 3) Permutation-Only (IASP)
+python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=permute_only
+#(Baseline 4) Linear Pipeline (IASP then HDS)
+python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=linear_pipeline
+#Iterative Co-Design
+python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=iterative
+```
 ---
 
 ## Responsible Use
