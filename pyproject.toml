@@ -1,10 +1,9 @@
 [build-system]
 requires = [
-    "setuptools>=45", 
-    "wheel",
+    "hatchling",
     "torch>=2.0.0",  # Ensure torch is available during build
 ]
-build-backend = "setuptools.build_meta:__legacy__"
+build-backend = "hatchling.build"
 
 [project]
 name = "iterative-co-design"
@@ -81,12 +80,11 @@ dev = [
     "iterative-co-design[test,docs]",
 ]
 
-[tool.setuptools]
-packages = ["co_design", "models", "utils"]
-package-dir = {"" = "src"}
+[tool.hatch.build.targets.wheel]
+packages = ["src/co_design", "src/models", "src/utils"]
 
-[tool.setuptools.package-data]
-"*" = ["*.yaml", "*.yml"]
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""
 
 [tool.pytest.ini_options]
 # Test discovery configuration

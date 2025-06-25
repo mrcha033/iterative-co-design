@@ -3,7 +3,7 @@ import subprocess
 import argparse
 
 # Test if NCU is accessible
-def test_ncu(ncu_path):
+def test_ncu(ncu_path, metrics):
     print("Testing NCU availability...")
     
     # Check NCU version
@@ -42,7 +42,7 @@ else:
     # Run NCU on the test script
     cmd = [
         ncu_path,
-        "--metrics", "l2_cache_hit_rate",
+        "--metrics", ",".join(metrics),
         "--csv",
         "--target-processes", "all",
         "python", "test_cuda.py"
@@ -74,8 +74,9 @@ else:
             os.remove("test_cuda.py")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Test NCU integration.")
-    parser.add_argument("--ncu_path", type=str, default="ncu", help="Path to the NCU executable.")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--ncu_path", type=str, default="ncu", help="Path to ncu executable")
     args = parser.parse_args()
-    success = test_ncu(args.ncu_path)
-    print(f"\nNCU test {'PASSED' if success else 'FAILED'}")
+    
+    l2_cache_metrics = ["lts__t_sector_hit_rate", "lts__t_sectors.sum"]
+    test_ncu(args.ncu_path, l2_cache_metrics)
