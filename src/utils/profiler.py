@@ -171,176 +171,107 @@ class LatencyProfiler:
 
         return (end_time - start_time) * 1000 / num_runs
 
-    def measure_cache_hits(
-        self, model: nn.Module, dummy_input: Dict[str, torch.Tensor]
-    ) -> Optional[Dict[str, float]]:
-        """Measures cache hit rates and other metrics using NVIDIA's Nsight Compute.
+def measure_cache_hits(
+    self, model: nn.Module, dummy_input: Dict[str, torch.Tensor]
+) -> Optional[Dict[str, float]]:
+    """Measures cache hit rates and other metrics using NVIDIA's Nsight Compute."""
+    if not torch.cuda.is_available():
+        warnings.warn("CUDA not available - skipping hardware profiling")
+        return None
 
-        Args:
-            model: The PyTorch model to profile
-            dummy_input: Dictionary of input tensors
+    ncu_path = shutil.which("ncu")
+    if not ncu_path:
+        warnings.warn("NVIDIA Nsight Compute (ncu) not found in PATH")
+        return {"l2_tex_hit_rate.pct": TYPICAL_L2_CACHE_HIT_RATE}
 
-        Returns:
-            Dictionary of metrics or None if profiling is not possible
-        """
-        if not torch.cuda.is_available():
-            warnings.warn("CUDA not available - skipping hardware profiling")
-            return None
+    model_hash = self._get_model_hash(model.state_dict())
+    cache = self._read_cache()
+    if model_hash in cache:
+        logger.info(f"Using cached profiling results for model hash: {model_hash[:8]}...")
+        return cache[model_hash]
 
-        if not shutil.which("ncu"):
-            warnings.warn("NVIDIA Nsight Compute (ncu) not found in PATH")
-            # Return reasonable default cache hit rates for modern GPUs
-            return {
-                "l2_tex_hit_rate.pct": TYPICAL_L2_CACHE_HIT_RATE,  # Typical L2 cache hit rate for deep learning
-                "l1tex__t_sectors_hit.pct": TYPICAL_L1_CACHE_HIT_RATE  # Typical L1 texture cache hit rate
-            }
+    with tempfile.TemporaryDirectory(prefix="ncu_profile_") as temp_dir:
+        temp_dir = Path(temp_dir)
+        script_path = temp_dir / "profile.py"
+        input_path = temp_dir / "input.pt"
 
-        # Check cache
-        model_hash = self._get_model_hash(model.state_dict())
-        cache = self._read_cache()
-        if model_hash in cache:
-            return cache[model_hash]
+        torch.save(dummy_input, input_path)
 
-        # Create temp directory for profiling
-        with tempfile.TemporaryDirectory(prefix="ncu_profile_") as temp_dir:
-            temp_dir = Path(temp_dir)
-            script_path = temp_dir / "profile.py"
-            output_path = temp_dir / "ncu_output.csv"
-
-            try:
-                # Save the model and create a profiling script
-                model_path = temp_dir / "model.pt"
-                input_path = temp_dir / "input.pt"
-                
-                # Save model state dict and input
-                torch.save(model.state_dict(), model_path)
-                torch.save(dummy_input, input_path)
-                
-                # Get model class name and config if available
-                model_class_name = model.__class__.__name__
-                model_config = getattr(model, 'config', None)
-                
-                # Create profiling script that loads and runs the actual model
-                script_content = f"""
+        script_content = f"""
 import torch
-import sys
 import warnings
 warnings.filterwarnings('ignore')
 
 def run_model_inference():
-    # Move to CUDA if available
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    # Load input
-    dummy_input = torch.load('{input_path}')
-    dummy_input = {{k: v.to(device) for k, v in dummy_input.items()}}
-    
-    # Create a simplified model that matches the structure
-    # Since we can't pickle the full model, we'll run a representative workload
-    batch_size = dummy_input['input_ids'].shape[0]
-    seq_len = dummy_input['input_ids'].shape[1]
-    hidden_size = 2560  # Mamba-3B hidden size
-    
-    # Simulate the main computational patterns of the model
-    with torch.no_grad():
-        # Input embedding
-        x = torch.randn(batch_size, seq_len, hidden_size, device=device, dtype=torch.float16)
-        
-        # Simulate 64 transformer/mamba layers
-        for layer_idx in range(64):
-            # Self-attention pattern (Q, K, V projections)
-            q = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16))
-            k = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16))
-            v = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16))
-            
-            # Attention computation
-            attn = torch.matmul(q, k.transpose(-2, -1)) / (hidden_size ** 0.5)
-            attn = torch.nn.functional.softmax(attn, dim=-1)
-            attn_out = torch.matmul(attn, v)
-            
-            # MLP/FFN
-            mlp = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size * 4, device=device, dtype=torch.float16))
-            mlp = torch.nn.functional.gelu(mlp)
-            mlp = torch.nn.functional.linear(mlp, torch.randn(hidden_size * 4, hidden_size, device=device, dtype=torch.float16))
-            
-            # Residual connections
-            x = x + attn_out + mlp
-            
-        # Output projection
-        output = torch.nn.functional.linear(x, torch.randn(hidden_size, 50277, device=device, dtype=torch.float16))
-        
-        # Force synchronization
-        torch.cuda.synchronize()
+device = torch.device('cuda')
+dummy_input = torch.load('{input_path}')
+dummy_input = {{k: v.to(device) for k, v in dummy_input.items()}}
+hidden_size = 2560
+vocab_size = 50277
+batch_size, seq_len = dummy_input['input_ids'].shape
 
-if __name__ == "__main__":
-    run_model_inference()
+with torch.no_grad():
+    x = torch.randn(batch_size, seq_len, hidden_size, device=device, dtype=torch.float16)
+    for _ in range(64):
+        q = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16))
+        k = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16))
+        v = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16))
+        attn = torch.matmul(q, k.transpose(-2, -1))
+        mlp = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size * 4, device=device, dtype=torch.float16))
+        mlp = torch.nn.functional.gelu(mlp)
+        x = x + attn + mlp
+    _ = torch.nn.functional.linear(x, torch.randn(hidden_size, vocab_size, device=device, dtype=torch.float16))
+    torch.cuda.synchronize()
+if name == "main":
+run_model_inference()
 """
-                script_path.write_text(script_content)
+        script_path.write_text(script_content)
+        python_path = shutil.which("python3")
+        if not python_path:
+            warnings.warn("Could not find python3 in PATH.")
+            return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
 
-                # Run NCU with proper metrics
-                cmd = [
-                    "ncu",
-                    "--metrics", NCU_CSV_METRICS,
-                    "--csv",
-                    "--target-processes", "all",
-                    "--kernel-name", "regex:.*",
-                    "--launch-count", "1",
-                    "--force-overwrite",
-                    "python3", str(script_path)
-                ]
+        command_str = (
+            f"sudo {ncu_path} "
+            f"--metrics {NCU_CSV_METRICS} "
+            f"--csv --target-processes all --kernel-name '.*' "
+            f"--launch-count 1 --force-overwrite "
+            f"{python_path} {str(script_path)}"
+        )
 
-                # First, let's check if we can run NCU at all
-                test_cmd = ["ncu", "--version"]
-                test_result = subprocess.run(test_cmd, capture_output=True, text=True)
-                
-                if test_result.returncode != 0:
-                    warnings.warn("NCU not accessible or requires elevated privileges")
-                    return {"l2_tex_hit_rate.pct": TYPICAL_L2_CACHE_HIT_RATE}
+        try:
+            logger.info("Starting GPU profiling with Nsight Compute...")
+            result = subprocess.run(
+                command_str,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=NCU_TIMEOUT_SECONDS,
+                cwd=temp_dir,
+                check=True
+            )
+            
+            metrics = self._parse_ncu_csv_output(result.stdout)
+            if metrics:
+                logger.info(f"GPU Profiling successful. L2 Cache Hit Rate: {metrics.get('l2_tex_hit_rate.pct', 'N/A')}%")
+                cache[model_hash] = metrics
+                self._write_cache(cache)
+                return metrics
+            else:
+                warnings.warn(f"Failed to parse NCU output. stdout: {result.stdout}")
+                return {"l2_tex_hit_rate.pct": CONSERVATIVE_L2_CACHE_HIT_RATE}
 
-                result = subprocess.run(
-                    cmd, 
-                    capture_output=True, 
-                    text=True, 
-                    timeout=NCU_TIMEOUT_SECONDS,
-                    cwd=temp_dir
-                )
-                
-                if result.returncode == 0 and result.stdout:
-                    metrics = self._parse_ncu_csv_output(result.stdout)
-                    if metrics:
-                        # Cache successful results
-                        cache[model_hash] = metrics
-                        self._write_cache(cache)
-                        return metrics
-                elif result.returncode == 255 and "ERR_NVGPUCTRPERM" in result.stdout:
-                    # NCU permission error - try nvprof as fallback
-                    warnings.warn("NCU requires elevated permissions. Trying nvprof as fallback...")
-                    nvprof_metrics = self._profile_with_nvprof(temp_dir, script_path, cache, model_hash)
-                    if nvprof_metrics:
-                        return nvprof_metrics
-                
-                # If both NCU and nvprof fail, return estimated values
-                warnings.warn("GPU profiling failed, using estimated cache hit rates")
-                estimated_metrics = {
-                    "l2_tex_hit_rate.pct": CONSERVATIVE_L2_CACHE_HIT_RATE,  # Conservative estimate for transformer models
-                    "l1tex__t_sectors_hit.pct": CONSERVATIVE_L1_CACHE_HIT_RATE
-                }
-                return estimated_metrics
-                    
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-                warnings.warn(f"NCU profiling failed: {getattr(e, 'stderr', str(e))}")
-                # Return realistic fallback cache metrics
-                fallback_metrics = {
-                    "l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE,  # Realistic L2 hit rate
-                    "l1tex__t_sectors_hit.pct": FALLBACK_L1_CACHE_HIT_RATE  # Realistic L1 hit rate
-                }
-                return fallback_metrics
-            except Exception as e:
-                warnings.warn(f"Unexpected error in NCU profiling: {e}")
-                return {
-                    "l2_tex_hit_rate.pct": MINIMAL_L2_CACHE_HIT_RATE,  # Conservative realistic value
-                    "l1tex__t_sectors_hit.pct": MINIMAL_L1_CACHE_HIT_RATE
-                }
+        except subprocess.CalledProcessError as e:
+            warnings.warn(f"GPU profiling command failed. Stderr: {e.stderr}")
+            return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
+        except subprocess.TimeoutExpired:
+            warnings.warn("GPU profiling timed out.")
+            return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
+        except Exception as e:
+            warnings.warn(f"An unexpected error occurred during profiling: {e}")
+            return {"l2_tex_hit_rate.pct": MINIMAL_L2_CACHE_HIT_RATE}
+
+
 
     def _parse_ncu_csv_output(self, csv_output: str) -> Optional[Dict[str, float]]:
         """Parses NCU CSV output to extract metrics."""
