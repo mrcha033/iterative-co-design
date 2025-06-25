@@ -49,7 +49,7 @@ MINIMAL_L2_CACHE_HIT_RATE = 68.0
 MINIMAL_L1_CACHE_HIT_RATE = 78.0
 
 # NCU profiling settings
-NCU_TIMEOUT_SECONDS = 180
+NCU_TIMEOUT_SECONDS = 60  # Reduced timeout for faster profiling
 NCU_CSV_METRICS = "l2_cache_hit_rate,sm__sass_average_data_bytes_per_sector_mem_global_op_ld.pct"
 
 # Add retry settings
@@ -212,7 +212,6 @@ class LatencyProfiler:
 
             script_content = f"""
 import torch
-import time
 print("🚀 Starting GPU profiling script...")
 
 def run_model_inference():
@@ -293,13 +292,13 @@ if __name__ == "__main__":
             python_path = sys.executable
             logger.info(f"Using Python executable: {python_path}")
 
-            # Simplified NCU command - direct application profiling
+            # Optimized NCU command - only collect L2 cache hit rate
             output_file = temp_dir / "ncu_output.csv"
             command_str = (
                 f"sudo -E {ncu_path} "
-                f"--set full --csv "
-                f"--log-file {output_file} "
-                f"--force-overwrite --print-summary per-kernel "
+                f"--metrics l2_tex_hit_rate.pct "
+                f"--csv --log-file {output_file} "
+                f"--force-overwrite "
                 f"{python_path} {str(script_path)}"
             )
 
