@@ -123,7 +123,7 @@ class ExperimentRunner:
         # Cache hit rate
         logger.info("Measuring L2 cache hit rate...")
         cache_result = self.profiler.measure_cache_hits(model, dummy_input_dict)
-        cache_hits = cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
+        cache_hits = cache_result.get("lts__t_sector_hit_rate.pct", cache_result.get("l2_tex_hit_rate.pct", 0.0)) if cache_result else 0.0
         
         metrics = {
             metric_name: metric_value,
@@ -354,7 +354,7 @@ def _measure_and_collect_metrics(wrapped_model, tokenizer, data_loader, profiler
     dummy_dict = {"input_ids": dummy_input}
     latency = profiler.measure_latency(wrapped_model, dummy_dict)
     cache_result = profiler.measure_cache_hits(wrapped_model, dummy_dict)
-    cache_hits = cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
+    cache_hits = cache_result.get("lts__t_sector_hit_rate.pct", cache_result.get("l2_tex_hit_rate.pct", 0.0)) if cache_result else 0.0
 
     correlation_matrix = get_activation_correlation(
         wrapped_model, data_loader, cfg.model.iasp.target_layer_name
