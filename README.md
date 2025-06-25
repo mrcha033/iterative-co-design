@@ -123,18 +123,6 @@ If you cannot use Docker, you can attempt a local installation. This is **not gu
 
     This script will first check for the required build tools and then attempt to install the Mamba dependencies. If the script fails, please refer to the error messages and consider using the Docker environment.
 
-##### Error: "No module named 'src'"
-
-**Fixed!** All user-facing scripts now use correct import paths that work both in development and after package installation. If you encounter this error with older versions, make sure to:
-
-```bash
-export PYTHONPATH=$(pwd)  # On Windows: set PYTHONPATH=%cd%
-# OR (recommended)
-pip install -e .
-```
-
-The scripts in `scripts/` automatically use the correct package structure (`utils.`, `co_design.`, `models.`) rather than development paths (`src.utils.`, etc.).
-
 ### 3. Download Datasets
 
 The required datasets (`wikitext-103-raw-v1` and `sst2`) are downloaded and cached automatically by the `datasets` library when you run an experiment for the first time. Alternatively, you can pre-download them using the provided script.
@@ -245,14 +233,6 @@ The profiler (`src/utils/profiler.py`) provides:
 - **Latency Profiling**: Precise GPU/CPU latency measurement using CUDA events
 - **Memory Usage Tracking**: Peak and delta memory consumption analysis
 - **Deterministic Caching**: Model-hash based result caching for reproducible measurements
-
-### Recent Profiler Improvements
-
-✅ **Timeout Resolution**: Reduced NCU timeout from 180s to 60s with optimized metric collection  
-✅ **Targeted Metrics**: Focus on L2 cache metrics (`lts__t_sectors_hit_rate.pct`) for faster profiling  
-✅ **Fallback Handling**: Automatic miss-rate to hit-rate conversion and typical values for failed measurements  
-✅ **Enhanced Parsing**: Robust CSV output parsing with multiple metric format support  
-✅ **Error Recovery**: Graceful handling of compilation failures and CUDA environment issues  
 
 ### Hardware Requirements for Full Profiling
 
