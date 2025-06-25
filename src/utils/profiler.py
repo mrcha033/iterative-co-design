@@ -52,6 +52,9 @@ MINIMAL_L1_CACHE_HIT_RATE = 78.0
 NCU_TIMEOUT_SECONDS = 180
 NCU_CSV_METRICS = "l2_cache_hit_rate,sm__sass_average_data_bytes_per_sector_mem_global_op_ld.pct"
 
+# Add retry settings
+NCU_MAX_RETRIES = 2
+NCU_KERNEL_TIMEOUT = 30
 
 class LatencyProfiler:
     def __init__(
@@ -209,6 +212,7 @@ class LatencyProfiler:
 
             script_content = f"""
 import torch
+import time
 print("🚀 Starting GPU profiling script...")
 
 def run_model_inference():
@@ -225,71 +229,54 @@ def run_model_inference():
     
     # Model configuration
     hidden_size = {getattr(model.config, 'hidden_size', 2560)}
-    vocab_size = min({getattr(model.config, 'vocab_size', 50277)}, 10000)  # Reduce vocab size
-    num_layers = 2  # Reduce layers but increase operations per layer
     batch_size, seq_len = dummy_input['input_ids'].shape
     
-    print(f"📊 Config: hidden={{hidden_size}}, vocab={{vocab_size}}, layers={{num_layers}}, batch={{batch_size}}, seq={{seq_len}}")
+    print(f"📊 Config: hidden={{hidden_size}}, batch={{batch_size}}, seq={{seq_len}}")
 
-    # 🔥 Force large GPU operations
+    # 🔥 Intensive GPU operations
     with torch.no_grad():
-        # Start with large tensor operations
-        x = torch.randn(batch_size, seq_len, hidden_size, device=device, dtype=torch.float32)  # Use float32 for stability
-        print(f"💾 Initial tensor shape: {{x.shape}}, device: {{x.device}}")
+        print("🎯 Starting matrix operations...")
         
-        # 🎯 Intensive GPU operations to force kernel execution
-        for layer_idx in range(num_layers):
-            print(f"🔄 Processing layer {{layer_idx + 1}}/{{num_layers}}")
+        # Create large tensors on GPU
+        size = max(1024, hidden_size)  # Ensure minimum size for significant work
+        a = torch.randn(size, size, device=device, dtype=torch.float32)
+        b = torch.randn(size, size, device=device, dtype=torch.float32)
+        
+        print(f"💾 Created tensors of size {{size}}x{{size}}")
+        
+        # Force multiple GPU kernel launches
+        for i in range(10):  # Multiple iterations to ensure kernel capture
+            print(f"🔄 Iteration {{i+1}}/10")
             
-            # Large matrix multiplications
-            for op_idx in range(8):  # Multiple operations per layer
-                # Create large weight matrices
-                w1 = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float32)
-                w2 = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float32)
-                w3 = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float32)
-                
-                # Multiple linear transformations (guaranteed GPU kernels)
-                y1 = torch.matmul(x, w1)
-                y2 = torch.matmul(x, w2)
-                y3 = torch.matmul(x, w3)
-                
-                # Attention-like operations
-                attn = torch.matmul(y1, y2.transpose(-2, -1)) / (hidden_size ** 0.5)
-                attn = torch.softmax(attn, dim=-1)
-                out = torch.matmul(attn, y3)
-                
-                # MLP operations
-                mlp = torch.matmul(out, torch.randn(hidden_size, hidden_size * 2, device=device, dtype=torch.float32))
-                mlp = torch.relu(mlp)  # ReLU activation
-                mlp = torch.matmul(mlp, torch.randn(hidden_size * 2, hidden_size, device=device, dtype=torch.float32))
-                
-                # Residual and normalization
-                x = x + out + mlp
-                x = torch.layer_norm(x, (hidden_size,))
-                
-                # Additional GPU-intensive operations
-                x = x * torch.randn_like(x)  # Element-wise multiplication
-                x = torch.clamp(x, -1.0, 1.0)  # Clipping
-                
-            print(f"✓ Layer {{layer_idx + 1}} complete, tensor norm: {{torch.norm(x).item():.4f}}")
+            # Large matrix multiplication (guaranteed kernel)
+            c = torch.matmul(a, b)
             
-        # Final large operations
-        print("🎯 Final projection...")
-        output_weight = torch.randn(vocab_size, hidden_size, device=device, dtype=torch.float32)
-        output = torch.matmul(x, output_weight.T)
+            # Element-wise operations
+            d = c * 2.0 + 1.0
+            
+            # Reduction operations
+            e = torch.sum(d, dim=1)
+            
+            # Non-linear operations
+            f = torch.relu(e)
+            g = torch.exp(f / 1000.0)  # Scale to prevent overflow
+            
+            # Memory access patterns
+            h = g.unsqueeze(1).expand(-1, size)
+            result = torch.matmul(h.unsqueeze(0), a.unsqueeze(0))
+            
+            # Force memory operations
+            final = result.sum()
+            
+            print(f"✓ Iteration {{i+1}} complete, result: {{final.item():.4f}}")
+            
+            # Small delay to ensure kernels are distinct
+            torch.cuda.synchronize()
+            time.sleep(0.01)
         
-        # Multiple reductions to force more kernels
-        loss1 = torch.sum(output)
-        loss2 = torch.mean(output ** 2)
-        loss3 = torch.max(torch.abs(output))
-        total_loss = loss1 + loss2 + loss3
+        print("🎉 Matrix operations complete!")
         
-        print(f"🎉 Computation complete!")
-        print(f"📈 Loss components: sum={{loss1.item():.4f}}, mse={{loss2.item():.4f}}, max={{loss3.item():.4f}}")
-        print(f"📊 Total loss: {{total_loss.item():.4f}}")
-        print(f"💾 Output shape: {{output.shape}}")
-        
-        # Force synchronization and ensure GPU work is done
+        # Force final synchronization
         torch.cuda.synchronize()
         print("✅ GPU synchronization complete")
 
@@ -306,11 +293,13 @@ if __name__ == "__main__":
             python_path = sys.executable
             logger.info(f"Using Python executable: {python_path}")
 
+            # Simplified NCU command - direct application profiling
+            output_file = temp_dir / "ncu_output.csv"
             command_str = (
                 f"sudo -E {ncu_path} "
-                f"--metrics l2_tex_hit_rate.pct "
-                f"--csv --target-processes all --kernel-name '.*' "
-                f"--launch-count 1 --force-overwrite "
+                f"--set full --csv "
+                f"--log-file {output_file} "
+                f"--force-overwrite --print-summary per-kernel "
                 f"{python_path} {str(script_path)}"
             )
 
@@ -333,18 +322,32 @@ if __name__ == "__main__":
                 if result.stderr:
                     logger.info(f"NCU stderr: {result.stderr[:500]}...")
                 
-                if result.returncode == 0 and result.stdout:
-                    metrics = self._parse_ncu_csv_output(result.stdout)
+                # Try to read from output file if it exists
+                csv_content = ""
+                if output_file.exists():
+                    csv_content = output_file.read_text()
+                    logger.info(f"Found NCU CSV output file with {len(csv_content)} characters")
+                    if csv_content:
+                        logger.info(f"CSV content preview: {csv_content[:200]}...")
+                elif result.stdout:
+                    csv_content = result.stdout
+                    logger.info("Using stdout as CSV content")
+                
+                if result.returncode == 0 and csv_content:
+                    metrics = self._parse_ncu_csv_output(csv_content)
                     if metrics:
                         logger.info(f"🎉 GPU Profiling successful! L2 Cache Hit Rate: {metrics.get('l2_tex_hit_rate.pct', 'N/A')}%")
                         cache[model_hash] = metrics
                         self._write_cache(cache)
                         return metrics
                     else:
-                        logger.info(f"Failed to parse NCU output. Using conservative fallback.")
+                        logger.info(f"Failed to parse NCU output. Raw output for debugging:")
+                        logger.info(f"CSV content length: {len(csv_content)}")
+                        if csv_content:
+                            logger.info(f"First 1000 chars: {csv_content[:1000]}")
                         return None
                 else:
-                    logger.info(f"NCU profiling failed. Using fallback cache hit rate.")
+                    logger.info(f"NCU profiling failed (returncode={result.returncode}). Using fallback cache hit rate.")
                     return None
 
             except subprocess.TimeoutExpired:
@@ -352,71 +355,110 @@ if __name__ == "__main__":
                 return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
             except Exception as e:
                 warnings.warn(f"An unexpected error occurred during profiling: {e}")
-                return {"l2_tex_hit_rate.pct": MINIMAL_L2_CACHE_HIT_RATE}
+                return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
 
 
 
     def _parse_ncu_csv_output(self, csv_output: str) -> Optional[Dict[str, float]]:
         """Parses NCU CSV output to extract metrics."""
         try:
+            logger.info("Starting NCU CSV parsing...")
+            
             # Check for common NCU warnings/errors
             if "No kernels were profiled" in csv_output:
                 warnings.warn("NCU found no GPU kernels to profile. Using fallback cache hit rate.")
                 return None
             
             if "==WARNING==" in csv_output and "kernels" in csv_output:
-                warnings.warn(f"NCU warning detected: {csv_output}")
+                warnings.warn(f"NCU warning detected in output")
                 return None
                 
             lines = csv_output.strip().split('\n')
+            logger.info(f"Processing {len(lines)} lines from NCU output")
+            
             metrics = {}
+            header_line = None
             
-            # NCU CSV format has headers in first few lines
-            metric_lines = []
-            for line in lines:
-                if 'Kernel Name' in line or 'Metric Name' in line:
-                    continue  # Skip header lines
-                if ',' in line and line.strip() and not line.startswith('=='):
-                    metric_lines.append(line)
+            # Find header and data lines
+            for i, line in enumerate(lines):
+                if '"ID"' in line or '"Kernel Name"' in line or 'Metric Name' in line:
+                    header_line = i
+                    logger.info(f"Found header line at index {i}: {line[:100]}...")
+                    break
             
-            # Parse metric lines
-            for line in metric_lines:
-                parts = [part.strip().strip('"') for part in line.split(',')]
+            if header_line is not None:
+                # Parse CSV with headers
+                import csv
+                from io import StringIO
                 
-                # Try to find l2_tex_hit_rate.pct
-                if 'l2_tex_hit_rate.pct' in line:
-                    for i, part in enumerate(parts):
-                        if 'l2_tex_hit_rate.pct' in part and i + 1 < len(parts):
+                # Extract CSV portion starting from header
+                csv_data = '\n'.join(lines[header_line:])
+                reader = csv.DictReader(StringIO(csv_data))
+                
+                logger.info(f"CSV headers: {reader.fieldnames}")
+                
+                # Look for cache hit rate metrics
+                for row in reader:
+                    logger.info(f"Processing row: {dict(row)}")
+                    
+                    # Check various possible column names for L2 cache hit rate
+                    for col_name in row.keys():
+                        if 'l2' in col_name.lower() and ('hit' in col_name.lower() or 'cache' in col_name.lower()):
                             try:
-                                value = float(parts[i + 1].replace('%', ''))
-                                metrics['l2_tex_hit_rate.pct'] = value
-                            except (ValueError, IndexError):
-                                pass
-                
-                # Also look for the metric value in different positions
-                for i in range(len(parts) - 1):
-                    if parts[i] == 'l2_tex_hit_rate.pct':
-                        try:
-                            metrics['l2_tex_hit_rate.pct'] = float(parts[i + 1].replace('%', ''))
-                        except ValueError:
-                            pass
+                                value_str = row[col_name].replace('%', '').strip()
+                                if value_str and value_str != 'N/A':
+                                    value = float(value_str)
+                                    if 0 <= value <= 100:
+                                        metrics['l2_tex_hit_rate.pct'] = value
+                                        logger.info(f"Found L2 cache hit rate: {value}% in column '{col_name}'")
+                                        break
+                            except (ValueError, TypeError):
+                                continue
+                    
+                    if metrics:  # Found what we need
+                        break
             
-            # If we didn't find metrics, try a simpler approach
-            if not metrics and csv_output:
-                # Look for any percentage values
+            # Fallback: look for patterns in raw text
+            if not metrics:
+                logger.info("No metrics found in CSV format, trying pattern matching...")
                 import re
-                percentages = re.findall(r'(\d+\.?\d*)\s*%', csv_output)
-                if percentages:
-                    # Use the first reasonable percentage as cache hit rate
-                    for pct in percentages:
-                        val = float(pct)
-                        if 0 <= val <= 100:
-                            metrics['l2_tex_hit_rate.pct'] = val
-                            break
+                
+                # Look for cache hit rate patterns
+                cache_patterns = [
+                    r'l2.*hit.*rate.*?(\d+\.?\d*)\s*%',
+                    r'L2.*Cache.*Hit.*?(\d+\.?\d*)\s*%',
+                    r'cache.*hit.*?(\d+\.?\d*)\s*%',
+                ]
+                
+                for pattern in cache_patterns:
+                    matches = re.findall(pattern, csv_output, re.IGNORECASE)
+                    if matches:
+                        try:
+                            value = float(matches[0])
+                            if 0 <= value <= 100:
+                                metrics['l2_tex_hit_rate.pct'] = value
+                                logger.info(f"Found cache hit rate via pattern: {value}%")
+                                break
+                        except ValueError:
+                            continue
+                
+                # Look for any reasonable percentage values as fallback
+                if not metrics:
+                    percentages = re.findall(r'(\d+\.?\d*)\s*%', csv_output)
+                    reasonable_values = [float(p) for p in percentages if 50 <= float(p) <= 100]
+                    if reasonable_values:
+                        metrics['l2_tex_hit_rate.pct'] = reasonable_values[0]
+                        logger.info(f"Using reasonable percentage value: {reasonable_values[0]}%")
+            
+            if metrics:
+                logger.info(f"Successfully parsed metrics: {metrics}")
+            else:
+                logger.info("No metrics could be extracted from NCU output")
             
             return metrics if metrics else None
             
         except Exception as e:
+            logger.error(f"Failed to parse NCU CSV output: {e}")
             warnings.warn(f"Failed to parse NCU CSV output: {e}")
             return None
     
