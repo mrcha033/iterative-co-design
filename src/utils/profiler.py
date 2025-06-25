@@ -232,48 +232,33 @@ def run_model_inference():
     
     print(f"📊 Config: hidden={{hidden_size}}, batch={{batch_size}}, seq={{seq_len}}")
 
-    # 🔥 Intensive GPU operations
+    # 🔥 Minimal but effective GPU operations for L2 cache measurement
     with torch.no_grad():
-        print("🎯 Starting matrix operations...")
+        print("🎯 Starting GPU operations...")
         
-        # Create large tensors on GPU
-        size = max(1024, hidden_size)  # Ensure minimum size for significant work
+        # Create tensors on GPU - size optimized for L2 cache testing
+        size = min(2048, max(1024, hidden_size))  # Reasonable size for cache testing
         a = torch.randn(size, size, device=device, dtype=torch.float32)
         b = torch.randn(size, size, device=device, dtype=torch.float32)
         
         print(f"💾 Created tensors of size {{size}}x{{size}}")
         
-        # Force multiple GPU kernel launches
-        for i in range(10):  # Multiple iterations to ensure kernel capture
-            print(f"🔄 Iteration {{i+1}}/10")
+        # Execute GPU operations that will stress L2 cache
+        for i in range(3):  # Reduced iterations for speed
+            print(f"🔄 Operation {{i+1}}/3")
             
-            # Large matrix multiplication (guaranteed kernel)
+            # Matrix multiplication - main L2 cache stressor
             c = torch.matmul(a, b)
             
-            # Element-wise operations
-            d = c * 2.0 + 1.0
+            # Additional memory operations
+            d = c + a  # Element-wise addition
+            e = torch.sum(d)  # Reduction
             
-            # Reduction operations
-            e = torch.sum(d, dim=1)
+            print(f"✓ Operation {{i+1}} complete, sum: {{e.item():.2f}}")
             
-            # Non-linear operations
-            f = torch.relu(e)
-            g = torch.exp(f / 1000.0)  # Scale to prevent overflow
-            
-            # Memory access patterns
-            h = g.unsqueeze(1).expand(-1, size)
-            result = torch.matmul(h.unsqueeze(0), a.unsqueeze(0))
-            
-            # Force memory operations
-            final = result.sum()
-            
-            print(f"✓ Iteration {{i+1}} complete, result: {{final.item():.4f}}")
-            
-            # Small delay to ensure kernels are distinct
             torch.cuda.synchronize()
-            time.sleep(0.01)
         
-        print("🎉 Matrix operations complete!")
+        print("🎉 GPU operations complete!")
         
         # Force final synchronization
         torch.cuda.synchronize()
@@ -288,15 +273,15 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
 """
-            script_path.write_text(script_content)
+            script_path.write_text(script_content, encoding='utf-8')
             python_path = sys.executable
             logger.info(f"Using Python executable: {python_path}")
 
-            # Optimized NCU command - only collect L2 cache hit rate
+            # Optimized NCU command - collect available L2 cache metrics
             output_file = temp_dir / "ncu_output.csv"
             command_str = (
                 f"sudo -E {ncu_path} "
-                f"--metrics l2_tex_hit_rate.pct "
+                f"--metrics l2_cache_hit_rate,lts__t_sectors_miss_rate.pct,lts__t_sectors_hit_rate.pct "
                 f"--csv --log-file {output_file} "
                 f"--force-overwrite "
                 f"{python_path} {str(script_path)}"
@@ -400,19 +385,36 @@ if __name__ == "__main__":
                 for row in reader:
                     logger.info(f"Processing row: {dict(row)}")
                     
-                    # Check various possible column names for L2 cache hit rate
-                    for col_name in row.keys():
-                        if 'l2' in col_name.lower() and ('hit' in col_name.lower() or 'cache' in col_name.lower()):
-                            try:
-                                value_str = row[col_name].replace('%', '').strip()
-                                if value_str and value_str != 'N/A':
-                                    value = float(value_str)
-                                    if 0 <= value <= 100:
-                                        metrics['l2_tex_hit_rate.pct'] = value
-                                        logger.info(f"Found L2 cache hit rate: {value}% in column '{col_name}'")
-                                        break
-                            except (ValueError, TypeError):
-                                continue
+                    # Check if this row has cache-related metrics
+                    metric_name = row.get('Metric Name', '')
+                    metric_value = row.get('Metric Value', '')
+                    
+                    # Look for L2 cache hit rate metrics
+                    if any(metric in metric_name.lower() for metric in ['l2_cache_hit_rate', 'lts__t_sectors_hit_rate', 'l2_tex_hit_rate']):
+                        try:
+                            value_str = metric_value.replace('%', '').strip()
+                            if value_str and value_str.lower() not in ['n/a', 'na', '']:
+                                value = float(value_str)
+                                if 0 <= value <= 100:
+                                    metrics['l2_tex_hit_rate.pct'] = value
+                                    logger.info(f"Found L2 cache hit rate: {value}% from metric '{metric_name}'")
+                                    break
+                        except (ValueError, TypeError):
+                            continue
+                    
+                    # Also calculate hit rate from miss rate if available
+                    elif 'lts__t_sectors_miss_rate' in metric_name.lower():
+                        try:
+                            value_str = metric_value.replace('%', '').strip()
+                            if value_str and value_str.lower() not in ['n/a', 'na', '']:
+                                miss_rate = float(value_str)
+                                if 0 <= miss_rate <= 100:
+                                    hit_rate = 100 - miss_rate
+                                    metrics['l2_tex_hit_rate.pct'] = hit_rate
+                                    logger.info(f"Calculated L2 cache hit rate: {hit_rate}% from miss rate {miss_rate}%")
+                                    break
+                        except (ValueError, TypeError):
+                            continue
                     
                     if metrics:  # Found what we need
                         break
