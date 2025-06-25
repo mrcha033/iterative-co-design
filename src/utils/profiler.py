@@ -48,7 +48,7 @@ MINIMAL_L2_CACHE_HIT_RATE = 68.0
 MINIMAL_L1_CACHE_HIT_RATE = 78.0
 
 # NCU profiling settings
-NCU_TIMEOUT_SECONDS = 60  # Reduced timeout for faster profiling
+NCU_TIMEOUT_SECONDS = 300  # Increased timeout to accommodate full model profiling
 NCU_CSV_METRICS = "lts__t_sector_hit_rate.pct,sm__sass_average_data_bytes_per_sector_mem_global_op_ld.pct"
 
 # Add retry settings
