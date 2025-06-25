@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from omegaconf import OmegaConf
 from utils.logging import initialize_wandb, setup_logging
 

@@ -14,7 +14,6 @@ Key components:
 
 import torch
 import time
-import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -325,7 +324,7 @@ if __name__ == "__main__":
                         self._write_cache(cache)
                         return metrics
                     else:
-                        logger.info(f"Failed to parse NCU output. Raw output for debugging:")
+                        logger.info("Failed to parse NCU output. Raw output for debugging:")
                         logger.info(f"CSV content length: {len(csv_content)}")
                         if csv_content:
                             logger.info(f"First 1000 chars: {csv_content[:1000]}")
@@ -354,7 +353,7 @@ if __name__ == "__main__":
                 return None
             
             if "==WARNING==" in csv_output and "kernels" in csv_output:
-                warnings.warn(f"NCU warning detected in output")
+                warnings.warn("NCU warning detected in output")
                 return None
                 
             lines = csv_output.strip().split('\n')

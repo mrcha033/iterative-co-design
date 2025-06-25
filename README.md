@@ -54,47 +54,16 @@ cd iterative-co-design
 
 It is recommended to use a virtual environment.
 
-#### Quick Install (Recommended for setuptools compatibility)
-
-**Linux/macOS:**
 ```bash
-chmod +x install.sh
-./install.sh
-```
+# Create and activate virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-**Windows (PowerShell):**
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-.\install.ps1
-```
-
-**If you encounter setuptools errors**, use:
-```bash
-pip install "setuptools<70.0.0"
-pip install -e .
-```
-
-#### Option A: Automated Setup Script (Alternative)
-
-```bash
-# For CPU-only PyTorch (faster installation, good for testing)
-python scripts/setup.py --device cpu --test
-
-# For GPU PyTorch (required for full experiments with CUDA)
-python scripts/setup.py --device cuda --dev --test
-
-# For development with all dependencies
-python scripts/setup.py --device cuda --dev
-```
-
-#### Option B: Manual Installation
-
-```bash
-# Install with pip (uses CPU PyTorch by default)
+# Install the project and its core dependencies
 pip install -e .
 
-# OR install from requirements.txt (for development)
-pip install -r requirements.txt -r tests/requirements.txt
+# To install dependencies for development (testing, docs, etc.)
+pip install -e .[dev]
 ```
 
 #### PyTorch Installation Notes

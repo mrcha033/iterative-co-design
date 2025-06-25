@@ -15,7 +15,6 @@ from omegaconf import OmegaConf
 
 # Import quantization functions
 import sys
-from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent / "scripts"))
 
 try:

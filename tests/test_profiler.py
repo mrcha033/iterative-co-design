@@ -3,9 +3,8 @@ import torch
 import torch.nn as nn
 import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import subprocess
-import unittest
 from utils.profiler import LatencyProfiler
 
 

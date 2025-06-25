@@ -10,13 +10,6 @@ def main():
     print(f"CUDA available: {torch.cuda.is_available()}")
     print(f"CUDA devices: {torch.cuda.device_count() if torch.cuda.is_available() else 0}")
     
-    # Test BERT models
-    try:
-        from transformers import BertModel
-        print("✅ BERT models: Available")
-    except ImportError as e:
-        print(f"❌ BERT models: Failed - {e}")
-    
     # Test mamba-ssm
     try:
         from mamba_ssm import MambaLMHeadModel

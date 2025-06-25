@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import subprocess
-import torch
 
 # Test if NCU is accessible
 def test_ncu():

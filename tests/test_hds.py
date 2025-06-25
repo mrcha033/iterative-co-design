@@ -9,8 +9,13 @@ If running tests outside pytest, ensure PYTHONPATH includes the src directory.
 
 import torch
 import torch.nn as nn
-import pytest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
+
+# Mock torch._dynamo if it's not available
+try:
+    import torch._dynamo
+except ImportError:
+    torch._dynamo = MagicMock()
 
 from co_design.hds import gumbel_topk, HDSLinear, apply_hds, _replace_linear_with_hds
 
