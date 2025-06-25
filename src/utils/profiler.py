@@ -223,7 +223,7 @@ def run_model_inference():
             x = x + attn + mlp
         _ = torch.nn.functional.linear(x, torch.randn(hidden_size, vocab_size, device=device, dtype=torch.float16))
         torch.cuda.synchronize()
-if name == "main":
+if __name__ == "__main__":
     run_model_inference()
 """
             script_path.write_text(script_content)
