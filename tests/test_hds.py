@@ -7,6 +7,7 @@ importing the source modules directly without installing the package.
 If running tests outside pytest, ensure PYTHONPATH includes the src directory.
 """
 
+import pytest
 import torch
 import torch.nn as nn
 from unittest.mock import patch, MagicMock

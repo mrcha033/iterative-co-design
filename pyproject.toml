@@ -42,8 +42,7 @@ dependencies = [
     "wandb>=0.15.0",
     "matplotlib>=3.5.0",
     "seaborn>=0.11.0",
-    "causal-conv1d==1.5.0.post8",
-    "mamba-ssm==2.2.4"
+    "mamba-ssm[causal-conv1d]"
 ]
 
 [project.urls]

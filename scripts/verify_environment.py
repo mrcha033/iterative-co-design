@@ -12,14 +12,14 @@ def main():
     
     # Test mamba-ssm
     try:
-        from mamba_ssm import MambaLMHeadModel
+        from mamba_ssm import MambaLMHeadModel # noqa: F401
         print("✅ mamba-ssm: Import successful")
     except ImportError as e:
         print(f"❌ mamba-ssm: Failed - {e}")
     
     # Test Transformers Mamba
     try:
-        from transformers import MambaForCausalLM
+        from transformers import MambaForCausalLM # noqa: F401
         print("✅ Transformers Mamba: Available")
     except ImportError as e:
         print(f"❌ Transformers Mamba: Failed - {e}")
