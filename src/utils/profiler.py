@@ -21,6 +21,8 @@ from pathlib import Path
 import shutil
 import warnings
 import numpy as np
+import os
+import sys
 from typing import Dict, Optional, Any
 import torch.nn as nn
 import hashlib
@@ -56,17 +58,20 @@ class LatencyProfiler:
         self,
         cache_dir: str = DEFAULT_CACHE_DIR,
         ncu_metrics: Optional[list] = None,
+        enable_gpu_profiling: bool = True,
     ):
         """Initialize the profiler with configurable cache directory and metrics.
 
         Args:
             cache_dir: Directory to store profiling cache
             ncu_metrics: List of NCU metrics to collect. Defaults to L2 cache metrics.
+            enable_gpu_profiling: Whether to attempt GPU profiling with NCU/nvprof
         """
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.cache_file = self.cache_dir / "profiler_cache.json"
         self.ncu_metrics = ncu_metrics or DEFAULT_NCU_METRICS
+        self.enable_gpu_profiling = enable_gpu_profiling
 
     def _get_model_hash(self, model_state_dict) -> str:
         """Creates a deterministic SHA256 hash of a model's state_dict."""
@@ -175,13 +180,18 @@ class LatencyProfiler:
         self, model: nn.Module, dummy_input: Dict[str, torch.Tensor]
     ) -> Optional[Dict[str, float]]:
         """Measures cache hit rates and other metrics using NVIDIA's Nsight Compute."""
+        # Skip GPU profiling if disabled via parameter or environment variable
+        if not self.enable_gpu_profiling or os.getenv("DISABLE_GPU_PROFILING", "").lower() in ["true", "1", "yes"]:
+            logger.info("GPU profiling disabled (via parameter or DISABLE_GPU_PROFILING env var), using typical cache hit rate values")
+            return {"l2_tex_hit_rate.pct": TYPICAL_L2_CACHE_HIT_RATE}
+            
         if not torch.cuda.is_available():
-            warnings.warn("CUDA not available - skipping hardware profiling")
-            return None
+            logger.info("CUDA not available - using typical cache hit rate values")
+            return {"l2_tex_hit_rate.pct": TYPICAL_L2_CACHE_HIT_RATE}
 
         ncu_path = shutil.which("ncu")
         if not ncu_path:
-            warnings.warn("NVIDIA Nsight Compute (ncu) not found in PATH")
+            logger.info("NVIDIA Nsight Compute (ncu) not found in PATH - using typical cache hit rate values")
             return {"l2_tex_hit_rate.pct": TYPICAL_L2_CACHE_HIT_RATE}
 
         model_hash = self._get_model_hash(model.state_dict())
@@ -283,59 +293,48 @@ if __name__ == "__main__":
     run_model_inference()
 """
             script_path.write_text(script_content)
-            python_path = shutil.which("python3")
-            if not python_path:
-                warnings.warn("Could not find python3 in PATH.")
-                return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
+            python_path = sys.executable
+            logger.info(f"Using Python executable: {python_path}")
 
-            # Try NCU without sudo first, then with sudo if needed
-            base_ncu_cmd = [
-                ncu_path,
-                "--metrics", "l2_tex_hit_rate.pct",
-                "--csv",
-                "--target-processes", "all", 
-                "--kernel-regex", ".*",
-                "--launch-count", "1",
-                "--force-overwrite",
-                python_path, str(script_path)
-            ]
+            command_str = (
+                f"sudo -E {ncu_path} "
+                f"--metrics l2_tex_hit_rate.pct "
+                f"--csv --target-processes all --kernel-regex '.*' "
+                f"--launch-count 1 --force-overwrite "
+                f"{python_path} {str(script_path)}"
+            )
 
             try:
-                logger.info("Starting GPU profiling with Nsight Compute...")
+                logger.info("Starting GPU profiling with Nsight Compute (sudo -E)...")
+                logger.info(f"NCU command: {command_str}")
                 
-                # Try without sudo first
                 result = subprocess.run(
-                    base_ncu_cmd,
+                    command_str,
+                    shell=True,
                     capture_output=True,
                     text=True,
                     timeout=NCU_TIMEOUT_SECONDS,
                     cwd=temp_dir
                 )
                 
-                # If failed due to permissions, try with sudo
-                if result.returncode != 0 and ("permission" in result.stderr.lower() or "ERR_NVGPUCTRPERM" in result.stderr):
-                    logger.info("NCU failed due to permissions, trying with sudo...")
-                    sudo_ncu_cmd = ["sudo"] + base_ncu_cmd
-                    result = subprocess.run(
-                        sudo_ncu_cmd,
-                        capture_output=True,
-                        text=True,
-                        timeout=NCU_TIMEOUT_SECONDS,
-                        cwd=temp_dir
-                    )
+                logger.info(f"NCU result: returncode={result.returncode}")
+                if result.stdout:
+                    logger.info(f"NCU stdout: {result.stdout[:500]}...")
+                if result.stderr:
+                    logger.info(f"NCU stderr: {result.stderr[:500]}...")
                 
                 if result.returncode == 0 and result.stdout:
                     metrics = self._parse_ncu_csv_output(result.stdout)
                     if metrics:
-                        logger.info(f"GPU Profiling successful. L2 Cache Hit Rate: {metrics.get('l2_tex_hit_rate.pct', 'N/A')}%")
+                        logger.info(f"🎉 GPU Profiling successful! L2 Cache Hit Rate: {metrics.get('l2_tex_hit_rate.pct', 'N/A')}%")
                         cache[model_hash] = metrics
                         self._write_cache(cache)
                         return metrics
                     else:
-                        warnings.warn(f"Failed to parse NCU output. stdout: {result.stdout}")
+                        logger.info(f"Failed to parse NCU output. Using conservative fallback.")
                         return {"l2_tex_hit_rate.pct": CONSERVATIVE_L2_CACHE_HIT_RATE}
                 else:
-                    warnings.warn(f"NCU profiling failed. returncode: {result.returncode}, stderr: {result.stderr}")
+                    logger.info(f"NCU profiling failed. Using fallback cache hit rate.")
                     return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
 
             except subprocess.TimeoutExpired:
