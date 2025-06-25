@@ -186,13 +186,13 @@ class LatencyProfiler:
             return {"l2_tex_hit_rate.pct": TYPICAL_L2_CACHE_HIT_RATE}
             
         if not torch.cuda.is_available():
-            logger.info("CUDA not available - using typical cache hit rate values")
-            return {"l2_tex_hit_rate.pct": TYPICAL_L2_CACHE_HIT_RATE}
+            warnings.warn("CUDA not available - skipping hardware profiling")
+            return None
 
         ncu_path = shutil.which("ncu")
         if not ncu_path:
-            logger.info("NVIDIA Nsight Compute (ncu) not found in PATH - using typical cache hit rate values")
-            return {"l2_tex_hit_rate.pct": TYPICAL_L2_CACHE_HIT_RATE}
+            warnings.warn("NVIDIA Nsight Compute (ncu) not found in PATH")
+            return None
 
         model_hash = self._get_model_hash(model.state_dict())
         cache = self._read_cache()
@@ -299,7 +299,7 @@ if __name__ == "__main__":
             command_str = (
                 f"sudo -E {ncu_path} "
                 f"--metrics l2_tex_hit_rate.pct "
-                f"--csv --target-processes all --kernel-regex '.*' "
+                f"--csv --target-processes all --kernel-name '.*' "
                 f"--launch-count 1 --force-overwrite "
                 f"{python_path} {str(script_path)}"
             )
@@ -335,7 +335,7 @@ if __name__ == "__main__":
                         return {"l2_tex_hit_rate.pct": CONSERVATIVE_L2_CACHE_HIT_RATE}
                 else:
                     logger.info(f"NCU profiling failed. Using fallback cache hit rate.")
-                    return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
+                    return None
 
             except subprocess.TimeoutExpired:
                 warnings.warn("GPU profiling timed out.")
@@ -374,9 +374,9 @@ if __name__ == "__main__":
                 parts = [part.strip().strip('"') for part in line.split(',')]
                 
                 # Try to find l2_cache_hit_rate
-                if 'l2_cache_hit_rate' in line:
+                if 'l2_tex_hit_rate.pct' in line:
                     for i, part in enumerate(parts):
-                        if 'l2_cache_hit_rate' in part and i + 1 < len(parts):
+                        if 'l2_tex_hit_rate.pct' in part and i + 1 < len(parts):
                             try:
                                 value = float(parts[i + 1].replace('%', ''))
                                 metrics['l2_tex_hit_rate.pct'] = value
@@ -385,7 +385,7 @@ if __name__ == "__main__":
                 
                 # Also look for the metric value in different positions
                 for i in range(len(parts) - 1):
-                    if parts[i] == 'l2_cache_hit_rate':
+                    if parts[i] == 'l2_tex_hit_rate.pct':
                         try:
                             metrics['l2_tex_hit_rate.pct'] = float(parts[i + 1].replace('%', ''))
                         except ValueError:

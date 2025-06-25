@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 from datetime import datetime, timedelta
 import shutil
-from src.utils.cleanup import cleanup_old_runs
+from utils.cleanup import cleanup_old_runs
 
 class TestCleanup(unittest.TestCase):
 

@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch, MagicMock
 from omegaconf import OmegaConf
-from src.utils.logging import initialize_wandb, setup_logging
+from utils.logging import initialize_wandb, setup_logging
 
 class TestLogging(unittest.TestCase):
 

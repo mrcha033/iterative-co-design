@@ -4,18 +4,22 @@ import torch.nn as nn
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
+import subprocess
+import unittest
 from utils.profiler import LatencyProfiler
 
 
 class SimpleTestModel(nn.Module):
-    """Simple model for testing profiler functionality."""
-
-    def __init__(self, d_model=32):
+    def __init__(self, d_model=10):
         super().__init__()
-        self.linear = nn.Linear(d_model, 10)
+        self.linear = nn.Linear(d_model, d_model)
+        self.config = lambda: None  # Mock config attribute
+        self.config.hidden_size = d_model
+        self.config.vocab_size = 100
+        self.config.num_hidden_layers = 1
 
     def forward(self, input_ids):
-        return {"logits": self.linear(input_ids.float())}
+        return self.linear(torch.randn(1, self.config.hidden_size))
 
 
 class TestLatencyProfiler:
@@ -231,7 +235,8 @@ class TestLatencyProfiler:
                 assert result == cached_metrics
 
     @patch("subprocess.run")
-    def test_measure_cache_hits_subprocess_success(self, mock_subprocess):
+    def test_measure_cache_hits_subprocess_success(self, mock_subprocess_run):
+        mock_subprocess_run.return_value = subprocess.CompletedProcess(args=['ncu'], returncode=0, stdout='mocked_output')
         """Test successful NCU profiling via subprocess."""
         with tempfile.TemporaryDirectory() as temp_dir:
             profiler = LatencyProfiler(cache_dir=temp_dir)
@@ -239,7 +244,7 @@ class TestLatencyProfiler:
             dummy_input = {"input_ids": torch.randint(0, 100, (2, 10))}
 
             # Mock successful subprocess run
-            mock_subprocess.return_value = MagicMock(returncode=0)
+            mock_subprocess_run.return_value = subprocess.CompletedProcess(args=['ncu'], returncode=0, stdout='mocked_output')
 
             # Mock NCU output parsing
             mock_metrics = {"l2_tex_hit_rate.pct": 78.5}
@@ -247,13 +252,13 @@ class TestLatencyProfiler:
             with patch("torch.cuda.is_available", return_value=True), patch(
                 "shutil.which", return_value="/usr/bin/ncu"
             ), patch.object(
-                profiler, "_parse_ncu_output", return_value=mock_metrics
+                profiler, "_parse_ncu_csv_output", return_value=mock_metrics
             ), patch("torch.save"):  # Mock torch.save to avoid file I/O
                 result = profiler.measure_cache_hits(model, dummy_input)
                 assert result == mock_metrics
 
                 # Verify subprocess was called with correct arguments
-                mock_subprocess.assert_called_once()
+                mock_subprocess_run.assert_called_once()
                 call_args = mock_subprocess.call_args[0][0]
                 assert call_args[0] == "ncu"
                 assert "--metrics" in call_args
@@ -277,7 +282,7 @@ class TestLatencyProfiler:
             result = profiler.measure_cache_hits(model, dummy_input)
             assert result is None
 
-    def test_parse_ncu_output_success(self):
+    def test_parse_ncu_csv_output_success(self):
         """Test successful NCU output parsing."""
         profiler = LatencyProfiler(
             ncu_metrics=["l2_tex_hit_rate.pct", "sm__cycles_elapsed.avg"]
@@ -291,13 +296,13 @@ sm__cycles_elapsed.avg,cycle,1234.56"""
             f.write(mock_output)
             f.flush()
 
-            result = profiler._parse_ncu_output(Path(f.name))
+            result = profiler._parse_ncu_csv_output(Path(f.name))
 
             assert result is not None
             assert "l2_tex_hit_rate.pct" in result
             assert result["l2_tex_hit_rate.pct"] == 85.32
 
-    def test_parse_ncu_output_failure(self):
+    def test_parse_ncu_csv_output_failure(self):
         """Test NCU output parsing failure."""
         profiler = LatencyProfiler()
 
@@ -306,17 +311,17 @@ sm__cycles_elapsed.avg,cycle,1234.56"""
             f.write("invalid output format")
             f.flush()
 
-            result = profiler._parse_ncu_output(Path(f.name))
+            result = profiler._parse_ncu_csv_output(Path(f.name))
             assert result is None
 
-    def test_parse_ncu_output_missing_file(self):
+    def test_parse_ncu_csv_output_missing_file(self):
         """Test NCU output parsing with missing file."""
         profiler = LatencyProfiler()
 
-        result = profiler._parse_ncu_output(Path("/nonexistent/file.txt"))
+        result = profiler._parse_ncu_csv_output(Path("/nonexistent/file.txt"))
         assert result is None
 
-    def test_parse_ncu_output_scientific_notation(self):
+    def test_parse_ncu_csv_output_scientific_notation(self):
         """Test parsing of NCU output with scientific notation numbers."""
         profiler = LatencyProfiler(
             ncu_metrics=[
@@ -335,7 +340,7 @@ dram_read_throughput.avg.pct_of_peak_sustained_elapsed,%,4.56e-01"""
             file_name = f.name
 
         # Parse after file is closed
-        result = profiler._parse_ncu_output(Path(file_name))
+        result = profiler._parse_ncu_csv_output(Path(file_name))
 
         # Cleanup after parsing
         Path(file_name).unlink()
@@ -352,7 +357,7 @@ dram_read_throughput.avg.pct_of_peak_sustained_elapsed,%,4.56e-01"""
             < 1e-6
         )
 
-    def test_parse_ncu_output_mixed_notation(self):
+    def test_parse_ncu_csv_output_mixed_notation(self):
         """Test parsing of NCU output with both standard and scientific notation."""
         profiler = LatencyProfiler(
             ncu_metrics=[
@@ -371,7 +376,7 @@ dram_read_throughput.avg.pct_of_peak_sustained_elapsed,%,1.23E+05"""
             file_name = f.name
 
         # Parse after file is closed
-        result = profiler._parse_ncu_output(Path(file_name))
+        result = profiler._parse_ncu_csv_output(Path(file_name))
 
         # Cleanup after parsing
         Path(file_name).unlink()

@@ -54,30 +54,33 @@ def calculate_modularity(
     if np.any(community_membership == -1):
         raise ValueError("Partition must include all nodes from 0 to N-1 exactly once.")
 
-    # Total weight of all edges in the graph
-    # For a weighted, undirected graph, m is half the sum of all matrix elements.
-    m = np.sum(correlation_matrix) / 2.0
+    # Separate positive and negative weights
+    A_plus = np.maximum(0, correlation_matrix)
+    A_minus = np.maximum(0, -correlation_matrix)
 
-    if m == 0:
-        # If there are no edges, modularity is conventionally zero.
+    # Total weight of all positive and negative edges
+    m_plus = np.sum(A_plus) / 2.0
+    m_minus = np.sum(A_minus) / 2.0
+
+    if m_plus + m_minus == 0:
         return 0.0
 
-    # Sum of weights of edges attached to each node (degree)
-    k = np.sum(correlation_matrix, axis=1)
+    # Sum of positive and negative weights for each node
+    k_plus = np.sum(A_plus, axis=1)
+    k_minus = np.sum(A_minus, axis=1)
 
     # Create a matrix indicating which pairs of nodes are in the same community
-    # This is the key vectorization: instead of nested loops, we use broadcasting
     same_community_matrix = (
         community_membership[:, np.newaxis] == community_membership[np.newaxis, :]
     )
 
-    # Calculate the null model term: k[i] * k[j] / (2 * m)
-    # Using outer product for vectorized computation
-    null_model = np.outer(k, k) / (2 * m)
+    # Calculate the null model terms for positive and negative weights
+    null_model_plus = np.outer(k_plus, k_plus) / (2 * m_plus) if m_plus > 0 else 0
+    null_model_minus = np.outer(k_minus, k_minus) / (2 * m_minus) if m_minus > 0 else 0
 
-    # Calculate modularity: sum over all pairs where nodes are in same community
-    # of (A[i,j] - k[i]*k[j]/(2*m))
-    modularity_terms = (correlation_matrix - null_model) * same_community_matrix
-    modularity_sum = np.sum(modularity_terms)
+    # Calculate modularity for signed networks
+    modularity_plus = (A_plus - null_model_plus) * same_community_matrix
+    modularity_minus = (A_minus - null_model_minus) * same_community_matrix
+    modularity_sum = np.sum(modularity_plus - modularity_minus)
 
-    return modularity_sum / (2 * m)
+    return modularity_sum / (2 * (m_plus + m_minus))
