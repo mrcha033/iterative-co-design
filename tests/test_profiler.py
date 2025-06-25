@@ -237,6 +237,14 @@ class TestLatencyProfiler:
     @patch("subprocess.run")
     def test_measure_cache_hits_subprocess_success(self, mock_subprocess_run):
         mock_subprocess_run.return_value = subprocess.CompletedProcess(args=['ncu'], returncode=0, stdout='mocked_output')
+        profiler = LatencyProfiler()
+        model = SimpleTestModel()
+        dummy_input = {"input_ids": torch.randn(1, 10)}
+        with patch.object(profiler, '_parse_ncu_csv_output', return_value={"l2_tex_hit_rate.pct": 95.0}):
+            result = profiler.measure_cache_hits(model, dummy_input)
+            assert result is not None
+            self.assertIn("l2_tex_hit_rate.pct", result)
+            mock_subprocess_run.assert_called_once()
         """Test successful NCU profiling via subprocess."""
         with tempfile.TemporaryDirectory() as temp_dir:
             profiler = LatencyProfiler(cache_dir=temp_dir)

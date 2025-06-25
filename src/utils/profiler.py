@@ -209,88 +209,98 @@ class LatencyProfiler:
 
             script_content = f"""
 import torch
-import warnings
-import time
-warnings.filterwarnings('ignore')
+print("🚀 Starting GPU profiling script...")
 
 def run_model_inference():
     if not torch.cuda.is_available():
-        print("CUDA not available")
+        print("❌ CUDA not available")
         return
         
     device = torch.device('cuda')
-    print(f"Using device: {{device}}")
+    print(f"✅ Using device: {{device}} ({{torch.cuda.get_device_name()}})")
     
-    # Load input
+    # Load input and force it to GPU
     dummy_input = torch.load('{input_path}')
     dummy_input = {{k: v.to(device) for k, v in dummy_input.items()}}
     
     # Model configuration
     hidden_size = {getattr(model.config, 'hidden_size', 2560)}
-    vocab_size = {getattr(model.config, 'vocab_size', 50277)}
-    num_layers = min({getattr(model.config, 'num_hidden_layers', 64)}, 4)  # Limit layers for profiling
+    vocab_size = min({getattr(model.config, 'vocab_size', 50277)}, 10000)  # Reduce vocab size
+    num_layers = 2  # Reduce layers but increase operations per layer
     batch_size, seq_len = dummy_input['input_ids'].shape
     
-    print(f"Config: hidden_size={{hidden_size}}, layers={{num_layers}}, batch={{batch_size}}, seq_len={{seq_len}}")
+    print(f"📊 Config: hidden={{hidden_size}}, vocab={{vocab_size}}, layers={{num_layers}}, batch={{batch_size}}, seq={{seq_len}}")
 
-    # Warm up GPU
-    warmup_tensor = torch.randn(100, 100, device=device, dtype=torch.float16)
-    _ = torch.matmul(warmup_tensor, warmup_tensor)
-    torch.cuda.synchronize()
-    
-    # Main computation - force GPU kernels
+    # 🔥 Force large GPU operations
     with torch.no_grad():
-        x = torch.randn(batch_size, seq_len, hidden_size, device=device, dtype=torch.float16)
+        # Start with large tensor operations
+        x = torch.randn(batch_size, seq_len, hidden_size, device=device, dtype=torch.float32)  # Use float32 for stability
+        print(f"💾 Initial tensor shape: {{x.shape}}, device: {{x.device}}")
         
-        # Multiple attention/MLP layers to ensure GPU kernel execution
+        # 🎯 Intensive GPU operations to force kernel execution
         for layer_idx in range(num_layers):
-            # Attention layers with explicit GPU operations
-            for head in range(4):  # Multi-head attention
-                q_weight = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16)
-                k_weight = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16)
-                v_weight = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16)
+            print(f"🔄 Processing layer {{layer_idx + 1}}/{{num_layers}}")
+            
+            # Large matrix multiplications
+            for op_idx in range(8):  # Multiple operations per layer
+                # Create large weight matrices
+                w1 = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float32)
+                w2 = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float32)
+                w3 = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float32)
                 
-                q = torch.nn.functional.linear(x, q_weight)
-                k = torch.nn.functional.linear(x, k_weight) 
-                v = torch.nn.functional.linear(x, v_weight)
+                # Multiple linear transformations (guaranteed GPU kernels)
+                y1 = torch.matmul(x, w1)
+                y2 = torch.matmul(x, w2)
+                y3 = torch.matmul(x, w3)
                 
-                # Attention computation (forces GPU kernels)
-                attn_scores = torch.matmul(q, k.transpose(-2, -1))
-                attn_scores = attn_scores / (hidden_size ** 0.5)
-                attn_weights = torch.nn.functional.softmax(attn_scores, dim=-1)
-                attn_out = torch.matmul(attn_weights, v)
+                # Attention-like operations
+                attn = torch.matmul(y1, y2.transpose(-2, -1)) / (hidden_size ** 0.5)
+                attn = torch.softmax(attn, dim=-1)
+                out = torch.matmul(attn, y3)
                 
-                # Apply attention output
-                x = x + attn_out
+                # MLP operations
+                mlp = torch.matmul(out, torch.randn(hidden_size, hidden_size * 2, device=device, dtype=torch.float32))
+                mlp = torch.relu(mlp)  # ReLU activation
+                mlp = torch.matmul(mlp, torch.randn(hidden_size * 2, hidden_size, device=device, dtype=torch.float32))
+                
+                # Residual and normalization
+                x = x + out + mlp
+                x = torch.layer_norm(x, (hidden_size,))
+                
+                # Additional GPU-intensive operations
+                x = x * torch.randn_like(x)  # Element-wise multiplication
+                x = torch.clamp(x, -1.0, 1.0)  # Clipping
+                
+            print(f"✓ Layer {{layer_idx + 1}} complete, tensor norm: {{torch.norm(x).item():.4f}}")
             
-            # MLP layers
-            mlp_up_weight = torch.randn(hidden_size * 4, hidden_size, device=device, dtype=torch.float16)
-            mlp_down_weight = torch.randn(hidden_size, hidden_size * 4, device=device, dtype=torch.float16)
-            
-            mlp = torch.nn.functional.linear(x, mlp_up_weight)
-            mlp = torch.nn.functional.gelu(mlp)
-            mlp = torch.nn.functional.linear(mlp, mlp_down_weight)
-            
-            # Residual connection
-            x = x + mlp
-            
-            # Force memory operations
-            x = x * 1.0  # Element-wise multiplication
-            x = torch.nn.functional.layer_norm(x, (hidden_size,))  # Layer normalization
-            
-        # Final output projection
-        output_weight = torch.randn(vocab_size, hidden_size, device=device, dtype=torch.float16)
-        output = torch.nn.functional.linear(x, output_weight)
+        # Final large operations
+        print("🎯 Final projection...")
+        output_weight = torch.randn(vocab_size, hidden_size, device=device, dtype=torch.float32)
+        output = torch.matmul(x, output_weight.T)
         
-        # Additional operations to ensure GPU kernel execution
-        loss = torch.sum(output)
-        print(f"Computation complete, loss: {{loss.item()}}")
+        # Multiple reductions to force more kernels
+        loss1 = torch.sum(output)
+        loss2 = torch.mean(output ** 2)
+        loss3 = torch.max(torch.abs(output))
+        total_loss = loss1 + loss2 + loss3
         
-        # Force synchronization
+        print(f"🎉 Computation complete!")
+        print(f"📈 Loss components: sum={{loss1.item():.4f}}, mse={{loss2.item():.4f}}, max={{loss3.item():.4f}}")
+        print(f"📊 Total loss: {{total_loss.item():.4f}}")
+        print(f"💾 Output shape: {{output.shape}}")
+        
+        # Force synchronization and ensure GPU work is done
         torch.cuda.synchronize()
+        print("✅ GPU synchronization complete")
 
 if __name__ == "__main__":
-    run_model_inference()
+    try:
+        run_model_inference()
+        print("🎯 Script completed successfully")
+    except Exception as e:
+        print(f"❌ Error: {{e}}")
+        import traceback
+        traceback.print_exc()
 """
             script_path.write_text(script_content)
             python_path = sys.executable
@@ -332,7 +342,7 @@ if __name__ == "__main__":
                         return metrics
                     else:
                         logger.info(f"Failed to parse NCU output. Using conservative fallback.")
-                        return {"l2_tex_hit_rate.pct": CONSERVATIVE_L2_CACHE_HIT_RATE}
+                        return None
                 else:
                     logger.info(f"NCU profiling failed. Using fallback cache hit rate.")
                     return None
@@ -373,7 +383,7 @@ if __name__ == "__main__":
             for line in metric_lines:
                 parts = [part.strip().strip('"') for part in line.split(',')]
                 
-                # Try to find l2_cache_hit_rate
+                # Try to find l2_tex_hit_rate.pct
                 if 'l2_tex_hit_rate.pct' in line:
                     for i, part in enumerate(parts):
                         if 'l2_tex_hit_rate.pct' in part and i + 1 < len(parts):
