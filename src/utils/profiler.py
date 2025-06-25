@@ -171,33 +171,33 @@ class LatencyProfiler:
 
         return (end_time - start_time) * 1000 / num_runs
 
-def measure_cache_hits(
-    self, model: nn.Module, dummy_input: Dict[str, torch.Tensor]
-) -> Optional[Dict[str, float]]:
-    """Measures cache hit rates and other metrics using NVIDIA's Nsight Compute."""
-    if not torch.cuda.is_available():
-        warnings.warn("CUDA not available - skipping hardware profiling")
-        return None
+    def measure_cache_hits(
+        self, model: nn.Module, dummy_input: Dict[str, torch.Tensor]
+    ) -> Optional[Dict[str, float]]:
+        """Measures cache hit rates and other metrics using NVIDIA's Nsight Compute."""
+        if not torch.cuda.is_available():
+            warnings.warn("CUDA not available - skipping hardware profiling")
+            return None
 
-    ncu_path = shutil.which("ncu")
-    if not ncu_path:
-        warnings.warn("NVIDIA Nsight Compute (ncu) not found in PATH")
-        return {"l2_tex_hit_rate.pct": TYPICAL_L2_CACHE_HIT_RATE}
+        ncu_path = shutil.which("ncu")
+        if not ncu_path:
+            warnings.warn("NVIDIA Nsight Compute (ncu) not found in PATH")
+            return {"l2_tex_hit_rate.pct": TYPICAL_L2_CACHE_HIT_RATE}
 
-    model_hash = self._get_model_hash(model.state_dict())
-    cache = self._read_cache()
-    if model_hash in cache:
-        logger.info(f"Using cached profiling results for model hash: {model_hash[:8]}...")
-        return cache[model_hash]
+        model_hash = self._get_model_hash(model.state_dict())
+        cache = self._read_cache()
+        if model_hash in cache:
+            logger.info(f"Using cached profiling results for model hash: {model_hash[:8]}...")
+            return cache[model_hash]
 
-    with tempfile.TemporaryDirectory(prefix="ncu_profile_") as temp_dir:
-        temp_dir = Path(temp_dir)
-        script_path = temp_dir / "profile.py"
-        input_path = temp_dir / "input.pt"
+        with tempfile.TemporaryDirectory(prefix="ncu_profile_") as temp_dir:
+            temp_dir = Path(temp_dir)
+            script_path = temp_dir / "profile.py"
+            input_path = temp_dir / "input.pt"
 
-        torch.save(dummy_input, input_path)
+            torch.save(dummy_input, input_path)
 
-        script_content = f"""
+            script_content = f"""
 import torch
 import warnings
 warnings.filterwarnings('ignore')
@@ -225,51 +225,51 @@ with torch.no_grad():
 if name == "main":
 run_model_inference()
 """
-        script_path.write_text(script_content)
-        python_path = shutil.which("python3")
-        if not python_path:
-            warnings.warn("Could not find python3 in PATH.")
-            return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
+            script_path.write_text(script_content)
+            python_path = shutil.which("python3")
+            if not python_path:
+                warnings.warn("Could not find python3 in PATH.")
+                return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
 
-        command_str = (
-            f"sudo {ncu_path} "
-            f"--metrics {NCU_CSV_METRICS} "
-            f"--csv --target-processes all --kernel-name '.*' "
-            f"--launch-count 1 --force-overwrite "
-            f"{python_path} {str(script_path)}"
-        )
-
-        try:
-            logger.info("Starting GPU profiling with Nsight Compute...")
-            result = subprocess.run(
-                command_str,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=NCU_TIMEOUT_SECONDS,
-                cwd=temp_dir,
-                check=True
+            command_str = (
+                f"sudo {ncu_path} "
+                f"--metrics {NCU_CSV_METRICS} "
+                f"--csv --target-processes all --kernel-name '.*' "
+                f"--launch-count 1 --force-overwrite "
+                f"{python_path} {str(script_path)}"
             )
-            
-            metrics = self._parse_ncu_csv_output(result.stdout)
-            if metrics:
-                logger.info(f"GPU Profiling successful. L2 Cache Hit Rate: {metrics.get('l2_tex_hit_rate.pct', 'N/A')}%")
-                cache[model_hash] = metrics
-                self._write_cache(cache)
-                return metrics
-            else:
-                warnings.warn(f"Failed to parse NCU output. stdout: {result.stdout}")
-                return {"l2_tex_hit_rate.pct": CONSERVATIVE_L2_CACHE_HIT_RATE}
 
-        except subprocess.CalledProcessError as e:
-            warnings.warn(f"GPU profiling command failed. Stderr: {e.stderr}")
-            return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
-        except subprocess.TimeoutExpired:
-            warnings.warn("GPU profiling timed out.")
-            return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
-        except Exception as e:
-            warnings.warn(f"An unexpected error occurred during profiling: {e}")
-            return {"l2_tex_hit_rate.pct": MINIMAL_L2_CACHE_HIT_RATE}
+            try:
+                logger.info("Starting GPU profiling with Nsight Compute...")
+                result = subprocess.run(
+                    command_str,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=NCU_TIMEOUT_SECONDS,
+                    cwd=temp_dir,
+                    check=True
+                )
+                
+                metrics = self._parse_ncu_csv_output(result.stdout)
+                if metrics:
+                    logger.info(f"GPU Profiling successful. L2 Cache Hit Rate: {metrics.get('l2_tex_hit_rate.pct', 'N/A')}%")
+                    cache[model_hash] = metrics
+                    self._write_cache(cache)
+                    return metrics
+                else:
+                    warnings.warn(f"Failed to parse NCU output. stdout: {result.stdout}")
+                    return {"l2_tex_hit_rate.pct": CONSERVATIVE_L2_CACHE_HIT_RATE}
+
+            except subprocess.CalledProcessError as e:
+                warnings.warn(f"GPU profiling command failed. Stderr: {e.stderr}")
+                return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
+            except subprocess.TimeoutExpired:
+                warnings.warn("GPU profiling timed out.")
+                return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
+            except Exception as e:
+                warnings.warn(f"An unexpected error occurred during profiling: {e}")
+                return {"l2_tex_hit_rate.pct": MINIMAL_L2_CACHE_HIT_RATE}
 
 
 
