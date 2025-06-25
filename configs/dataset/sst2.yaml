@@ -3,5 +3,5 @@ name: "glue"
 config: "sst2"
 text_column: "sentence"
 sample_size: 50
-batch_size: 1
+batch_size: 4
 learning_rate: 2.0e-5 
