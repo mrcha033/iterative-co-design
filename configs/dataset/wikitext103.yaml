@@ -3,5 +3,5 @@ name: "wikitext"
 config: "wikitext-103-raw-v1"
 text_column: "text"
 sample_size: 50
-batch_size: 4
+batch_size: 1
 learning_rate: 1.0e-5 
