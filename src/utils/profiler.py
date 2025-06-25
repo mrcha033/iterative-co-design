@@ -203,25 +203,26 @@ import warnings
 warnings.filterwarnings('ignore')
 
 def run_model_inference():
-device = torch.device('cuda')
-dummy_input = torch.load('{input_path}')
-dummy_input = {{k: v.to(device) for k, v in dummy_input.items()}}
-hidden_size = 2560
-vocab_size = 50277
-batch_size, seq_len = dummy_input['input_ids'].shape
+    device = torch.device('cuda')
+    dummy_input = torch.load('{input_path}')
+    dummy_input = {{k: v.to(device) for k, v in dummy_input.items()}}
+    hidden_size = {getattr(model.config, 'hidden_size', 2560)}
+    vocab_size = {getattr(model.config, 'vocab_size', 50277)}
+    num_layers = {getattr(model.config, 'num_hidden_layers', 64)}
+    batch_size, seq_len = dummy_input['input_ids'].shape
 
-with torch.no_grad():
-    x = torch.randn(batch_size, seq_len, hidden_size, device=device, dtype=torch.float16)
-    for _ in range(64):
-        q = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16))
-        k = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16))
-        v = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16))
-        attn = torch.matmul(q, k.transpose(-2, -1))
-        mlp = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size * 4, device=device, dtype=torch.float16))
-        mlp = torch.nn.functional.gelu(mlp)
-        x = x + attn + mlp
-    _ = torch.nn.functional.linear(x, torch.randn(hidden_size, vocab_size, device=device, dtype=torch.float16))
-    torch.cuda.synchronize()
+    with torch.no_grad():
+        x = torch.randn(batch_size, seq_len, hidden_size, device=device, dtype=torch.float16)
+        for _ in range(num_layers):
+            q = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16))
+            k = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16))
+            v = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16))
+            attn = torch.matmul(q, k.transpose(-2, -1))
+            mlp = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size * 4, device=device, dtype=torch.float16))
+            mlp = torch.nn.functional.gelu(mlp)
+            x = x + attn + mlp
+        _ = torch.nn.functional.linear(x, torch.randn(hidden_size, vocab_size, device=device, dtype=torch.float16))
+        torch.cuda.synchronize()
 if name == "main":
 run_model_inference()
 """
