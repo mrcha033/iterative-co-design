@@ -112,6 +112,8 @@ def setup_model_and_data(
     return model, tokenizer, data_loader
 
 
+from utils.config import load_config
+
 def generate_figure1(quick_mode=False):
     """
     Figure 1: Random vs. Optimized Permutation Latency
@@ -120,6 +122,10 @@ def generate_figure1(quick_mode=False):
     print("\n📊 Generating Figure 1: Random vs. Optimized Permutation Latency")
 
     try:
+        # Load model config to get target layer
+        model_config = load_config("configs/model/mamba_3b.yaml")
+        target_layer = model_config["iasp"]["target_layer_name"]
+
         # Setup
         model, tokenizer, data_loader = setup_model_and_data()
         profiler = LatencyProfiler()
@@ -160,7 +166,7 @@ def generate_figure1(quick_mode=False):
         optimal_permutation = find_optimal_permutation(
             model=wrapped_model,
             data_loader=data_loader,
-            target_layer_name="layers.20.mixer.out_proj",  # Mamba target layer
+            target_layer_name=target_layer,
             cluster_size_range=(32, 128),
         )
 

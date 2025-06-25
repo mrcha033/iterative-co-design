@@ -200,35 +200,60 @@ class LatencyProfiler:
             script_content = f"""
 import torch
 import warnings
+import time
 warnings.filterwarnings('ignore')
 
 def run_model_inference():
+    if not torch.cuda.is_available():
+        print("CUDA not available")
+        return
+        
     device = torch.device('cuda')
+    print(f"Using device: {{device}}")
+    
+    # Load input
     dummy_input = torch.load('{input_path}')
     dummy_input = {{k: v.to(device) for k, v in dummy_input.items()}}
+    
+    # Model configuration
     hidden_size = {getattr(model.config, 'hidden_size', 2560)}
     vocab_size = {getattr(model.config, 'vocab_size', 50277)}
-    num_layers = {getattr(model.config, 'num_hidden_layers', 64)}
+    num_layers = min({getattr(model.config, 'num_hidden_layers', 64)}, 4)  # Limit layers for profiling
     batch_size, seq_len = dummy_input['input_ids'].shape
+    
+    print(f"Config: hidden_size={{hidden_size}}, layers={{num_layers}}, batch={{batch_size}}, seq_len={{seq_len}}")
 
+    # Warm up GPU
+    warmup_tensor = torch.randn(100, 100, device=device, dtype=torch.float16)
+    _ = torch.matmul(warmup_tensor, warmup_tensor)
+    torch.cuda.synchronize()
+    
+    # Main computation - force GPU kernels
     with torch.no_grad():
         x = torch.randn(batch_size, seq_len, hidden_size, device=device, dtype=torch.float16)
-        for _ in range(num_layers):
-            # Attention projections (weight matrices for nn.functional.linear)
-            q_weight = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16)
-            k_weight = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16)
-            v_weight = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16)
+        
+        # Multiple attention/MLP layers to ensure GPU kernel execution
+        for layer_idx in range(num_layers):
+            # Attention layers with explicit GPU operations
+            for head in range(4):  # Multi-head attention
+                q_weight = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16)
+                k_weight = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16)
+                v_weight = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16)
+                
+                q = torch.nn.functional.linear(x, q_weight)
+                k = torch.nn.functional.linear(x, k_weight) 
+                v = torch.nn.functional.linear(x, v_weight)
+                
+                # Attention computation (forces GPU kernels)
+                attn_scores = torch.matmul(q, k.transpose(-2, -1))
+                attn_scores = attn_scores / (hidden_size ** 0.5)
+                attn_weights = torch.nn.functional.softmax(attn_scores, dim=-1)
+                attn_out = torch.matmul(attn_weights, v)
+                
+                # Apply attention output
+                x = x + attn_out
             
-            q = torch.nn.functional.linear(x, q_weight)
-            k = torch.nn.functional.linear(x, k_weight)
-            v = torch.nn.functional.linear(x, v_weight)
-            
-            # Attention computation
-            attn_scores = torch.matmul(q, k.transpose(-2, -1)) / (hidden_size ** 0.5)
-            attn_weights = torch.nn.functional.softmax(attn_scores, dim=-1)
-            attn_out = torch.matmul(attn_weights, v)
-            
-            # MLP projections (correct weight matrix dimensions)
+            # MLP layers
             mlp_up_weight = torch.randn(hidden_size * 4, hidden_size, device=device, dtype=torch.float16)
             mlp_down_weight = torch.randn(hidden_size, hidden_size * 4, device=device, dtype=torch.float16)
             
@@ -236,12 +261,22 @@ def run_model_inference():
             mlp = torch.nn.functional.gelu(mlp)
             mlp = torch.nn.functional.linear(mlp, mlp_down_weight)
             
-            # Residual connections
-            x = x + attn_out + mlp
+            # Residual connection
+            x = x + mlp
+            
+            # Force memory operations
+            x = x * 1.0  # Element-wise multiplication
+            x = torch.nn.functional.layer_norm(x, (hidden_size,))  # Layer normalization
             
         # Final output projection
         output_weight = torch.randn(vocab_size, hidden_size, device=device, dtype=torch.float16)
-        _ = torch.nn.functional.linear(x, output_weight)
+        output = torch.nn.functional.linear(x, output_weight)
+        
+        # Additional operations to ensure GPU kernel execution
+        loss = torch.sum(output)
+        print(f"Computation complete, loss: {{loss.item()}}")
+        
+        # Force synchronization
         torch.cuda.synchronize()
 
 if __name__ == "__main__":
@@ -253,39 +288,56 @@ if __name__ == "__main__":
                 warnings.warn("Could not find python3 in PATH.")
                 return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
 
-            command_str = (
-                f"sudo {ncu_path} "
-                f"--metrics {NCU_CSV_METRICS} "
-                f"--csv --target-processes all --kernel-name '.*' "
-                f"--launch-count 1 --force-overwrite "
-                f"{python_path} {str(script_path)}"
-            )
+            # Try NCU without sudo first, then with sudo if needed
+            base_ncu_cmd = [
+                ncu_path,
+                "--metrics", "l2_tex_hit_rate.pct",
+                "--csv",
+                "--target-processes", "all", 
+                "--kernel-regex", ".*",
+                "--launch-count", "1",
+                "--force-overwrite",
+                python_path, str(script_path)
+            ]
 
             try:
                 logger.info("Starting GPU profiling with Nsight Compute...")
+                
+                # Try without sudo first
                 result = subprocess.run(
-                    command_str,
-                    shell=True,
+                    base_ncu_cmd,
                     capture_output=True,
                     text=True,
                     timeout=NCU_TIMEOUT_SECONDS,
-                    cwd=temp_dir,
-                    check=True
+                    cwd=temp_dir
                 )
                 
-                metrics = self._parse_ncu_csv_output(result.stdout)
-                if metrics:
-                    logger.info(f"GPU Profiling successful. L2 Cache Hit Rate: {metrics.get('l2_tex_hit_rate.pct', 'N/A')}%")
-                    cache[model_hash] = metrics
-                    self._write_cache(cache)
-                    return metrics
+                # If failed due to permissions, try with sudo
+                if result.returncode != 0 and ("permission" in result.stderr.lower() or "ERR_NVGPUCTRPERM" in result.stderr):
+                    logger.info("NCU failed due to permissions, trying with sudo...")
+                    sudo_ncu_cmd = ["sudo"] + base_ncu_cmd
+                    result = subprocess.run(
+                        sudo_ncu_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=NCU_TIMEOUT_SECONDS,
+                        cwd=temp_dir
+                    )
+                
+                if result.returncode == 0 and result.stdout:
+                    metrics = self._parse_ncu_csv_output(result.stdout)
+                    if metrics:
+                        logger.info(f"GPU Profiling successful. L2 Cache Hit Rate: {metrics.get('l2_tex_hit_rate.pct', 'N/A')}%")
+                        cache[model_hash] = metrics
+                        self._write_cache(cache)
+                        return metrics
+                    else:
+                        warnings.warn(f"Failed to parse NCU output. stdout: {result.stdout}")
+                        return {"l2_tex_hit_rate.pct": CONSERVATIVE_L2_CACHE_HIT_RATE}
                 else:
-                    warnings.warn(f"Failed to parse NCU output. stdout: {result.stdout}")
-                    return {"l2_tex_hit_rate.pct": CONSERVATIVE_L2_CACHE_HIT_RATE}
+                    warnings.warn(f"NCU profiling failed. returncode: {result.returncode}, stderr: {result.stderr}")
+                    return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
 
-            except subprocess.CalledProcessError as e:
-                warnings.warn(f"GPU profiling command failed. Stderr: {e.stderr}")
-                return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
             except subprocess.TimeoutExpired:
                 warnings.warn("GPU profiling timed out.")
                 return {"l2_tex_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
@@ -298,6 +350,15 @@ if __name__ == "__main__":
     def _parse_ncu_csv_output(self, csv_output: str) -> Optional[Dict[str, float]]:
         """Parses NCU CSV output to extract metrics."""
         try:
+            # Check for common NCU warnings/errors
+            if "No kernels were profiled" in csv_output:
+                warnings.warn("NCU found no GPU kernels to profile. Using fallback cache hit rate.")
+                return None
+            
+            if "==WARNING==" in csv_output and "kernels" in csv_output:
+                warnings.warn(f"NCU warning detected: {csv_output}")
+                return None
+                
             lines = csv_output.strip().split('\n')
             metrics = {}
             
@@ -306,7 +367,7 @@ if __name__ == "__main__":
             for line in lines:
                 if 'Kernel Name' in line or 'Metric Name' in line:
                     continue  # Skip header lines
-                if ',' in line and line.strip():
+                if ',' in line and line.strip() and not line.startswith('=='):
                     metric_lines.append(line)
             
             # Parse metric lines

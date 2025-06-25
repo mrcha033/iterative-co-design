@@ -343,13 +343,49 @@ def run_permute_only(cfg: DictConfig):
     runner.save_results("permute_only", metrics)
 
 
+def _measure_and_collect_metrics(wrapped_model, tokenizer, data_loader, profiler, cfg, permutation):
+    task_metric = calculate_task_metric(
+        wrapped_model, tokenizer, data_loader, cfg.model.task
+    )
+    metric_name = list(task_metric.keys())[0]
+    metric_value = task_metric[metric_name]
+
+    dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
+    dummy_dict = {"input_ids": dummy_input}
+    latency = profiler.measure_latency(wrapped_model, dummy_dict)
+    cache_result = profiler.measure_cache_hits(wrapped_model, dummy_dict)
+    cache_hits = cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
+
+    correlation_matrix = get_activation_correlation(
+        wrapped_model, data_loader, cfg.model.iasp.target_layer_name
+    )
+    d_model = wrapped_model.model.config.hidden_size
+    cluster_size_range = cfg.model.iasp.cluster_size_range
+    optimal_cluster_size = min(
+        cluster_size_range[1], max(cluster_size_range[0], d_model // 8)
+    )
+    n_clusters = d_model // optimal_cluster_size
+    nodes_per_cluster = d_model // n_clusters if n_clusters > 0 else d_model
+    partition = [
+        permutation[i : i + nodes_per_cluster]
+        for i in range(0, d_model, nodes_per_cluster)
+    ]
+    modularity = calculate_modularity(correlation_matrix, partition)
+
+    return {
+        metric_name: metric_value,
+        "latency_ms": latency,
+        "l2_cache_hit_rate_pct": cache_hits,
+        "modularity": modularity,
+    }
+
+
 def run_linear_pipeline(cfg: DictConfig):
     """Runs the linear pipeline (IASP-then-HDS) experiment."""
     print("\n--- Running Method: (4) Linear Pipeline (IASP-then-HDS) ---")
 
     model, tokenizer, data_loader = get_model_and_data(cfg)
     wrapped_model = ModelWrapper(model)
-    d_model = model.config.hidden_size
     profiler = LatencyProfiler()
 
     if torch.cuda.is_available():
@@ -367,40 +403,7 @@ def run_linear_pipeline(cfg: DictConfig):
         wrapped_model.model, data_loader, OmegaConf.to_container(cfg, resolve=True)
     )
 
-    task_metric = calculate_task_metric(
-        wrapped_model, tokenizer, data_loader, cfg.model.task
-    )
-    metric_name = list(task_metric.keys())[0]
-    metric_value = task_metric[metric_name]
-
-    dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
-    dummy_dict = {"input_ids": dummy_input}
-    latency = profiler.measure_latency(wrapped_model, dummy_dict)
-    cache_result = profiler.measure_cache_hits(wrapped_model, dummy_dict)
-    cache_hits = cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
-
-    correlation_matrix = get_activation_correlation(
-        wrapped_model, data_loader, cfg.model.iasp.target_layer_name
-    )
-    # Calculate cluster size from IASP configuration
-    cluster_size_range = cfg.model.iasp.cluster_size_range
-    optimal_cluster_size = min(
-        cluster_size_range[1], max(cluster_size_range[0], d_model // 8)
-    )
-    n_clusters = d_model // optimal_cluster_size
-    nodes_per_cluster = d_model // n_clusters if n_clusters > 0 else d_model
-    partition = [
-        initial_permutation[i : i + nodes_per_cluster]
-        for i in range(0, d_model, nodes_per_cluster)
-    ]
-    modularity = calculate_modularity(correlation_matrix, partition)
-
-    metrics = {
-        metric_name: metric_value,
-        "latency_ms": latency,
-        "l2_cache_hit_rate_pct": cache_hits,
-        "modularity": modularity,
-    }
+    metrics = _measure_and_collect_metrics(wrapped_model, tokenizer, data_loader, profiler, cfg, initial_permutation)
     save_results(cfg, "linear_pipeline", metrics)
 
     if wandb.run:
@@ -413,7 +416,6 @@ def run_iterative(cfg: DictConfig):
 
     model, tokenizer, data_loader = get_model_and_data(cfg)
     wrapped_model = ModelWrapper(model)
-    d_model = model.config.hidden_size
     profiler = LatencyProfiler()
 
     if torch.cuda.is_available():
@@ -435,33 +437,10 @@ def run_iterative(cfg: DictConfig):
         )
         wrapped_model.permute_model_weights(permutation)
 
-        dummy_input = torch.randint(0, cfg.model.vocab_size, (1, 512))
-        dummy_dict = {"input_ids": dummy_input}
-        lat = profiler.measure_latency(wrapped_model, dummy_dict)
-        iteration_metrics["latency"].append(lat)
-
-        cache_result = profiler.measure_cache_hits(wrapped_model, dummy_dict)
-        cache_value = (
-            cache_result.get("l2_tex_hit_rate.pct", 0.0) if cache_result else 0.0
-        )
-        iteration_metrics["l2_cache_hit_rate"].append(cache_value)
-
-        corr_matrix = get_activation_correlation(
-            wrapped_model, data_loader, cfg.model.iasp.target_layer_name
-        )
-        # Calculate cluster size from IASP configuration
-        cluster_size_range = cfg.model.iasp.cluster_size_range
-        optimal_cluster_size = min(
-            cluster_size_range[1], max(cluster_size_range[0], d_model // 8)
-        )
-        n_clusters = d_model // optimal_cluster_size
-        nodes_per_cluster = d_model // n_clusters if n_clusters > 0 else d_model
-        part = [
-            permutation[j : j + nodes_per_cluster]
-            for j in range(0, d_model, nodes_per_cluster)
-        ]
-        mod = calculate_modularity(corr_matrix, part)
-        iteration_metrics["modularity"].append(mod)
+        metrics = _measure_and_collect_metrics(wrapped_model, tokenizer, data_loader, profiler, cfg, permutation)
+        iteration_metrics["latency"].append(metrics["latency_ms"])
+        iteration_metrics["modularity"].append(metrics["modularity"])
+        iteration_metrics["l2_cache_hit_rate"].append(metrics["l2_cache_hit_rate_pct"])
 
     task_metric = calculate_task_metric(
         wrapped_model, tokenizer, data_loader, cfg.model.task
