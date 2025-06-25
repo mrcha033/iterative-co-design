@@ -214,15 +214,36 @@ def run_model_inference():
     with torch.no_grad():
         x = torch.randn(batch_size, seq_len, hidden_size, device=device, dtype=torch.float16)
         for _ in range(num_layers):
-            q = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16))
-            k = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16))
-            v = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16))
-            attn = torch.matmul(q, k.transpose(-2, -1))
-            mlp = torch.nn.functional.linear(x, torch.randn(hidden_size, hidden_size * 4, device=device, dtype=torch.float16))
+            # Attention projections (weight matrices are transposed for nn.functional.linear)
+            q_weight = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16)
+            k_weight = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16)
+            v_weight = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16)
+            
+            q = torch.nn.functional.linear(x, q_weight.T)
+            k = torch.nn.functional.linear(x, k_weight.T)
+            v = torch.nn.functional.linear(x, v_weight.T)
+            
+            # Attention computation
+            attn_scores = torch.matmul(q, k.transpose(-2, -1)) / (hidden_size ** 0.5)
+            attn_weights = torch.nn.functional.softmax(attn_scores, dim=-1)
+            attn_out = torch.matmul(attn_weights, v)
+            
+            # MLP projections (correct weight matrix dimensions)
+            mlp_up_weight = torch.randn(hidden_size * 4, hidden_size, device=device, dtype=torch.float16)
+            mlp_down_weight = torch.randn(hidden_size, hidden_size * 4, device=device, dtype=torch.float16)
+            
+            mlp = torch.nn.functional.linear(x, mlp_up_weight.T)
             mlp = torch.nn.functional.gelu(mlp)
-            x = x + attn + mlp
-        _ = torch.nn.functional.linear(x, torch.randn(hidden_size, vocab_size, device=device, dtype=torch.float16))
+            mlp = torch.nn.functional.linear(mlp, mlp_down_weight.T)
+            
+            # Residual connections
+            x = x + attn_out + mlp
+            
+        # Final output projection
+        output_weight = torch.randn(vocab_size, hidden_size, device=device, dtype=torch.float16)
+        _ = torch.nn.functional.linear(x, output_weight.T)
         torch.cuda.synchronize()
+
 if __name__ == "__main__":
     run_model_inference()
 """
