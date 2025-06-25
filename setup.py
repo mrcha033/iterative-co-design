@@ -20,6 +20,16 @@ if sys.version_info < (3, 8):
     print("ERROR: Python 3.8 or newer is required")
     sys.exit(1)
 
+# Ensure compatible setuptools version to avoid antlr4-python3-runtime issues
+try:
+    import setuptools
+    from packaging import version
+    if version.parse(setuptools.__version__) >= version.parse("70.0.0"):
+        print("WARNING: setuptools>=70.0.0 detected. This may cause issues with hydra-core dependencies.")
+        print("Consider downgrading: pip install 'setuptools<70.0.0'")
+except ImportError:
+    pass
+
 # Core dependencies that are always required
 INSTALL_REQUIRES = [
     "numpy>=1.21.0",

@@ -54,12 +54,27 @@ cd iterative-co-design
 
 It is recommended to use a virtual environment.
 
+#### Quick Install (Recommended for setuptools compatibility)
+
+**Linux/macOS:**
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
+chmod +x install.sh
+./install.sh
 ```
 
-#### Option A: Automated Setup Script (Recommended)
+**Windows (PowerShell):**
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+.\install.ps1
+```
+
+**If you encounter setuptools errors**, use:
+```bash
+pip install "setuptools<70.0.0"
+pip install -e .
+```
+
+#### Option A: Automated Setup Script (Alternative)
 
 ```bash
 # For CPU-only PyTorch (faster installation, good for testing)
