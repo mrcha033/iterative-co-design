@@ -214,14 +214,14 @@ def run_model_inference():
     with torch.no_grad():
         x = torch.randn(batch_size, seq_len, hidden_size, device=device, dtype=torch.float16)
         for _ in range(num_layers):
-            # Attention projections (weight matrices are transposed for nn.functional.linear)
+            # Attention projections (weight matrices for nn.functional.linear)
             q_weight = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16)
             k_weight = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16)
             v_weight = torch.randn(hidden_size, hidden_size, device=device, dtype=torch.float16)
             
-            q = torch.nn.functional.linear(x, q_weight.T)
-            k = torch.nn.functional.linear(x, k_weight.T)
-            v = torch.nn.functional.linear(x, v_weight.T)
+            q = torch.nn.functional.linear(x, q_weight)
+            k = torch.nn.functional.linear(x, k_weight)
+            v = torch.nn.functional.linear(x, v_weight)
             
             # Attention computation
             attn_scores = torch.matmul(q, k.transpose(-2, -1)) / (hidden_size ** 0.5)
@@ -232,16 +232,16 @@ def run_model_inference():
             mlp_up_weight = torch.randn(hidden_size * 4, hidden_size, device=device, dtype=torch.float16)
             mlp_down_weight = torch.randn(hidden_size, hidden_size * 4, device=device, dtype=torch.float16)
             
-            mlp = torch.nn.functional.linear(x, mlp_up_weight.T)
+            mlp = torch.nn.functional.linear(x, mlp_up_weight)
             mlp = torch.nn.functional.gelu(mlp)
-            mlp = torch.nn.functional.linear(mlp, mlp_down_weight.T)
+            mlp = torch.nn.functional.linear(mlp, mlp_down_weight)
             
             # Residual connections
             x = x + attn_out + mlp
             
         # Final output projection
         output_weight = torch.randn(vocab_size, hidden_size, device=device, dtype=torch.float16)
-        _ = torch.nn.functional.linear(x, output_weight.T)
+        _ = torch.nn.functional.linear(x, output_weight)
         torch.cuda.synchronize()
 
 if __name__ == "__main__":
