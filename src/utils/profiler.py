@@ -347,108 +347,26 @@ if __name__ == "__main__":
         try:
             logger.info("Starting NCU CSV parsing...")
             
-            # Check for common NCU warnings/errors
-            if "No kernels were profiled" in csv_output:
-                warnings.warn("NCU found no GPU kernels to profile. Using fallback cache hit rate.")
-                return None
-            
-            if "==WARNING==" in csv_output and "kernels" in csv_output:
-                warnings.warn("NCU warning detected in output")
-                return None
-                
             lines = csv_output.strip().split('\n')
             logger.info(f"Processing {len(lines)} lines from NCU output")
             
             metrics = {}
-            header_line = None
             
-            # Find header and data lines
-            for i, line in enumerate(lines):
-                if '"ID"' in line or '"Kernel Name"' in line or 'Metric Name' in line:
-                    header_line = i
-                    logger.info(f"Found header line at index {i}: {line[:100]}...")
-                    break
-            
-            if header_line is not None:
-                # Parse CSV with headers
-                import csv
-                from io import StringIO
-                
-                # Extract CSV portion starting from header
-                csv_data = '\n'.join(lines[header_line:])
-                reader = csv.DictReader(StringIO(csv_data))
-                
-                logger.info(f"CSV headers: {reader.fieldnames}")
-                
-                # Look for cache hit rate metrics
-                for row in reader:
-                    logger.info(f"Processing row: {dict(row)}")
-                    
-                    # Check if this row has cache-related metrics
-                    metric_name = row.get('Metric Name', '')
-                    metric_value = row.get('Metric Value', '')
-                    
-                    # Look for L2 cache hit rate metrics
-                    if any(metric in metric_name.lower() for metric in ['l2_cache_hit_rate', 'lts__t_sectors_hit_rate', 'l2_tex_hit_rate']):
-                        try:
-                            value_str = metric_value.replace('%', '').strip()
-                            if value_str and value_str.lower() not in ['n/a', 'na', '']:
-                                value = float(value_str)
-                                if 0 <= value <= 100:
-                                    metrics['l2_tex_hit_rate.pct'] = value
-                                    logger.info(f"Found L2 cache hit rate: {value}% from metric '{metric_name}'")
-                                    break
-                        except (ValueError, TypeError):
-                            continue
-                    
-                    # Also calculate hit rate from miss rate if available
-                    elif 'lts__t_sectors_miss_rate' in metric_name.lower():
-                        try:
-                            value_str = metric_value.replace('%', '').strip()
-                            if value_str and value_str.lower() not in ['n/a', 'na', '']:
-                                miss_rate = float(value_str)
-                                if 0 <= miss_rate <= 100:
-                                    hit_rate = 100 - miss_rate
-                                    metrics['l2_tex_hit_rate.pct'] = hit_rate
-                                    logger.info(f"Calculated L2 cache hit rate: {hit_rate}% from miss rate {miss_rate}%")
-                                    break
-                        except (ValueError, TypeError):
-                            continue
-                    
-                    if metrics:  # Found what we need
-                        break
-            
-            # Fallback: look for patterns in raw text
-            if not metrics:
-                logger.info("No metrics found in CSV format, trying pattern matching...")
-                import re
-                
-                # Look for cache hit rate patterns
-                cache_patterns = [
-                    r'l2.*hit.*rate.*?(\d+\.?\d*)\s*%',
-                    r'L2.*Cache.*Hit.*?(\d+\.?\d*)\s*%',
-                    r'cache.*hit.*?(\d+\.?\d*)\s*%',
-                ]
-                
-                for pattern in cache_patterns:
-                    matches = re.findall(pattern, csv_output, re.IGNORECASE)
-                    if matches:
-                        try:
-                            value = float(matches[0])
-                            if 0 <= value <= 100:
-                                metrics['l2_tex_hit_rate.pct'] = value
-                                logger.info(f"Found cache hit rate via pattern: {value}%")
-                                break
-                        except ValueError:
-                            continue
-                
-                # Look for any reasonable percentage values as fallback
-                if not metrics:
-                    percentages = re.findall(r'(\d+\.?\d*)\s*%', csv_output)
-                    reasonable_values = [float(p) for p in percentages if 50 <= float(p) <= 100]
-                    if reasonable_values:
-                        metrics['l2_tex_hit_rate.pct'] = reasonable_values[0]
-                        logger.info(f"Using reasonable percentage value: {reasonable_values[0]}%")
+            for line in lines:
+                if "l2_tex_hit_rate.pct" in line:
+                    try:
+                        value = float(line.split(",")[2])
+                        metrics["l2_tex_hit_rate.pct"] = value
+                        logger.info(f"Found L2 cache hit rate: {value}%")
+                    except (ValueError, IndexError):
+                        continue
+                if "dram_read_throughput.avg.pct_of_peak_sustained_elapsed" in line:
+                    try:
+                        value = float(line.split(",")[2])
+                        metrics["dram_read_throughput.avg.pct_of_peak_sustained_elapsed"] = value
+                        logger.info(f"Found DRAM read throughput: {value}%")
+                    except (ValueError, IndexError):
+                        continue
             
             if metrics:
                 logger.info(f"Successfully parsed metrics: {metrics}")

@@ -235,15 +235,6 @@ class TestLatencyProfiler:
 
     @patch("subprocess.run")
     def test_measure_cache_hits_subprocess_success(self, mock_subprocess_run):
-        mock_subprocess_run.return_value = subprocess.CompletedProcess(args=['ncu'], returncode=0, stdout='mocked_output')
-        profiler = LatencyProfiler()
-        model = SimpleTestModel()
-        dummy_input = {"input_ids": torch.randn(1, 10)}
-        with patch.object(profiler, '_parse_ncu_csv_output', return_value={"l2_tex_hit_rate.pct": 95.0}):
-            result = profiler.measure_cache_hits(model, dummy_input)
-            assert result is not None
-            self.assertIn("l2_tex_hit_rate.pct", result)
-            mock_subprocess_run.assert_called_once()
         """Test successful NCU profiling via subprocess."""
         with tempfile.TemporaryDirectory() as temp_dir:
             profiler = LatencyProfiler(cache_dir=temp_dir)
@@ -251,23 +242,20 @@ class TestLatencyProfiler:
             dummy_input = {"input_ids": torch.randint(0, 100, (2, 10))}
 
             # Mock successful subprocess run
-            mock_subprocess_run.return_value = subprocess.CompletedProcess(args=['ncu'], returncode=0, stdout='mocked_output')
-
-            # Mock NCU output parsing
-            mock_metrics = {"l2_tex_hit_rate.pct": 78.5}
+            mock_subprocess_run.return_value = subprocess.CompletedProcess(args=['ncu'], returncode=0, stdout='l2_tex_hit_rate.pct,%,85.32')
 
             with patch("torch.cuda.is_available", return_value=True), patch(
                 "shutil.which", return_value="/usr/bin/ncu"
-            ), patch.object(
-                profiler, "_parse_ncu_csv_output", return_value=mock_metrics
             ), patch("torch.save"):  # Mock torch.save to avoid file I/O
                 result = profiler.measure_cache_hits(model, dummy_input)
-                assert result == mock_metrics
+                assert result is not None
+                assert "l2_tex_hit_rate.pct" in result
+                assert result["l2_tex_hit_rate.pct"] == 85.32
 
                 # Verify subprocess was called with correct arguments
                 mock_subprocess_run.assert_called_once()
                 call_args = mock_subprocess_run.call_args[0][0]
-                assert call_args[0] == "ncu"
+                assert "ncu" in call_args
                 assert "--metrics" in call_args
                 assert "l2_tex_hit_rate.pct" in call_args
 
@@ -299,33 +287,25 @@ class TestLatencyProfiler:
         mock_output = """l2_tex_hit_rate.pct,%,85.32
 sm__cycles_elapsed.avg,cycle,1234.56"""
 
-        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
-            f.write(mock_output)
-            f.flush()
+        result = profiler._parse_ncu_csv_output(mock_output)
 
-            result = profiler._parse_ncu_csv_output(Path(f.name))
-
-            assert result is not None
-            assert "l2_tex_hit_rate.pct" in result
-            assert result["l2_tex_hit_rate.pct"] == 85.32
+        assert result is not None
+        assert "l2_tex_hit_rate.pct" in result
+        assert result["l2_tex_hit_rate.pct"] == 85.32
 
     def test_parse_ncu_csv_output_failure(self):
         """Test NCU output parsing failure."""
         profiler = LatencyProfiler()
 
         # Mock invalid output file
-        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
-            f.write("invalid output format")
-            f.flush()
-
-            result = profiler._parse_ncu_csv_output(Path(f.name))
-            assert result is None
+        result = profiler._parse_ncu_csv_output("invalid output format")
+        assert result is None
 
     def test_parse_ncu_csv_output_missing_file(self):
         """Test NCU output parsing with missing file."""
         profiler = LatencyProfiler()
 
-        result = profiler._parse_ncu_csv_output(Path("/nonexistent/file.txt"))
+        result = profiler._parse_ncu_csv_output("")
         assert result is None
 
     def test_parse_ncu_csv_output_scientific_notation(self):
@@ -341,16 +321,7 @@ sm__cycles_elapsed.avg,cycle,1234.56"""
         mock_output = """l2_tex_hit_rate.pct,%,1.23e+02
 dram_read_throughput.avg.pct_of_peak_sustained_elapsed,%,4.56e-01"""
 
-        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
-            f.write(mock_output)
-            f.flush()
-            file_name = f.name
-
-        # Parse after file is closed
-        result = profiler._parse_ncu_csv_output(Path(file_name))
-
-        # Cleanup after parsing
-        Path(file_name).unlink()
+        result = profiler._parse_ncu_csv_output(mock_output)
 
         # Verify results
         assert result is not None
@@ -377,16 +348,7 @@ dram_read_throughput.avg.pct_of_peak_sustained_elapsed,%,4.56e-01"""
         mock_output = """l2_tex_hit_rate.pct,%,78.45
 dram_read_throughput.avg.pct_of_peak_sustained_elapsed,%,1.23E+05"""
 
-        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
-            f.write(mock_output)
-            f.flush()
-            file_name = f.name
-
-        # Parse after file is closed
-        result = profiler._parse_ncu_csv_output(Path(file_name))
-
-        # Cleanup after parsing
-        Path(file_name).unlink()
+        result = profiler._parse_ncu_csv_output(mock_output)
 
         # Verify results
         assert result is not None

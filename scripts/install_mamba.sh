@@ -1,10 +1,10 @@
 #!/bin/bash
-# Enhanced Mamba Installation Script
+# Mamba Installation Script
 # Usage: bash scripts/install_mamba.sh
 
 set -e
 
-echo "🐍 Enhanced Mamba Installation Script"
+echo "🐍Mamba Installation Script"
 echo "======================================================"
 echo "This script will attempt to install Mamba dependencies, which require a"
 echo "specific CUDA and C++ build environment."

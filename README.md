@@ -73,87 +73,37 @@ pip install -e .[dev]
 - **Installation size**: CUDA PyTorch can be 2-3GB. For CI/testing, use CPU-only version to save disk space
 - **Disk space issues**: If you encounter "No space left on device" errors, use the minimal installation option above
 
-#### Mamba Model Support (Optional)
+### Mamba Model Support
 
-This project supports **Mamba** models from `state-spaces/mamba-2.8b-hf`, but due to compilation complexity, they are **optional**.
+This project supports **Mamba** models, but they require a specific, complex build environment that is difficult to set up locally.
 
-**For stable usage (recommended):**
-- Use BERT models: `python scripts/run_experiment.py model=bert_base`
-- Transformers 4.42.4+ (stable version)
+**⚠️ Using Mamba is for advanced users and is not recommended for local installation.**
 
-**For Mamba models (advanced users only):**
-- **Requirements**: A100 GPU, CUDA 12.1, compilation tools
-- **Transformers**: >=4.42.4 (Mamba support)
-- **CUDA dependencies**: `causal-conv1d>=1.2.0`, `mamba-ssm>=1.2.0`
-- **Installation**: Use the dedicated script below
+#### The Docker Method (Strongly Recommended)
 
-#### Verify Installation
+For a hassle-free experience with Mamba, the **Docker environment is the recommended approach**. It comes pre-configured with all the necessary CUDA and C++ build tools, avoiding all local compilation issues.
 
-```bash
-# Quick verification
-python -c "import torch; import numpy; import yaml; print('All core dependencies available')"
+- **Guaranteed Compatibility**: The Docker image has `mamba-ssm` and `causal-conv1d` pre-compiled against a compatible version of the CUDA toolkit.
+- **No Local Setup**: No need to install the CUDA toolkit or C++ compilers on your machine.
 
-# Comprehensive dependency check (recommended)
-python scripts/check_test_dependencies.py
+See the [DOCKER_GUIDE.md](DOCKER_GUIDE.md) for instructions on how to use the Mamba-ready Docker image.
 
-# Auto-install missing dependencies if needed
-python scripts/check_test_dependencies.py --install
+#### The Local Installation Method (Advanced)
 
-# Run basic functional test
-pytest tests/test_config.py::TestConfigLoader::test_load_yaml_config_basic -v
+If you cannot use Docker, you can attempt a local installation. This is **not guaranteed to work** and depends heavily on your system configuration.
 
-# Or use the automated test script (handles dependencies)
-bash scripts/run_tests.sh
-```
+1.  **Prerequisites**:
+    *   A compatible NVIDIA GPU (e.g., A100).
+    *   NVIDIA CUDA Toolkit (version 12.1 is recommended) installed, with `nvcc` in your system's `PATH`.
+    *   A C++ compiler (like `g++`) installed.
 
-#### Troubleshooting Installation Issues
+2.  **Run the Installation Script**:
 
-##### Error: "Could not find a version that satisfies the requirement numpy==X.X.X"
+    ```bash
+    bash scripts/install_mamba.sh
+    ```
 
-This usually means your Python version or pip is too old. The project now uses flexible version requirements for better compatibility:
-
-1. **Update pip and build tools:**
-   ```bash
-   python -m pip install --upgrade pip setuptools wheel
-   ```
-
-2. **Check Python version (3.8+ supported, 3.9+ recommended):**
-   ```bash
-   python --version
-   ```
-
-3. **Install with flexible requirements:**
-   ```bash
-   pip install -e .  # Uses flexible requirements from pyproject.toml
-   ```
-
-4. **Manual installation for older environments:**
-   ```bash
-   pip install 'numpy>=1.21.0' 'torch>=2.0.0' 'transformers>=4.42.4'
-   pip install -e . --no-deps
-   ```
-
-### Advanced: Mamba Model Installation
-
-**⚠️ Warning**: Mamba installation is complex and may fail. Use BERT models for stable experiments.
-
-**On A100 GPU (Ubuntu/Linux):**
-```bash
-# Method 1: Use dedicated installation script
-bash scripts/install_mamba.sh
-
-# Method 2: Manual installation
-pip install torch==2.3.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-pip install transformers>4.42.4
-pip install causal-conv1d>=1.2.0 --no-build-isolation
-pip install mamba-ssm>=1.2.0 --no-build-isolation
-```
-
-**Troubleshooting Mamba Installation:**
-- **CUDA version mismatch**: Use `torch==2.3.1` with CUDA 12.1
-- **Compilation errors**: Install build tools: `apt-get install build-essential`
-- **404 errors**: Try `--no-build-isolation` flag
-- **Alternative**: Use BERT models instead
+    This script will first check for the required build tools and then attempt to install the Mamba dependencies. If the script fails, please refer to the error messages and consider using the Docker environment.
 
 ##### Error: "No module named 'src'"
 

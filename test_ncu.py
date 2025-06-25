@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 import subprocess
+import argparse
 
 # Test if NCU is accessible
-def test_ncu():
+def test_ncu(ncu_path):
     print("Testing NCU availability...")
     
     # Check NCU version
     try:
-        result = subprocess.run(["ncu", "--version"], capture_output=True, text=True)
+        result = subprocess.run([ncu_path, "--version"], capture_output=True, text=True)
         if result.returncode == 0:
-            print(f"✓ NCU found: {result.stdout.strip()}")
+            print(f"OK NCU found: {result.stdout.strip()}")
         else:
-            print(f"✗ NCU error: {result.stderr}")
+            print(f"ERROR NCU error: {result.stderr}")
             return False
     except Exception as e:
-        print(f"✗ NCU not found: {e}")
+        print(f"ERROR NCU not found: {e}")
         return False
     
     # Test simple CUDA kernel profiling
@@ -40,11 +41,11 @@ else:
     
     # Run NCU on the test script
     cmd = [
-        "ncu",
+        ncu_path,
         "--metrics", "l2_cache_hit_rate",
         "--csv",
         "--target-processes", "all",
-        "python3", "test_cuda.py"
+        "python", "test_cuda.py"
     ]
     
     try:
@@ -73,5 +74,8 @@ else:
             os.remove("test_cuda.py")
 
 if __name__ == "__main__":
-    success = test_ncu()
-    print(f"\nNCU test {'PASSED' if success else 'FAILED'}") 
+    parser = argparse.ArgumentParser(description="Test NCU integration.")
+    parser.add_argument("--ncu_path", type=str, default="ncu", help="Path to the NCU executable.")
+    args = parser.parse_args()
+    success = test_ncu(args.ncu_path)
+    print(f"\nNCU test {'PASSED' if success else 'FAILED'}")

@@ -4,7 +4,7 @@ requires = [
     "wheel",
     "torch>=2.0.0",  # Ensure torch is available during build
 ]
-build-backend = "setuptools.build_meta"
+build-backend = "setuptools.build_meta:__legacy__"
 
 [project]
 name = "iterative-co-design"
@@ -32,6 +32,9 @@ classifiers = [
 
 dependencies = [
     "numpy>=1.21.0,<2.0.0",
+    "torch>=2.0.0,<3.0.0",  # Core PyTorch dependency
+    "torchvision",
+    "torchaudio", 
     "transformers>=4.42.4",  # Unified version with Mamba support
     "datasets>=2.14.0",
     "pyyaml>=6.0",
