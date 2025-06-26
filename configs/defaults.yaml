@@ -11,8 +11,20 @@ experiment: null  # Set to "debug" for quick runs
 
 # Hardware-Native Differentiable Sparsity (HDS) Configuration
 hds:
-  target_layers: ["*.query", "*.key", "*.value", "*.dense", "*linear*"] # Common layer patterns
+  # Wildcard patterns for layers whose hidden dimension equals d_model.
+  # These names cover
+  # • Mamba:  *.mixer.*_proj, *.mlp.*_proj, *.in_proj, *.out_proj
+  # • BERT :  *.attention.*, *.intermediate.dense, *.output.dense
+  # 추가 모델은 개별 model YAML 에서 `hds.target_layers` 로 덮어쓰기 가능.
+  target_layers:
+    - "*.mixer.*_proj"
+    - "*.mlp.*_proj"
+    - "*.in_proj"
+    - "*.out_proj"
+    - "*.attention.*dense*"
+    - "*.intermediate.dense"
+    - "*.output.dense"
   n: 2                    # Keep 2 out of every M weights (N:M sparsity)
   m: 4                    # Block size for N:M sparsity
   fine_tuning_epochs: 1   # Number of epochs to fine-tune sparsity masks
-  gumbel_temp: 1.0       # Temperature for Gumbel-Top-K sampling
+  gumbel_temp: 1.0        # Temperature for Gumbel-Top-K sampling
