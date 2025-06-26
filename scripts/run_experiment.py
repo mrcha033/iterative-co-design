@@ -108,13 +108,13 @@ def get_model_and_data(cfg: DictConfig):
         eval_split = "test"
     
     eval_dataset = dataset[eval_split]
-    
+
     def tokenize_function(examples):
         text_column = "text" if "text" in examples else "sentence"
         return tokenizer(
             examples[text_column], 
-            truncation=True, 
-            max_length=512, 
+            truncation=True,
+            max_length=512,
             padding="max_length"
         )
 
@@ -171,7 +171,6 @@ def _measure_and_collect_metrics(wrapped_model, tokenizer, data_loader, eval_dat
     
     logger.info("Calculating modularity...")
     
-    # For dense, we don't have a permutation, so we can't calculate modularity in a meaningful way here.
     if partition is None or target_layer_names is None:
         modularity = 0.0
     else:
@@ -220,7 +219,7 @@ def run_sparsity_only(cfg: DictConfig):
     
     wrapped_model = ModelWrapper(model)
     profiler = LatencyProfiler()
-    
+
     logger.info("--- Applying HDS Sparsification ---")
     partition, _ = apply_hds(wrapped_model, data_loader, cfg.model.hds)
     
@@ -257,7 +256,7 @@ def run_permute_only(cfg: DictConfig):
         target_layer_names=target_layer_names,
         cluster_size_range=tuple(iasp_cfg.cluster_size_range),
     )
-    wrapped_model.permute_model(permutation)
+    wrapped_model.permute_model_weights(permutation)
     
     # For modularity calculation, we need a partition
     nodes_per_cluster = model.config.hidden_size // (model.config.hidden_size // 32)
@@ -291,7 +290,7 @@ def run_linear_pipeline(cfg: DictConfig):
         target_layer_names=target_layer_names,
         cluster_size_range=tuple(iasp_cfg.cluster_size_range),
     )
-    wrapped_model.permute_model(permutation)
+    wrapped_model.permute_model_weights(permutation)
     
     logger.info("--- Step 2: HDS Sparsification ---")
     partition, _ = apply_hds(wrapped_model, data_loader, cfg.model.hds)
@@ -327,14 +326,14 @@ def run_iterative(cfg: DictConfig):
         logger.info(f"--- Iteration {i+1}, Step 2: IASP Permutation ---")
         target_layer_spec = iasp_cfg.get("target_layer_names", iasp_cfg.get("target_layer_name"))
         target_layer_names = _expand_target_layers(wrapped_model.model, target_layer_spec)
-        
+
         permutation = find_optimal_permutation(
             model=wrapped_model.model,
             data_loader=data_loader,
             target_layer_names=target_layer_names,
             cluster_size_range=tuple(iasp_cfg.cluster_size_range),
         )
-        wrapped_model.permute_model(permutation)
+        wrapped_model.permute_model_weights(permutation)
 
     # For modularity calculation, we need a partition
     nodes_per_cluster = model.config.hidden_size // (model.config.hidden_size // 32)

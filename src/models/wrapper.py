@@ -87,22 +87,22 @@ class ModelWrapper(nn.Module):
                 weight_permuted = False
                 
                 # Permute columns (input features) - affects hidden dim as input
-                if layer.weight.shape[1] == d_model:
-                    layer.weight.data = layer.weight.data[:, perm_tensor]
+            if layer.weight.shape[1] == d_model:
+                layer.weight.data = layer.weight.data[:, perm_tensor]
                     weight_permuted = True
-                    logger.info(f"  - Permuted columns of layer: {name}")
+                logger.info(f"  - Permuted columns of layer: {name}")
 
                 # Permute rows (output features) - affects hidden dim as output
                 # Only if we haven't already permuted this weight
                 if layer.weight.shape[0] == d_model and not weight_permuted:
-                    layer.weight.data = layer.weight.data[perm_tensor, :]
+                layer.weight.data = layer.weight.data[perm_tensor, :]
                     weight_permuted = True
-                    logger.info(f"  - Permuted rows of layer: {name}")
-                    # Permute corresponding bias if it exists
-                    if layer.bias is not None:
-                        layer.bias.data = layer.bias.data[perm_tensor]
+                logger.info(f"  - Permuted rows of layer: {name}")
+                # Permute corresponding bias if it exists
+                if layer.bias is not None:
+                    layer.bias.data = layer.bias.data[perm_tensor]
                         already_permuted.add(id(layer.bias))
-                        logger.info(f"  - Permuted bias of layer: {name}")
+                    logger.info(f"  - Permuted bias of layer: {name}")
                 
                 if weight_permuted:
                     already_permuted.add(param_id)
