@@ -84,27 +84,27 @@ class ModelWrapper(nn.Module):
                 continue
 
             if layer_type == "linear":
-                weight_permuted = False
-                
-                # Permute columns (input features) - affects hidden dim as input
-            if layer.weight.shape[1] == d_model:
-                layer.weight.data = layer.weight.data[:, perm_tensor]
-                    weight_permuted = True
-                logger.info(f"  - Permuted columns of layer: {name}")
+                permuted_input = False
+                permuted_output = False
 
-                # Permute rows (output features) - affects hidden dim as output
-                # Only if we haven't already permuted this weight
-                if layer.weight.shape[0] == d_model and not weight_permuted:
-                layer.weight.data = layer.weight.data[perm_tensor, :]
-                    weight_permuted = True
-                logger.info(f"  - Permuted rows of layer: {name}")
-                # Permute corresponding bias if it exists
-                if layer.bias is not None:
-                    layer.bias.data = layer.bias.data[perm_tensor]
+                # Permute columns (input features) if they match the permutation dim
+                if layer.weight.shape[1] == d_model:
+                    layer.weight.data = layer.weight.data[:, perm_tensor]
+                    permuted_input = True
+                    logger.info(f"  - Permuted columns of layer: {name}")
+
+                # Permute rows (output features) if they match the permutation dim
+                if layer.weight.shape[0] == d_model:
+                    layer.weight.data = layer.weight.data[perm_tensor, :]
+                    # Permute corresponding bias if it exists and matches
+                    if layer.bias is not None and layer.bias.shape[0] == d_model:
+                        layer.bias.data = layer.bias.data[perm_tensor]
+                        # Don't double-permute a shared bias
                         already_permuted.add(id(layer.bias))
-                    logger.info(f"  - Permuted bias of layer: {name}")
-                
-                if weight_permuted:
+                    permuted_output = True
+                    logger.info(f"  - Permuted rows and bias of layer: {name}")
+
+                if permuted_input or permuted_output:
                     already_permuted.add(param_id)
             elif layer_type == "embedding":
                 # Weight shape (vocab, hidden) – permute hidden dimension (columns)
