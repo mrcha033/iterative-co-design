@@ -10,9 +10,5 @@ iasp:
   # in_proj: (4096, 1024) - operates on full hidden dim
   # out_proj: (1024, 2048) - operates on full hidden dim  
   target_layer_names:
-    - "model.backbone.layers.0.mixer.in_proj"
-    - "model.backbone.layers.8.mixer.in_proj"
-    - "model.backbone.layers.16.mixer.in_proj"
-    - "model.backbone.layers.32.mixer.in_proj"
-    - "model.backbone.layers.47.mixer.in_proj"
+    - "model.backbone.layers.*.mixer.in_proj"
   cluster_size_range: [16, 128] 

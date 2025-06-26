@@ -84,8 +84,9 @@ def get_activation_correlation(
         activations = []
 
         def hook_fn(module, input, output):
-            # Extract activation tensor from tuple outputs if necessary
-            act = output[0] if isinstance(output, tuple) else output
+            # The input to the linear layer is what holds the hidden dimension
+            # we need to permute. For a linear layer, this is input[0].
+            act = input[0]
 
             # --------------------------------------------------------------
             # Memory‐friendly downsampling
@@ -422,7 +423,6 @@ def _mamba_aware_permutation(
     logger.info(f"✅ Completed dimension-aware permutation for Mamba")
     return global_permutation
 
-
 def find_optimal_permutation(
     model: nn.Module,
     data_loader: DataLoader,
@@ -495,3 +495,4 @@ def find_optimal_permutation(
         clusters_range=(min_clusters, max_clusters),
         model_type=model_type,
     )
+
