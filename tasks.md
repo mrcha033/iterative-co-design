@@ -104,13 +104,13 @@ This phase brings all the components together to run the full experiments.
 
 Description: Build scripts/run_experiment.py. It should parse command-line arguments (--config, --method), load the specified configuration, and call the appropriate sequence of functions from src to execute one of the five experimental conditions (Dense, Sparsity-Only, etc.).
 
-Verification: Run a "dry run" for each method: python scripts/run_experiment.py --config configs/mamba_3b_wikitext103.yaml --method <method_name> --dry_run. The script should print the sequence of operations it would perform without actually running them (e.g., "1. Loading model. 2. Applying HDS. 3. Measuring latency...").
+Verification: Run a "dry run" for each method: python scripts/run_experiment.py --config configs/mamba_370m_wikitext103.yaml --method <method_name> --dry_run. The script should print the sequence of operations it would perform without actually running them (e.g., "1. Loading model. 2. Applying HDS. 3. Measuring latency...").
 
 [x] Task 3.2: Run Baseline Experiments (Dense, Permute-Only)
 
-Description: Execute run_experiment.py for the dense and permute_only methods on the Mamba-3B model.
+Description: Execute run_experiment.py for the dense and permute_only methods on the Mamba-370m model.
 
-Verification: The script should complete without errors and generate result files (e.g., results/mamba_3b/dense_metrics.json). The JSON file should contain all measured metrics: perplexity, latency, l2_cache_hit_rate, and modularity. The values should be reasonable.
+Verification: The script should complete without errors and generate result files (e.g., results/mamba_370m/dense_metrics.json). The JSON file should contain all measured metrics: perplexity, latency, l2_cache_hit_rate, and modularity. The values should be reasonable.
 
 [x] Task 3.3: Run Sparsity and Linear Pipeline Experiments
 

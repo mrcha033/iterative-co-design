@@ -13,7 +13,7 @@ The script uses Hydra for configuration management and supports various models
 saved and can be logged to Weights & Biases.
 
 Usage:
-    python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=iterative
+    python scripts/run_experiment.py model=mamba_370m dataset=wikitext103 method=iterative
     python scripts/run_experiment.py model=bert_base dataset=sst2 method=dense dry_run=true
 """
 

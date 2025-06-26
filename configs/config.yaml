@@ -1,6 +1,6 @@
 defaults:
   - defaults  # Load common configurations first
-  - model: mamba_3b
+  - model: mamba_370m
   - dataset: wikitext103
   - override hydra/job_logging: default
   - override hydra/hydra_logging: default

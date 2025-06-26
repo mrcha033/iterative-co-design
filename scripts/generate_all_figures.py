@@ -133,7 +133,7 @@ def generate_figure1(quick_mode=False):
 
     try:
         # Load model config to get target layer
-        model_config = load_config("configs/model/mamba_3b.yaml")
+        model_config = load_config("configs/model/mamba_370m.yaml")
         iasp_cfg = model_config["iasp"]
         target_layer_spec = iasp_cfg.get("target_layer_names", iasp_cfg["target_layer_name"])
 

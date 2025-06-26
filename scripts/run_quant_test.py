@@ -11,7 +11,7 @@ This experiment demonstrates that the co-design principle applies beyond sparsit
 to other model optimization techniques like quantization.
 
 Usage:
-    python scripts/run_quant_test.py model=mamba_3b dataset=wikitext103 method=permute_quant_repermute
+    python scripts/run_quant_test.py model=mamba_370m dataset=wikitext103 method=permute_quant_repermute
 """
 
 import json

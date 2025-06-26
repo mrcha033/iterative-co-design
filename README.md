@@ -56,7 +56,7 @@ pip install -e .
 pip install -e ".[mamba]"
 
 # Test with Mamba model  
-python scripts/run_experiment.py dataset=wikitext103 method=dense model=mamba_3b
+python scripts/run_experiment.py dataset=wikitext103 method=dense model=mamba_370m
 ```
 
 #### Option C: Development Installation
@@ -167,15 +167,15 @@ For complete licensing details, see [`data/LICENSES.md`](data/LICENSES.md).
 ### 4. Experiements
 ```
 #(Baseline 1) Dense
-python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=dense
+python scripts/run_experiment.py model=mamba_370m dataset=wikitext103 method=dense
 #(Baseline 2) Sparsity-Only(HDS)
-python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=sparsity_only
+python scripts/run_experiment.py model=mamba_370m dataset=wikitext103 method=sparsity_only
 #(Baseline 3) Permutation-Only (IASP)
-python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=permute_only
+python scripts/run_experiment.py model=mamba_370m dataset=wikitext103 method=permute_only
 #(Baseline 4) Linear Pipeline (IASP then HDS)
-python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=linear_pipeline
+python scripts/run_experiment.py model=mamba_370m dataset=wikitext103 method=linear_pipeline
 #Iterative Co-Design
-python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=iterative
+python scripts/run_experiment.py model=mamba_370m dataset=wikitext103 method=iterative
 ```
 ---
 
@@ -219,7 +219,7 @@ iterative-co-design/
 │       ├── config.py           # Configuration management
 │       └── logging.py          # Logging utilities
 ├── configs/                     # Hydra configuration files
-│   ├── model/                  # Model configurations (bert_base.yaml, mamba_3b.yaml)
+│   ├── model/                  # Model configurations (bert_base.yaml, mamba_370m.yaml)
 │   ├── dataset/                # Dataset configurations (sst2.yaml, wikitext103.yaml)
 │   ├── config.yaml             # Main configuration
 │   └── defaults.yaml           # Default settings
@@ -305,7 +305,7 @@ iasp:
   cluster_size_range: [16, 96]
 ```
 
-**mamba_3b.yaml:**
+**mamba_370m.yaml:**
 ```yaml
 name: "state-spaces/mamba-2.8b-hf"
 hidden_size: 2560
@@ -494,7 +494,7 @@ All experiments are orchestrated through the main runner script, `scripts/run_ex
 
 The script uses Hydra for configuration management. Specify configurations using the `key=value` format:
 
-- `model=<model_config>`: The model configuration name (e.g., `mamba_3b`, `bert_base`).
+- `model=<model_config>`: The model configuration name (e.g., `mamba_370m`, `bert_base`).
 - `dataset=<dataset_config>`: The dataset configuration name (e.g., `wikitext103`, `sst2`).
 - `method=<method_name>`: The experimental condition to run.
 
@@ -515,10 +515,10 @@ To reproduce the figures from the paper:
 
 ### Example Commands
 
-To run the "dense" baseline experiment with the Mamba-3B configuration:
+To run the "dense" baseline experiment with the Mamba-370m configuration:
 
 ```bash
-python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=dense
+python scripts/run_experiment.py model=mamba_370m dataset=wikitext103 method=dense
 ```
 
 To run the iterative co-design method with BERT:
@@ -570,9 +570,9 @@ jupyter notebook notebooks/1_explore_correlation.ipynb
 
 ```bash
 # Quantization experiments - always run on CPU
-python scripts/run_quant_test.py model=mamba_3b method=quant_then_permute
-python scripts/run_quant_test.py model=mamba_3b method=permute_then_quant  
-python scripts/run_quant_test.py model=mamba_3b method=permute_quant_repermute
+python scripts/run_quant_test.py model=mamba_370m method=quant_then_permute
+python scripts/run_quant_test.py model=mamba_370m method=permute_then_quant  
+python scripts/run_quant_test.py model=mamba_370m method=permute_quant_repermute
 ```
 
 **Key Points:**
@@ -595,7 +595,7 @@ permutation.
 To see the sequence of operations for a method without executing the full, expensive run, use the `dry_run=true` parameter:
 
 ```bash
-python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=iterative dry_run=true
+python scripts/run_experiment.py model=mamba_370m dataset=wikitext103 method=iterative dry_run=true
 ```
 
 ### Results
@@ -868,7 +868,7 @@ ImportError: undefined symbol: _ZN3c104cuda9SetDeviceEi
    pip uninstall torch torchvision torchaudio -y
    pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cpu
    ```
-4. **BERT models only**: Use `model=bert_base` instead of `model=mamba_3b`
+4. **BERT models only**: Use `model=bert_base` instead of `model=mamba_370m`
 
 ### Runtime Issues
 
@@ -942,7 +942,7 @@ CUDA out of memory
    python scripts/run_experiment.py dataset=sst2 method=dense model=bert_base
    ```
 
-3. **Smaller model**: Use `model=bert_base` instead of `model=mamba_3b`
+3. **Smaller model**: Use `model=bert_base` instead of `model=mamba_370m`
 
 ### Environment Issues
 

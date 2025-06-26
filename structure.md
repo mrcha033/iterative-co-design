@@ -190,10 +190,10 @@ Examples with new features:
 python scripts/run_experiment.py +experiment=debug
 
 # Production run with monthly organization
-python scripts/run_experiment.py model=mamba_3b dataset=wikitext103
+python scripts/run_experiment.py model=mamba_370m dataset=wikitext103
 
 # Generate Figure 1 (Random vs Optimized Permutation Latency)
-python scripts/generate_figure1.py model=mamba_3b dataset=wikitext103
+python scripts/generate_figure1.py model=mamba_370m dataset=wikitext103
 
 # Generate all paper figures
 python scripts/generate_all_figures.py

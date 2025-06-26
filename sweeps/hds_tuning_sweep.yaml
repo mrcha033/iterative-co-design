@@ -5,7 +5,7 @@ metric:
   goal: minimize
 parameters:
   model:
-    values: [mamba_3b, bert_base]
+    values: [mamba_370m, bert_base]
   dataset:
     values: [wikitext103, sst2]
   method:

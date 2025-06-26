@@ -19,7 +19,7 @@ This framework challenges the 'Orthogonality Fallacy' - the assumption that algo
 pip install -e .[test]
 
 # Run experiments
-python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=iterative
+python scripts/run_experiment.py model=mamba_370m dataset=wikitext103 method=iterative
 
 # Generate figures
 python scripts/generate_all_figures.py

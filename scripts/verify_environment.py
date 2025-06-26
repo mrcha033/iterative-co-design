@@ -27,7 +27,7 @@ def main():
     print()
     print("🚀 Ready to run experiments!")
     print("  BERT: python scripts/run_experiment.py model=bert_base dataset=sst2 method=dense")
-    print("  Mamba: python scripts/run_experiment.py model=mamba_3b dataset=wikitext103 method=dense")
+    print("  Mamba: python scripts/run_experiment.py model=mamba_370m dataset=wikitext103 method=dense")
 
 if __name__ == "__main__":
     main()
