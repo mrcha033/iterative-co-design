@@ -23,6 +23,14 @@ src_path = project_root / "src"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
+# Remove any previously imported third-party variants of 'utils' and 'co_design'
+# so that the subsequent imports resolve to the project's local versions.
+import importlib
+for _pkg in ("utils", "co_design"):
+    if _pkg in sys.modules:
+        del sys.modules[_pkg]
+importlib.invalidate_caches()
+
 import random
 import numpy as np
 import torch

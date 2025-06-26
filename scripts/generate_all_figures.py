@@ -25,6 +25,14 @@ src_path = project_root / "src"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
+# Ensure local 'utils' and 'co_design' take precedence if they were
+# previously imported from site-packages.
+import importlib
+for _pkg in ("utils", "co_design"):
+    if _pkg in sys.modules:
+        del sys.modules[_pkg]
+importlib.invalidate_caches()
+
 import warnings
 import argparse
 import random

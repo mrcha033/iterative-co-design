@@ -18,6 +18,28 @@ Usage:
 """
 
 from pathlib import Path
+
+# ------------------------------------------------------------------
+# Ensure the project's local 'src' package directory has highest import
+# precedence and force reload of local 'utils' and 'co_design' packages to
+# avoid conflicts with similarly named third-party packages installed in the
+# environment.
+# ------------------------------------------------------------------
+import sys
+import importlib
+
+project_root = Path(__file__).resolve().parents[1]
+src_path = project_root / "src"
+if str(src_path) not in sys.path:
+    sys.path.insert(0, str(src_path))
+
+# Remove already-imported third-party variants, then invalidate caches so that
+# subsequent imports resolve to the project's versions.
+for _pkg in ("utils", "co_design"):
+    if _pkg in sys.modules:
+        del sys.modules[_pkg]
+importlib.invalidate_caches()
+
 import json
 import random
 import numpy as np
@@ -42,6 +64,8 @@ from co_design.modularity import calculate_modularity
 from models.wrapper import ModelWrapper
 from co_design.hds import apply_hds
 import logging
+import sys
+import importlib
 
 logger = logging.getLogger(__name__)
 
