@@ -69,31 +69,44 @@ class ModelWrapper(nn.Module):
                 f"Valid dimensions in model: {sorted(valid_dimensions)}"
             )
 
+        already_permuted = set()
+
         for name, (layer_type, layer) in layers_to_permute.items():
+            # Detect shared parameters to avoid double permutation (e.g., tied
+            # token embedding and LM head weight)
+            param_id = id(layer.weight)
+            if param_id in already_permuted:
+                continue
+
             if layer_type == "linear":
                 # Permute columns (input features)
                 if layer.weight.shape[1] == d_model:
                     layer.weight.data = layer.weight.data[:, perm_tensor]
+                    already_permuted.add(param_id)
                     logger.info(f"  - Permuted columns of layer: {name}")
 
                 # Permute rows (output features)
                 if layer.weight.shape[0] == d_model:
                     layer.weight.data = layer.weight.data[perm_tensor, :]
+                    already_permuted.add(param_id)
                     logger.info(f"  - Permuted rows of layer: {name}")
                     # Permute corresponding bias if it exists
                     if layer.bias is not None:
                         layer.bias.data = layer.bias.data[perm_tensor]
+                        already_permuted.add(id(layer.bias))
                         logger.info(f"  - Permuted bias of layer: {name}")
             elif layer_type == "embedding":
                 # Weight shape (vocab, hidden) – permute hidden dimension (columns)
                 if layer.weight.shape[1] == d_model:
                     layer.weight.data = layer.weight.data[:, perm_tensor]
+                    already_permuted.add(param_id)
                     logger.info(f"  - Permuted columns of embedding: {name}")
             elif layer_type == "layernorm":
                 # LayerNorm weight & bias are 1-D of length hidden_size
                 if layer.weight.shape[0] == d_model:
                     layer.weight.data = layer.weight.data[perm_tensor]
                     layer.bias.data = layer.bias.data[perm_tensor]
+                    already_permuted.add(param_id)
                     logger.info(f"  - Permuted LayerNorm parameters: {name}")
 
     def cuda(self, *args, **kwargs):
