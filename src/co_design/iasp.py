@@ -324,17 +324,21 @@ def _mamba_aware_permutation(
     reasonably-sized blocks to preserve architectural integrity.
     """
     d_model = correlation_matrix.shape[0]
+    logger.info(f"  - d_model: {d_model}")
+    logger.info(f"  - clusters_range: {clusters_range}")
     
     # Define block size for local permutation - conservative approach
     # Use smaller blocks to minimize disruption to Mamba's functional structure
     if clusters_range:
-        # Use the maximum cluster size as block size, but cap it
         min_cluster_size, max_cluster_size = clusters_range
         # Use max cluster size but ensure it's reasonable for local permutation
         block_size = min(max_cluster_size * 2, 128, d_model // 4)
+        logger.info(f"  - max_cluster_size: {max_cluster_size}")
+        logger.info(f"  - calculated block_size: min({max_cluster_size * 2}, 128, {d_model // 4}) = {block_size}")
     else:
         # Conservative default: 64 dimensions per block
         block_size = min(128, d_model // 4)
+        logger.info(f"  - using default block_size: min(128, {d_model // 4}) = {block_size}")
     
     if block_size < 16:
         logger.warning(f"Block size {block_size} too small for meaningful permutation, using identity")
@@ -467,6 +471,10 @@ def find_optimal_permutation(
     min_size, max_size = cluster_size_range
     min_clusters = max(MIN_CLUSTER_SIZE, d_model // max_size)
     max_clusters = max(MIN_CLUSTER_SIZE, d_model // min_size)
+
+    logger.info(f"  - d_model: {d_model}")
+    logger.info(f"  - cluster_size_range: {cluster_size_range}")
+    logger.info(f"  - calculated clusters_range: ({min_clusters}, {max_clusters})")
 
     return find_optimal_permutation_from_matrix(
         correlation_matrix,
