@@ -107,15 +107,14 @@ class ModelWrapper(nn.Module):
                     already_permuted.add(param_id)
                     logger.info(f"  - Permuted columns of embedding: {name}")
             elif layer_type == "conv1d":
-                # weight shape (out, in, 1)
+                # weight shape (out_channels, in_channels, 1)
+                # Hidden-dim corresponds to in_channels in Mamba's 1×1 conv.
+                # Permute **columns only** (input channels) so that downstream
+                # CUDA kernels expecting original output-channel ordering keep working.
                 if layer.weight.shape[1] == d_model:
                     layer.weight.data = layer.weight.data[:, perm_tensor, :]
-                if layer.weight.shape[0] == d_model:
-                    layer.weight.data = layer.weight.data[perm_tensor, :, :]
-                if layer.bias is not None and layer.bias.shape[0] == d_model:
-                    layer.bias.data = layer.bias.data[perm_tensor]
-                already_permuted.add(param_id)
-                logger.info(f"  - Permuted Conv1d weights/bias: {name}")
+                    already_permuted.add(param_id)
+                    logger.info(f"  - Permuted Conv1d input channels: {name}")
             elif layer_type == "layernorm":
                 # LayerNorm weight & bias are 1-D of length hidden_size
                 if layer.weight.shape[0] == d_model:
