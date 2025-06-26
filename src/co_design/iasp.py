@@ -78,74 +78,67 @@ def get_activation_correlation(
     model.to(device)
     model.eval()
 
-    correlation_matrices = []
+    # Create a dictionary to hold activations for each layer
+    activations = {name: [] for name in target_layer_names}
+    hooks = []
 
-    for target_layer_name in target_layer_names:
-        activations = []
-
+    # Define a hook factory to capture activations for the correct layer
+    def create_hook(name):
         def hook_fn(module, input, output):
-            # The input to the linear layer is what holds the hidden dimension
-            # we need to permute. For a linear layer, this is input[0].
             act = input[0]
-
-            # --------------------------------------------------------------
-            # Memory‐friendly downsampling
-            # --------------------------------------------------------------
-            # For sequence models (3-D activations: B × T × H), we only keep the
-            # first token (e.g., CLS) to avoid storing the full sequence. This
-            # reduces memory by a factor of ~T (often 512) while still capturing
-            # representative hidden-state statistics for correlation analysis.
-            #
-            # If activations are already 2-D (B × H), we leave them unchanged.
-            # --------------------------------------------------------------
             if act.ndim == 3:
                 act = act[:, 0, :]  # (batch, hidden_size)
+            activations[name].append(act.detach().cpu().numpy())
+        return hook_fn
 
-            activations.append(act.detach().cpu().numpy())
+    # Register all hooks at once
+    for name in target_layer_names:
+        try:
+            layer = model.get_submodule(name)
+            hooks.append(layer.register_forward_hook(create_hook(name)))
+        except AttributeError:
+            logger.error(f"Layer '{name}' not found in the model.")
+            # Clean up any previously registered hooks
+            for h in hooks:
+                h.remove()
+            raise ValueError(f"Layer '{name}' not found in the model.")
 
-        target_layer = None
-        for name, module in model.named_modules():
-            if name == target_layer_name:
-                target_layer = module
-                break
+    # Iterate through the dataloader only once
+    samples_collected = 0
+    for batch in tqdm(dataloader, desc="Collecting activations for all layers"):
+        if samples_collected >= max_samples:
+            break
 
-        if target_layer is None:
-            logger.error(f"Layer '{target_layer_name}' not found in the model.")
-            # Debug: Print first 10 layer names that contain 'mixer'
-            mixer_layers = [name for name, module in model.named_modules() if 'mixer' in name and hasattr(module, 'weight')]
-            logger.error(f"Available mixer layers (first 10): {mixer_layers[:10]}")
-            
-            available_layers = [name for name, module in model.named_modules() if hasattr(module, 'weight') or hasattr(module, 'bias')]
-            logger.debug(f"Available layers: {available_layers[:DEBUG_LAYER_DISPLAY_LIMIT]}")
-            raise ValueError(f"Layer '{target_layer_name}' not found in the model.")
+        inputs = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
+        with torch.no_grad():
+            _ = model(**inputs)
 
-        handle = target_layer.register_forward_hook(hook_fn)
+        first_tensor = next((v for v in inputs.values() if torch.is_tensor(v)), None)
+        if first_tensor is not None:
+            samples_collected += first_tensor.size(0)
+        else:
+            # Fallback if no tensor is found in inputs
+            # This is a bit of a guess, might need adjustment based on data structure
+            # For now, let's assume the first activation list gives a clue
+            if any(activations.values()):
+                 samples_collected += next(iter(activations.values()))[-1].shape[0]
 
-        samples_collected = 0
-        for batch in tqdm(dataloader, desc=f"Collecting activations for {target_layer_name}"):
-            if samples_collected >= max_samples:
-                break
+        if samples_collected >= max_samples:
+            break
 
-            inputs = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
-            with torch.no_grad():
-                _ = model(**inputs)
+    # Remove all hooks
+    for h in hooks:
+        h.remove()
 
-            first_tensor = next((v for v in inputs.values() if torch.is_tensor(v)), None)
-            if first_tensor is not None:
-                samples_collected += first_tensor.size(0)
-            else:
-                samples_collected += activations[-1].shape[0]
+    correlation_matrices = []
+    for name in target_layer_names:
+        layer_activations = activations[name]
+        if not layer_activations:
+            logger.warning(f"No activations collected for layer {name}. Skipping.")
+            continue
 
-            if samples_collected >= max_samples:
-                break
-
-        handle.remove()
-
-        if not activations:
-            raise ValueError(f"No activations were collected for layer {target_layer_name}.")
-
-        all_activations = np.concatenate(activations, axis=0)[:max_samples]
-
+        all_activations = np.concatenate(layer_activations, axis=0)[:max_samples]
+        
         if all_activations.ndim == 3:
             num_samples, seq_len, hidden_dim = all_activations.shape
             all_activations_reshaped = all_activations.reshape(num_samples * seq_len, hidden_dim)
@@ -157,11 +150,12 @@ def get_activation_correlation(
         correlation_matrix = np.corrcoef(all_activations_reshaped, rowvar=False)
 
         if np.any(np.isnan(correlation_matrix)):
-            logger.warning(f"Found NaN values in correlation matrix for layer {target_layer_name}, replacing with identity.")
+            logger.warning(f"Found NaN values in correlation matrix for layer {name}, replacing with identity.")
             correlation_matrix = np.nan_to_num(correlation_matrix, nan=NAN_REPLACEMENT_VALUE)
             np.fill_diagonal(correlation_matrix, DIAGONAL_CORRELATION_VALUE)
         
         correlation_matrices.append(correlation_matrix)
+
 
     if not correlation_matrices:
         raise ValueError("No correlation matrices were computed.")
