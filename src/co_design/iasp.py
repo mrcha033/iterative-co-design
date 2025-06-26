@@ -330,11 +330,13 @@ def _mamba_aware_permutation(
     # Define block size for local permutation - conservative approach
     # Use smaller blocks to minimize disruption to Mamba's functional structure
     if clusters_range:
-        min_cluster_size, max_cluster_size = clusters_range
-        # Use max cluster size but ensure it's reasonable for local permutation
-        block_size = min(max_cluster_size * 2, 128, d_model // 4)
-        logger.info(f"  - max_cluster_size: {max_cluster_size}")
-        logger.info(f"  - calculated block_size: min({max_cluster_size * 2}, 128, {d_model // 4}) = {block_size}")
+        min_clusters, max_clusters = clusters_range
+        # clusters_range contains the number of clusters, not cluster sizes
+        # Convert to reasonable block size: d_model / num_clusters gives avg cluster size
+        avg_cluster_size = d_model // max_clusters  # Use max_clusters for smaller blocks
+        block_size = min(avg_cluster_size * 2, 256, d_model // 4)  # Allow larger blocks for local optimization
+        logger.info(f"  - max_clusters: {max_clusters}, avg_cluster_size: {avg_cluster_size}")
+        logger.info(f"  - calculated block_size: min({avg_cluster_size * 2}, 256, {d_model // 4}) = {block_size}")
     else:
         # Conservative default: 64 dimensions per block
         block_size = min(128, d_model // 4)
