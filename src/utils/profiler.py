@@ -453,7 +453,7 @@ if __name__ == "__main__":
                 metric_name_idx = header.index("Metric Name")
                 metric_value_idx = header.index("Metric Value")
                 logger.info(f"Found column indices - Metric Name: {metric_name_idx}, Metric Value: {metric_value_idx}")
-            except ValueError as e:
+            except ValueError:
                 logger.error(f"Could not find required columns in header: {header}")
                 return {"lts__t_sector_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
 
