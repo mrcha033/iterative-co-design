@@ -52,9 +52,15 @@ class ModelWrapper(nn.Module):
         valid_dimensions = set()
         for name, module in self.model.named_modules():
             if isinstance(module, nn.Linear):
-                layers_to_permute[name] = module
+                layers_to_permute[name] = ("linear", module)
                 valid_dimensions.add(module.weight.shape[0])  # output features
                 valid_dimensions.add(module.weight.shape[1])  # input features
+            elif isinstance(module, nn.Embedding):
+                layers_to_permute[name] = ("embedding", module)
+                valid_dimensions.add(module.weight.shape[1])  # hidden dim
+            elif isinstance(module, nn.LayerNorm):
+                layers_to_permute[name] = ("layernorm", module)
+                valid_dimensions.add(module.weight.shape[0])
 
         # Validate that permutation length matches at least one layer dimension
         if d_model not in valid_dimensions:
@@ -63,20 +69,32 @@ class ModelWrapper(nn.Module):
                 f"Valid dimensions in model: {sorted(valid_dimensions)}"
             )
 
-        for name, layer in layers_to_permute.items():
-            # Permute columns (input features)
-            if layer.weight.shape[1] == d_model:
-                layer.weight.data = layer.weight.data[:, perm_tensor]
-                logger.info(f"  - Permuted columns of layer: {name}")
+        for name, (layer_type, layer) in layers_to_permute.items():
+            if layer_type == "linear":
+                # Permute columns (input features)
+                if layer.weight.shape[1] == d_model:
+                    layer.weight.data = layer.weight.data[:, perm_tensor]
+                    logger.info(f"  - Permuted columns of layer: {name}")
 
-            # Permute rows (output features)
-            if layer.weight.shape[0] == d_model:
-                layer.weight.data = layer.weight.data[perm_tensor, :]
-                logger.info(f"  - Permuted rows of layer: {name}")
-                # Permute corresponding bias if it exists
-                if layer.bias is not None:
+                # Permute rows (output features)
+                if layer.weight.shape[0] == d_model:
+                    layer.weight.data = layer.weight.data[perm_tensor, :]
+                    logger.info(f"  - Permuted rows of layer: {name}")
+                    # Permute corresponding bias if it exists
+                    if layer.bias is not None:
+                        layer.bias.data = layer.bias.data[perm_tensor]
+                        logger.info(f"  - Permuted bias of layer: {name}")
+            elif layer_type == "embedding":
+                # Weight shape (vocab, hidden) – permute hidden dimension (columns)
+                if layer.weight.shape[1] == d_model:
+                    layer.weight.data = layer.weight.data[:, perm_tensor]
+                    logger.info(f"  - Permuted columns of embedding: {name}")
+            elif layer_type == "layernorm":
+                # LayerNorm weight & bias are 1-D of length hidden_size
+                if layer.weight.shape[0] == d_model:
+                    layer.weight.data = layer.weight.data[perm_tensor]
                     layer.bias.data = layer.bias.data[perm_tensor]
-                    logger.info(f"  - Permuted bias of layer: {name}")
+                    logger.info(f"  - Permuted LayerNorm parameters: {name}")
 
     def cuda(self, *args, **kwargs):
         self.device = torch.device("cuda")
