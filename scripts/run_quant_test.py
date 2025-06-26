@@ -16,6 +16,13 @@ Usage:
 
 import json
 from pathlib import Path
+import sys
+
+project_root = Path(__file__).resolve().parents[1]
+src_path = project_root / "src"
+if str(src_path) not in sys.path:
+    sys.path.insert(0, str(src_path))
+
 import random
 import numpy as np
 import torch
@@ -126,10 +133,10 @@ def run_quant_then_permute(cfg, model, tokenizer, data_loader):
     wrapped_model = ModelWrapper(quantized_model)
 
     permutation = find_optimal_permutation(
-        model=wrapped_model,
-        data_loader=data_loader,
-        target_layer_name=cfg.model.iasp.target_layer_name,
-        cluster_size_range=tuple(cfg.model.iasp.cluster_size_range),
+        wrapped_model,
+        data_loader,
+        cfg.model.iasp.target_layer_name,
+        tuple(cfg.model.iasp.cluster_size_range),
         device="cpu",  # Quantized models run on CPU
     )
     wrapped_model.permute_model_weights(permutation)
@@ -148,10 +155,10 @@ def run_permute_then_quant(cfg, model, tokenizer, data_loader):
         wrapped_model.cuda()
 
     permutation = find_optimal_permutation(
-        model=wrapped_model,
-        data_loader=data_loader,
-        target_layer_name=cfg.model.iasp.target_layer_name,
-        cluster_size_range=tuple(cfg.model.iasp.cluster_size_range),
+        wrapped_model,
+        data_loader,
+        cfg.model.iasp.target_layer_name,
+        tuple(cfg.model.iasp.cluster_size_range),
         device="cuda" if torch.cuda.is_available() else "cpu",  # FP32 model can use GPU
     )
     wrapped_model.permute_model_weights(permutation)
@@ -171,10 +178,10 @@ def run_permute_quant_repermute(cfg, model, tokenizer, data_loader):
         wrapped_model.cuda()
 
     perm1 = find_optimal_permutation(
-        model=wrapped_model,
-        data_loader=data_loader,
-        target_layer_name=cfg.model.iasp.target_layer_name,
-        cluster_size_range=tuple(cfg.model.iasp.cluster_size_range),
+        wrapped_model,
+        data_loader,
+        cfg.model.iasp.target_layer_name,
+        tuple(cfg.model.iasp.cluster_size_range),
         device="cuda" if torch.cuda.is_available() else "cpu",  # FP32 model can use GPU
     )
     wrapped_model.permute_model_weights(perm1)
@@ -183,10 +190,10 @@ def run_permute_quant_repermute(cfg, model, tokenizer, data_loader):
 
     wrapped_quant_model = ModelWrapper(quantized_permuted_model)
     perm2 = find_optimal_permutation(
-        model=wrapped_quant_model,
-        data_loader=data_loader,
-        target_layer_name=cfg.model.iasp.target_layer_name,
-        cluster_size_range=tuple(cfg.model.iasp.cluster_size_range),
+        wrapped_quant_model,
+        data_loader,
+        cfg.model.iasp.target_layer_name,
+        tuple(cfg.model.iasp.cluster_size_range),
         device="cpu",  # Quantized models run on CPU
     )
     wrapped_quant_model.permute_model_weights(perm2)

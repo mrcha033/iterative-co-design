@@ -327,10 +327,10 @@ def run_permute_only(cfg: DictConfig):
     
     # Find and apply optimal permutation
     permutation = find_optimal_permutation(
-        model=wrapped_model,
-        data_loader=runner.data_loader,
-        target_layer_name=cfg.model.iasp.target_layer_name,
-        cluster_size_range=tuple(cfg.model.iasp.cluster_size_range),
+        wrapped_model,
+        runner.data_loader,
+        cfg.model.iasp.target_layer_name,
+        tuple(cfg.model.iasp.cluster_size_range),
     )
     
     wrapped_model.permute_model_weights(permutation)
@@ -392,10 +392,10 @@ def run_linear_pipeline(cfg: DictConfig):
         wrapped_model.cuda()
 
     initial_permutation = find_optimal_permutation(
-        model=wrapped_model,
-        data_loader=data_loader,
-        target_layer_name=cfg.model.iasp.target_layer_name,
-        cluster_size_range=tuple(cfg.model.iasp.cluster_size_range),
+        wrapped_model,
+        data_loader,
+        cfg.model.iasp.target_layer_name,
+        tuple(cfg.model.iasp.cluster_size_range),
     )
     wrapped_model.permute_model_weights(initial_permutation)
 
@@ -430,10 +430,10 @@ def run_iterative(cfg: DictConfig):
         )
 
         permutation = find_optimal_permutation(
-            model=wrapped_model,
-            data_loader=data_loader,
-            target_layer_name=cfg.model.iasp.target_layer_name,
-            cluster_size_range=tuple(cfg.model.iasp.cluster_size_range),
+            wrapped_model,
+            data_loader,
+            cfg.model.iasp.target_layer_name,
+            tuple(cfg.model.iasp.cluster_size_range),
         )
         wrapped_model.permute_model_weights(permutation)
 

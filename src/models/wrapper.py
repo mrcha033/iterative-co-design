@@ -87,3 +87,12 @@ class ModelWrapper(nn.Module):
         self.device = torch.device("cpu")
         self.model.cpu(*args, **kwargs)
         return self
+
+    # ------------------------------------------------------------------
+    # Attribute delegation helpers
+    # ------------------------------------------------------------------
+
+    @property
+    def config(self):
+        """Expose the underlying model's config (e.g., for hidden_size access)."""
+        return getattr(self.model, "config", None)

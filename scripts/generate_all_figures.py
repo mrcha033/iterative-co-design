@@ -16,9 +16,17 @@ Usage:
     python scripts/generate_all_figures.py --quick            # Fast mode
 """
 
+import sys
+from pathlib import Path
+
+# Ensure local 'src' directory has priority over site-packages
+project_root = Path(__file__).resolve().parents[1]
+src_path = project_root / "src"
+if str(src_path) not in sys.path:
+    sys.path.insert(0, str(src_path))
+
 import warnings
 import argparse
-from pathlib import Path
 import random
 import numpy as np
 import matplotlib.pyplot as plt
@@ -37,7 +45,6 @@ from models.wrapper import ModelWrapper
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings("ignore")
-
 
 def set_deterministic_seeds(seed: int = 42):
     """Set deterministic seeds for reproducible figure generation."""
@@ -158,11 +165,12 @@ def generate_figure1(quick_mode=False):
         if torch.cuda.is_available():
             wrapped_model.cuda()
 
+        cluster_range = (32, 128)
         optimal_permutation = find_optimal_permutation(
-            model=wrapped_model,
-            data_loader=data_loader,
-            target_layer_name=target_layer,
-            cluster_size_range=(32, 128),
+            wrapped_model,
+            data_loader,
+            target_layer,
+            cluster_range,
         )
 
         # 3. Measure optimal permutation latency
