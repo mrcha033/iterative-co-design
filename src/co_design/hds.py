@@ -82,7 +82,9 @@ class HDSLinear(nn.Module):
         # Scores are created for the padded dimension
         padded_features = self.in_features + self.padding
         self.scores = nn.Parameter(
-            torch.randn(self.linear.out_features, padded_features)
+            torch.randn(
+                self.linear.out_features, padded_features, device=self.linear.weight.device
+            )
         )
 
     def get_sparsity_mask(self):
