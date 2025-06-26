@@ -107,6 +107,27 @@ class HDSLinear(nn.Module):
         sparse_weight = self.linear.weight * sparsity_mask
         return F.linear(x, sparse_weight, self.linear.bias)
 
+    # ------------------------------------------------------------------
+    # Expose weight / bias so that upstream code that expects a bare
+    # nn.Linear (e.g., Transformers fast-path checks) continues to work.
+    # ------------------------------------------------------------------
+
+    @property
+    def weight(self):  # type: ignore
+        return self.linear.weight
+
+    @weight.setter  # type: ignore
+    def weight(self, val):
+        self.linear.weight = val
+
+    @property
+    def bias(self):  # type: ignore
+        return self.linear.bias
+
+    @bias.setter  # type: ignore
+    def bias(self, val):
+        self.linear.bias = val
+
 
 def _replace_linear_with_hds(model: nn.Module, hds_config: dict):
     """
