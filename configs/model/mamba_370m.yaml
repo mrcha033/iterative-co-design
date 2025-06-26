@@ -9,6 +9,15 @@ iasp:
   # Use layers that operate on full hidden dimension (1024), not state space dimension (96)
   # in_proj: (4096, 1024) - operates on full hidden dim
   # out_proj: (1024, 2048) - operates on full hidden dim  
-  target_layer_names:
-    - "model.backbone.layers.*.mixer.in_proj"
-  cluster_size_range: [16, 128] 
+  target_layer_names: "backbone.layers.*.mixer.in_proj"
+  cluster_size_range: [16, 128]
+  num_samples: 128
+
+hds:
+  target_layers:
+    - "backbone.layers.*.mixer.out_proj"
+  n: 2
+  m: 4
+  fine_tuning_epochs: 1
+
+# ... existing code ... 

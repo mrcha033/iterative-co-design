@@ -44,6 +44,7 @@ import json
 import random
 import numpy as np
 import torch
+import fnmatch
 from torch.utils.data import DataLoader
 from transformers import (
     AutoModelForCausalLM,
@@ -131,7 +132,21 @@ def save_results(cfg: DictConfig, method: str, metrics: dict):
         wandb.log(metrics)
 
 
-def _measure_and_collect_metrics(wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, permutation=None, partition=None):
+def _expand_target_layers(model, target_spec):
+    """Expands a wildcard target layer specification into a list of layer names."""
+    if isinstance(target_spec, str) and "*" in target_spec:
+        all_layers = [name for name, _ in model.named_modules()]
+        expanded_layers = fnmatch.filter(all_layers, target_spec)
+        if not expanded_layers:
+            logger.warning(f"Wildcard '{target_spec}' did not match any layers.")
+        else:
+            logger.info(f"Expanded wildcard '{target_spec}' to {len(expanded_layers)} layers.")
+        return expanded_layers
+    # If it's already a list or a single layer name without wildcards
+    return target_spec if isinstance(target_spec, list) else [target_spec]
+
+
+def _measure_and_collect_metrics(wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, permutation=None, partition=None, target_layer_names=None):
     """Helper function to measure and collect all relevant metrics."""
     logger.info("Calculating evaluation metric...")
     task_metric = calculate_task_metric(
@@ -150,17 +165,16 @@ def _measure_and_collect_metrics(wrapped_model, tokenizer, data_loader, eval_dat
     cache_hits = cache_result.get("lts__t_sector_hit_rate.pct", 0.0) if cache_result else 0.0
     
     logger.info("Calculating modularity...")
-    iasp_cfg = cfg.model.iasp
-    target_layer_spec = iasp_cfg.get("target_layer_names", iasp_cfg.get("target_layer_name"))
     
     # For dense, we don't have a permutation, so we can't calculate modularity in a meaningful way here.
-    if partition is None:
+    if partition is None or target_layer_names is None:
         modularity = 0.0
     else:
+        iasp_cfg = cfg.model.iasp
         correlation_matrix = get_activation_correlation(
             model=wrapped_model.model,
             dataloader=data_loader,
-            target_layer_names=target_layer_spec,
+            target_layer_names=target_layer_names,
             max_samples=iasp_cfg.get("num_samples", 128)
         )
         modularity = calculate_modularity(correlation_matrix, partition)
@@ -205,9 +219,14 @@ def run_sparsity_only(cfg: DictConfig):
     logger.info("--- Applying HDS Sparsification ---")
     partition, _ = apply_hds(wrapped_model, data_loader, cfg.model.hds)
     
+    # Expand target layers for modularity calculation
+    iasp_cfg = cfg.model.iasp
+    target_layer_spec = iasp_cfg.get("target_layer_names", iasp_cfg.get("target_layer_name"))
+    target_layer_names = _expand_target_layers(wrapped_model.model, target_layer_spec)
+
     logger.info("--- Measuring Performance for Sparsity-Only ---")
     metrics = _measure_and_collect_metrics(
-        wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, partition=partition
+        wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, partition=partition, target_layer_names=target_layer_names
     )
     save_results(cfg, "sparsity_only", metrics)
 
@@ -225,10 +244,12 @@ def run_permute_only(cfg: DictConfig):
     
     logger.info("--- Applying IASP Permutation ---")
     target_layer_spec = iasp_cfg.get("target_layer_names", iasp_cfg.get("target_layer_name"))
+    target_layer_names = _expand_target_layers(wrapped_model.model, target_layer_spec)
+
     permutation = find_optimal_permutation(
         model=wrapped_model.model,
         data_loader=data_loader,
-        target_layer_names=target_layer_spec,
+        target_layer_names=target_layer_names,
         cluster_size_range=tuple(iasp_cfg.cluster_size_range),
     )
     wrapped_model.permute_model(permutation)
@@ -239,7 +260,7 @@ def run_permute_only(cfg: DictConfig):
     
     logger.info("--- Measuring Performance for Permutation-Only ---")
     metrics = _measure_and_collect_metrics(
-        wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, permutation=permutation, partition=partition
+        wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, permutation=permutation, partition=partition, target_layer_names=target_layer_names
     )
     save_results(cfg, "permute_only", metrics)
 
@@ -257,10 +278,12 @@ def run_linear_pipeline(cfg: DictConfig):
 
     logger.info("--- Step 1: IASP Permutation ---")
     target_layer_spec = iasp_cfg.get("target_layer_names", iasp_cfg.get("target_layer_name"))
+    target_layer_names = _expand_target_layers(wrapped_model.model, target_layer_spec)
+    
     permutation = find_optimal_permutation(
         model=wrapped_model.model,
         data_loader=data_loader,
-        target_layer_names=target_layer_spec,
+        target_layer_names=target_layer_names,
         cluster_size_range=tuple(iasp_cfg.cluster_size_range),
     )
     wrapped_model.permute_model(permutation)
@@ -270,7 +293,7 @@ def run_linear_pipeline(cfg: DictConfig):
     
     logger.info("--- Measuring Performance for Linear Pipeline ---")
     metrics = _measure_and_collect_metrics(
-        wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, permutation=permutation, partition=partition
+        wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, permutation=permutation, partition=partition, target_layer_names=target_layer_names
     )
     save_results(cfg, "linear_pipeline", metrics)
 
@@ -298,10 +321,12 @@ def run_iterative(cfg: DictConfig):
         
         logger.info(f"--- Iteration {i+1}, Step 2: IASP Permutation ---")
         target_layer_spec = iasp_cfg.get("target_layer_names", iasp_cfg.get("target_layer_name"))
+        target_layer_names = _expand_target_layers(wrapped_model.model, target_layer_spec)
+        
         permutation = find_optimal_permutation(
             model=wrapped_model.model,
             data_loader=data_loader,
-            target_layer_names=target_layer_spec,
+            target_layer_names=target_layer_names,
             cluster_size_range=tuple(iasp_cfg.cluster_size_range),
         )
         wrapped_model.permute_model(permutation)
@@ -311,8 +336,11 @@ def run_iterative(cfg: DictConfig):
     final_partition = [permutation[i:i+nodes_per_cluster] for i in range(0, len(permutation), nodes_per_cluster)]
 
     logger.info("--- Final Performance Measurement for Iterative ---")
+    # We need the target layers again for the final measurement
+    target_layer_spec = iasp_cfg.get("target_layer_names", iasp_cfg.get("target_layer_name"))
+    target_layer_names = _expand_target_layers(wrapped_model.model, target_layer_spec)
     metrics = _measure_and_collect_metrics(
-        wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, permutation=permutation, partition=final_partition
+        wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, permutation=permutation, partition=final_partition, target_layer_names=target_layer_names
     )
     save_results(cfg, "iterative", metrics)
 
