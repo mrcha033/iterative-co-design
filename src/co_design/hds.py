@@ -196,21 +196,13 @@ def apply_hds(model: nn.Module, data_loader: torch.utils.data.DataLoader, config
     hds_config = config.get("hds", {})
     _replace_linear_with_hds(model, hds_config)
 
-    # Freeze all parameters except HDS scores to reduce memory footprint
-    _freeze_parameters_except_hds_scores(model)
-
-    # Fine-tune the model to learn the sparsity masks
-    # Check dataset config first, then fallback to top-level config
-    dataset_lr = config.get("dataset", {}).get("learning_rate")
-    lr = dataset_lr if dataset_lr is not None else config.get("learning_rate", DEFAULT_LEARNING_RATE)
-
-    # Only optimize parameters that still require gradients (HDS scores)
+    # Collect trainable params *before* freezing (scores + underlying weights)
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     if not trainable_params:
         logger.warning("No trainable parameters detected for HDS fine-tuning. Skipping.")
         return model
 
-    optimizer = torch.optim.AdamW(trainable_params, lr=lr)
+    optimizer = torch.optim.AdamW(trainable_params, lr=DEFAULT_LEARNING_RATE)
     num_epochs = hds_config.get("fine_tuning_epochs", DEFAULT_FINE_TUNING_EPOCHS)
 
     device = next(model.parameters()).device
@@ -235,6 +227,9 @@ def apply_hds(model: nn.Module, data_loader: torch.utils.data.DataLoader, config
             torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
 
             optimizer.step()
+
+    # After fine-tuning, freeze dense weights to avoid further updates in rest of pipeline
+    _freeze_parameters_except_hds_scores(model)
 
     model.eval()
     logger.info(">>> HDS application complete.")

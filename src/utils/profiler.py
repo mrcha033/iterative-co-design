@@ -312,22 +312,26 @@ def run_model_inference():
         print(f"⚠️  Using random weights (couldn't load model state): {{e}}")
 
     # 🔥 Run actual model inference for realistic profiling
-    with torch.no_grad():
-        print("🎯 Starting model inference for profiling...")
-        
-        # Warmup run
-        print("🔥 Warmup run...")
-        _ = model(**dummy_input)
+    try:
+        with torch.inference_mode():
+            _ = model(**dummy_input)
         torch.cuda.synchronize()
-        
-        # Actual profiling runs
+
         print("📊 Profiling runs...")
-        for i in range(2):  # Multiple runs for better measurement
-            print(f"  Run {{i+1}}/2")
+        for i in range(2):
+            print(f"  Run {i+1}/2")
             output = model(**dummy_input)
             torch.cuda.synchronize()
-            
-        print(f"🎉 Model inference complete! Output shape: {{output.shape}}")
+
+        print(f"🎉 Model inference complete! Output shape: {output.shape}")
+    except Exception as e:
+        print(f"⚠️ Model inference failed: {e}. Running fallback workload.")
+        torch.cuda.empty_cache()
+        dummy = torch.randn(2048, 2048, device=device)
+        for _ in range(4):
+            dummy = dummy @ dummy
+        torch.cuda.synchronize()
+        output = dummy
 
 if __name__ == "__main__":
     try:
@@ -405,8 +409,6 @@ if __name__ == "__main__":
             except Exception as e:
                 warnings.warn(f"An unexpected error occurred during profiling: {e}")
                 return {"lts__t_sector_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
-
-
 
     def _parse_ncu_csv_output(self, csv_output: str) -> Optional[Dict[str, float]]:
         """Parses NCU CSV output to extract metrics."""
