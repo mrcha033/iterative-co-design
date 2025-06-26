@@ -58,6 +58,11 @@ class ModelWrapper(nn.Module):
             elif isinstance(module, nn.Embedding):
                 layers_to_permute[name] = ("embedding", module)
                 valid_dimensions.add(module.weight.shape[1])  # hidden dim
+            elif isinstance(module, nn.Conv1d) and module.kernel_size == (1,):
+                layers_to_permute[name] = ("conv1d", module)
+                # Conv1d weight shape: (out_ch, in_ch, 1)
+                valid_dimensions.add(module.weight.shape[0])
+                valid_dimensions.add(module.weight.shape[1])
             elif isinstance(module, nn.LayerNorm):
                 layers_to_permute[name] = ("layernorm", module)
                 valid_dimensions.add(module.weight.shape[0])
@@ -101,6 +106,16 @@ class ModelWrapper(nn.Module):
                     layer.weight.data = layer.weight.data[:, perm_tensor]
                     already_permuted.add(param_id)
                     logger.info(f"  - Permuted columns of embedding: {name}")
+            elif layer_type == "conv1d":
+                # weight shape (out, in, 1)
+                if layer.weight.shape[1] == d_model:
+                    layer.weight.data = layer.weight.data[:, perm_tensor, :]
+                if layer.weight.shape[0] == d_model:
+                    layer.weight.data = layer.weight.data[perm_tensor, :, :]
+                if layer.bias is not None and layer.bias.shape[0] == d_model:
+                    layer.bias.data = layer.bias.data[perm_tensor]
+                already_permuted.add(param_id)
+                logger.info(f"  - Permuted Conv1d weights/bias: {name}")
             elif layer_type == "layernorm":
                 # LayerNorm weight & bias are 1-D of length hidden_size
                 if layer.weight.shape[0] == d_model:
