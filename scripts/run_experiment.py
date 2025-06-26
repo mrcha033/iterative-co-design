@@ -167,9 +167,32 @@ class ExperimentRunner:
                     model, self.data_loader, self.cfg.model.iasp.target_layer_name
                 )
                 
+                # Derive/adjust partition if not provided or mismatched in length
+                corr_dim = correlation_matrix.shape[0]
+
                 if partition is None:
-                    # Calculate partition from permutation
-                    partition = self._calculate_partition_from_permutation(permutation)
+                    # If permutation length doesn't match correlation matrix, use identity
+                    if permutation is None or len(permutation) != corr_dim:
+                        current_perm = list(range(corr_dim))
+                    else:
+                        current_perm = permutation[:corr_dim]
+
+                    # Simple equal-size clusters (~32 dims each) for modularity calc
+                    nodes_per_cluster = max(corr_dim // 32, 1)
+                    partition = [
+                        current_perm[i : i + nodes_per_cluster]
+                        for i in range(0, corr_dim, nodes_per_cluster)
+                    ]
+                    # Catch any leftover nodes
+                    if sum(len(p) for p in partition) < corr_dim:
+                        partition.append(current_perm[sum(len(p) for p in partition):])
+                else:
+                    # Ensure provided partition matches correlation matrix size
+                    total_nodes = sum(len(p) for p in partition)
+                    if total_nodes != corr_dim:
+                        raise ValueError(
+                            f"Provided partition size ({total_nodes}) doesn't match correlation matrix dimension ({corr_dim})"
+                        )
                 
                 modularity = calculate_modularity(correlation_matrix, partition)
                 logger.info(f"Modularity: {modularity:.4f}")
@@ -318,19 +341,15 @@ def run_sparsity_only(cfg: DictConfig):
         wrapped_model.model, runner.data_loader, OmegaConf.to_container(cfg, resolve=True)
     )
     
-    # Calculate partition for modularity (identity permutation)
+    # Identity permutation (will be truncated if needed inside measure_performance)
     identity_permutation = list(range(runner.d_model))
-    cluster_step = max(runner.d_model // 32, 1)
-    nodes_per_cluster = runner.d_model // cluster_step
-    partition = [
-        identity_permutation[i : i + nodes_per_cluster]
-        for i in range(0, runner.d_model, nodes_per_cluster)
-    ]
-    
-    # Measure performance
-    metrics = runner.measure_performance(wrapped_model, include_modularity=True,
-                                       permutation=identity_permutation, 
-                                       partition=partition)
+
+    # Measure performance – let measure_performance derive a valid partition
+    metrics = runner.measure_performance(
+        wrapped_model,
+        include_modularity=True,
+        permutation=identity_permutation,
+    )
     
     # Save results
     runner.save_results("sparsity_only", metrics)
