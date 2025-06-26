@@ -134,7 +134,8 @@ def generate_figure1(quick_mode=False):
     try:
         # Load model config to get target layer
         model_config = load_config("configs/model/mamba_3b.yaml")
-        target_layer = model_config["iasp"]["target_layer_name"]
+        iasp_cfg = model_config["iasp"]
+        target_layer_spec = iasp_cfg.get("target_layer_names", iasp_cfg["target_layer_name"])
 
         # Setup
         model, tokenizer, data_loader = setup_model_and_data()
@@ -177,7 +178,7 @@ def generate_figure1(quick_mode=False):
         optimal_permutation = find_optimal_permutation(
             wrapped_model,
             data_loader,
-            target_layer,
+            target_layer_spec,
             cluster_range,
         )
 

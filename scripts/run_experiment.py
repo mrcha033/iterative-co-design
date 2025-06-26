@@ -163,8 +163,10 @@ class ExperimentRunner:
                 modularity = 0.0
                 logger.info(f"Modularity: {modularity:.4f} (by definition for dense model)")
             else:
+                target_layer_spec = self.cfg.model.iasp.get("target_layer_names", self.cfg.model.iasp.target_layer_name)
+
                 correlation_matrix = get_activation_correlation(
-                    model, self.data_loader, self.cfg.model.iasp.target_layer_name
+                    model, self.data_loader, target_layer_spec
                 )
                 
                 # Derive/adjust partition if not provided or mismatched in length
@@ -368,11 +370,14 @@ def run_permute_only(cfg: DictConfig):
     if torch.cuda.is_available():
         wrapped_model.cuda()
     
+    # Determine target layer(s) for IASP
+    target_layer_spec = cfg.model.iasp.get("target_layer_names", cfg.model.iasp.target_layer_name)
+
     # Find and apply optimal permutation
     permutation = find_optimal_permutation(
         wrapped_model,
         runner.data_loader,
-        cfg.model.iasp.target_layer_name,
+        target_layer_spec,
         tuple(cfg.model.iasp.cluster_size_range),
     )
     
@@ -399,8 +404,10 @@ def _measure_and_collect_metrics(wrapped_model, tokenizer, data_loader, profiler
     cache_result = profiler.measure_cache_hits(wrapped_model, dummy_dict)
     cache_hits = cache_result.get("lts__t_sector_hit_rate.pct", cache_result.get("l2_tex_hit_rate.pct", 0.0)) if cache_result else 0.0
 
+    target_layer_spec = cfg.model.iasp.get("target_layer_names", cfg.model.iasp.target_layer_name)
+
     correlation_matrix = get_activation_correlation(
-        wrapped_model, data_loader, cfg.model.iasp.target_layer_name
+        wrapped_model, data_loader, target_layer_spec
     )
     d_model = wrapped_model.model.config.hidden_size
     cluster_size_range = cfg.model.iasp.cluster_size_range
@@ -434,10 +441,12 @@ def run_linear_pipeline(cfg: DictConfig):
     if torch.cuda.is_available():
         wrapped_model.cuda()
 
+    target_layer_spec = cfg.model.iasp.get("target_layer_names", cfg.model.iasp.target_layer_name)
+
     initial_permutation = find_optimal_permutation(
         wrapped_model,
         data_loader,
-        cfg.model.iasp.target_layer_name,
+        target_layer_spec,
         tuple(cfg.model.iasp.cluster_size_range),
     )
     wrapped_model.permute_model_weights(initial_permutation)
@@ -472,10 +481,11 @@ def run_iterative(cfg: DictConfig):
             wrapped_model.model, data_loader, OmegaConf.to_container(cfg, resolve=True)
         )
 
+        target_layer_spec = cfg.model.iasp.get("target_layer_names", cfg.model.iasp.target_layer_name)
         permutation = find_optimal_permutation(
             wrapped_model,
             data_loader,
-            cfg.model.iasp.target_layer_name,
+            target_layer_spec,
             tuple(cfg.model.iasp.cluster_size_range),
         )
         wrapped_model.permute_model_weights(permutation)
