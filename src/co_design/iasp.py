@@ -210,6 +210,7 @@ def find_optimal_permutation_from_matrix(
     correlation_matrix: np.ndarray,
     clusters_range: Optional[Tuple[int, int]] = None,
     num_clusters: Optional[int] = None,
+    model_type: Optional[str] = None,
 ) -> List[int]:
     """
     Finds the optimal permutation of neuron indices to maximize modularity.
@@ -219,26 +220,39 @@ def find_optimal_permutation_from_matrix(
     clusters to find a permutation that improves data locality. If num_clusters
     is not provided, it searches for the optimal number of clusters that
     maximizes the modularity score.
+    
+    For Mamba models, applies dimension-aware permutation that respects 
+    functional block boundaries to preserve architectural integrity.
 
     Args:
         correlation_matrix: A 2D numpy array of activation correlations.
+        clusters_range: Range of cluster numbers to search over.
         num_clusters: The number of clusters to form. If None, the optimal
             number of clusters will be determined automatically.
+        model_type: Type of model (e.g., "mamba") for specialized handling.
 
     Returns:
         A list of integers representing the optimal permutation of indices.
     """
+    d_model = correlation_matrix.shape[0]
+    
+    # Check if this is a Mamba model - apply dimension-aware permutation
+    if model_type and "mamba" in model_type.lower():
+        logger.info("🔧 Applying dimension-aware permutation for Mamba model")
+        return _mamba_aware_permutation(correlation_matrix, clusters_range)
+    
+    # Standard IASP for other models
     if num_clusters is None:
         # Determine search bounds
         if clusters_range is None:
-            min_clusters = max(MIN_CLUSTER_SIZE, correlation_matrix.shape[0] // DEFAULT_MIN_CLUSTERS_DIVISOR)
-            max_clusters = max(MIN_CLUSTER_SIZE, correlation_matrix.shape[0] // DEFAULT_MAX_CLUSTERS_DIVISOR)
+            min_clusters = max(MIN_CLUSTER_SIZE, d_model // DEFAULT_MIN_CLUSTERS_DIVISOR)
+            max_clusters = max(MIN_CLUSTER_SIZE, d_model // DEFAULT_MAX_CLUSTERS_DIVISOR)
         else:
             min_clusters, max_clusters = clusters_range
 
         # Search for the best number of clusters to maximize modularity
         best_modularity = -1
-        best_permutation = list(range(correlation_matrix.shape[0]))
+        best_permutation = list(range(d_model))
 
         for k in range(min_clusters, max_clusters + 1):
             if k <= 1:
@@ -292,6 +306,103 @@ def find_optimal_permutation_from_matrix(
         return permutation
 
 
+def _mamba_aware_permutation(
+    correlation_matrix: np.ndarray, 
+    clusters_range: Optional[Tuple[int, int]] = None
+) -> List[int]:
+    """
+    Applies dimension-aware permutation for Mamba models that respects
+    functional block boundaries while still optimizing for modularity.
+    
+    Mamba's hidden dimensions may have specific functional roles:
+    - Input projection blocks
+    - State space computation blocks  
+    - Output projection blocks
+    - Gate mechanism blocks
+    
+    Instead of global permutation, we apply local permutation within
+    reasonably-sized blocks to preserve architectural integrity.
+    """
+    d_model = correlation_matrix.shape[0]
+    
+    # Define block size for local permutation - conservative approach
+    # Use smaller blocks to minimize disruption to Mamba's functional structure
+    if clusters_range:
+        # Use the maximum cluster size as block size, but cap it
+        block_size = min(clusters_range[1], 128, d_model // 8)
+    else:
+        # Conservative default: 64 dimensions per block
+        block_size = min(64, d_model // 8)
+    
+    if block_size < 8:
+        logger.warning(f"Block size {block_size} too small for meaningful permutation, using identity")
+        return list(range(d_model))
+    
+    logger.info(f"  - Using block-wise permutation with block_size={block_size}")
+    logger.info(f"  - Total blocks: {d_model // block_size}")
+    
+    global_permutation = []
+    
+    # Apply IASP within each functional block
+    for start_idx in range(0, d_model, block_size):
+        end_idx = min(start_idx + block_size, d_model)
+        block_indices = list(range(start_idx, end_idx))
+        
+        if len(block_indices) < 4:  # Too small to meaningfully cluster
+            global_permutation.extend(block_indices)
+            continue
+            
+        # Extract block correlation matrix
+        block_corr = correlation_matrix[start_idx:end_idx, start_idx:end_idx]
+        
+        # Determine optimal clusters for this block
+        block_size_actual = len(block_indices)
+        min_clusters = max(2, block_size_actual // 32)
+        max_clusters = max(2, block_size_actual // 8)
+        
+        # Find best permutation for this block
+        best_modularity = -1
+        best_block_perm = list(range(block_size_actual))
+        
+        for k in range(min_clusters, max_clusters + 1):
+            if k <= 1 or k >= block_size_actual:
+                continue
+                
+            try:
+                clustering = SpectralClustering(
+                    n_clusters=k,
+                    affinity="precomputed", 
+                    random_state=SPECTRAL_CLUSTERING_RANDOM_STATE,
+                    n_init=SPECTRAL_CLUSTERING_N_INIT,
+                )
+                
+                affinity_matrix = np.abs(block_corr)
+                labels = clustering.fit_predict(affinity_matrix)
+                
+                partition = [[] for _ in range(k)]
+                for node_idx, cluster_idx in enumerate(labels):
+                    partition[cluster_idx].append(node_idx)
+                
+                current_modularity = calculate_modularity(block_corr, partition)
+                
+                if current_modularity > best_modularity:
+                    best_modularity = current_modularity
+                    best_block_perm = [node for cluster in partition for node in cluster]
+                    
+            except Exception as e:
+                logger.warning(f"Clustering failed for block {start_idx}-{end_idx}: {e}")
+                continue
+        
+        # Convert local permutation to global indices
+        global_block_perm = [start_idx + local_idx for local_idx in best_block_perm]
+        global_permutation.extend(global_block_perm)
+        
+        logger.info(f"    Block {start_idx}-{end_idx}: modularity={best_modularity:.4f}")
+    
+    logger.info(f"✅ Completed dimension-aware permutation for Mamba")
+    return global_permutation
+
+
 def find_optimal_permutation(
     model: nn.Module,
     data_loader: DataLoader,
@@ -331,6 +442,17 @@ def find_optimal_permutation(
         device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"No device specified, auto-detected: {device}")
 
+    # Detect model type for specialized handling
+    model_type = None
+    if hasattr(model, 'config') and hasattr(model.config, 'model_type'):
+        model_type = model.config.model_type
+        logger.info(f"Detected model type: {model_type}")
+    elif hasattr(model, '__class__'):
+        model_class_name = model.__class__.__name__.lower()
+        if 'mamba' in model_class_name:
+            model_type = 'mamba'
+            logger.info(f"Detected Mamba model from class name: {model.__class__.__name__}")
+
     correlation_matrix = get_activation_correlation(
         model=model,
         dataloader=data_loader,
@@ -347,4 +469,5 @@ def find_optimal_permutation(
     return find_optimal_permutation_from_matrix(
         correlation_matrix,
         clusters_range=(min_clusters, max_clusters),
+        model_type=model_type,
     )

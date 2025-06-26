@@ -379,7 +379,7 @@ def run_permute_only(cfg: DictConfig):
     if target_layer_spec is None:
         target_layer_spec = iasp_cfg.get("target_layer_name")
 
-    # Find and apply optimal permutation
+    # Find and apply optimal permutation (now with dimension-aware support for Mamba)
     permutation = find_optimal_permutation(
         wrapped_model,
         runner.data_loader,
