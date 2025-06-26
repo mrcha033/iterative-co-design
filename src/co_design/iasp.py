@@ -84,7 +84,22 @@ def get_activation_correlation(
         activations = []
 
         def hook_fn(module, input, output):
+            # Extract activation tensor from tuple outputs if necessary
             act = output[0] if isinstance(output, tuple) else output
+
+            # --------------------------------------------------------------
+            # Memory‐friendly downsampling
+            # --------------------------------------------------------------
+            # For sequence models (3-D activations: B × T × H), we only keep the
+            # first token (e.g., CLS) to avoid storing the full sequence. This
+            # reduces memory by a factor of ~T (often 512) while still capturing
+            # representative hidden-state statistics for correlation analysis.
+            #
+            # If activations are already 2-D (B × H), we leave them unchanged.
+            # --------------------------------------------------------------
+            if act.ndim == 3:
+                act = act[:, 0, :]  # (batch, hidden_size)
+
             activations.append(act.detach().cpu().numpy())
 
         target_layer = None

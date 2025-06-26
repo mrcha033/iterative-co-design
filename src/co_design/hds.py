@@ -146,12 +146,21 @@ def _replace_linear_with_hds(model: nn.Module, hds_config: dict):
     n = hds_config.get("n", DEFAULT_N_SPARSITY)
     m = hds_config.get("m", DEFAULT_M_SPARSITY)
 
-    # Find all linear layers that match the target patterns
+    # Find all linear layers that match the target patterns and have NOT been
+    # wrapped previously.  We mark wrapped layers with a private attribute so
+    # that subsequent calls (e.g. iterative co-design) do not wrap again.
     layers_to_replace = []
     for name, module in model.named_modules():
-        if isinstance(module, nn.Linear):
-            if any(fnmatch.fnmatch(name, pattern) for pattern in target_patterns):
-                layers_to_replace.append(name)
+        if not isinstance(module, nn.Linear):
+            continue
+
+        # Skip if this linear layer is already inside an HDS wrapper
+        if getattr(module, "_hds_wrapped", False):
+            continue
+
+        # Check pattern match
+        if any(fnmatch.fnmatch(name, pattern) for pattern in target_patterns):
+            layers_to_replace.append(name)
 
     for name in layers_to_replace:
         # Get the parent module and the name of the child attribute
@@ -171,6 +180,10 @@ def _replace_linear_with_hds(model: nn.Module, hds_config: dict):
         if hds_layer.linear.bias is not None:
             hds_layer.linear.bias.requires_grad = False
         setattr(parent_module, child_name, hds_layer)
+
+        # Mark the underlying linear layer so future passes ignore it
+        hds_layer.linear._hds_wrapped = True
+
         logger.info(f"  - Wrapped layer: {name} with {n}:{m} HDSLinear")
 
 
