@@ -329,12 +329,14 @@ def _mamba_aware_permutation(
     # Use smaller blocks to minimize disruption to Mamba's functional structure
     if clusters_range:
         # Use the maximum cluster size as block size, but cap it
-        block_size = min(clusters_range[1], 128, d_model // 8)
+        min_cluster_size, max_cluster_size = clusters_range
+        # Use max cluster size but ensure it's reasonable for local permutation
+        block_size = min(max_cluster_size * 2, 128, d_model // 4)
     else:
         # Conservative default: 64 dimensions per block
-        block_size = min(64, d_model // 8)
+        block_size = min(128, d_model // 4)
     
-    if block_size < 8:
+    if block_size < 16:
         logger.warning(f"Block size {block_size} too small for meaningful permutation, using identity")
         return list(range(d_model))
     
@@ -348,7 +350,7 @@ def _mamba_aware_permutation(
         end_idx = min(start_idx + block_size, d_model)
         block_indices = list(range(start_idx, end_idx))
         
-        if len(block_indices) < 4:  # Too small to meaningfully cluster
+        if len(block_indices) < 8:  # Too small to meaningfully cluster
             global_permutation.extend(block_indices)
             continue
             
@@ -357,8 +359,8 @@ def _mamba_aware_permutation(
         
         # Determine optimal clusters for this block
         block_size_actual = len(block_indices)
-        min_clusters = max(2, block_size_actual // 32)
-        max_clusters = max(2, block_size_actual // 8)
+        min_clusters = max(2, block_size_actual // 16)
+        max_clusters = max(2, block_size_actual // 4)
         
         # Find best permutation for this block
         best_modularity = -1
