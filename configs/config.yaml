@@ -33,3 +33,9 @@ cleanup:
   _target_: utils.cleanup.cleanup_old_runs
   max_age_days: ${storage.cleanup_older_than_days}
   base_dirs: ["outputs", "multirun"]
+
+# Configuration for Weights & Biases logging
+wandb:
+  log: true
+  project: "iterative-co-design"
+  entity: "mrcha033-yonsei-university"
