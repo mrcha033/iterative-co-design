@@ -39,9 +39,12 @@ DEBUG_LAYER_DISPLAY_LIMIT = 20
 def get_activation_correlation(
     model: nn.Module,
     dataloader: DataLoader,
-    target_layer_names: List[str],
+    target_layer_names: List[str] | str | None = None,
     max_samples: int = DEFAULT_MAX_ACTIVATION_SAMPLES,
     device: Optional[str] = None,
+    *,
+    # Backwards-compatibility alias. If provided, `target_layer_names` is ignored
+    target_layer_name: Optional[str] = None,
 ) -> np.ndarray:
     """
     Computes the average activation correlation matrix across multiple target layers.
@@ -56,6 +59,18 @@ def get_activation_correlation(
     Returns:
         A 2D numpy array representing the average Pearson correlation matrix.
     """
+    # ------------------------------------------------------------------
+    # Parameter handling
+    # ------------------------------------------------------------------
+    if target_layer_names is None and target_layer_name is not None:
+        target_layer_names = [target_layer_name]
+
+    if target_layer_names is None:
+        raise ValueError("Either 'target_layer_names' or 'target_layer_name' must be provided.")
+
+    if isinstance(target_layer_names, str):
+        target_layer_names = [target_layer_names]
+
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"No device specified, auto-detected: {device}")
@@ -265,9 +280,12 @@ def find_optimal_permutation_from_matrix(
 def find_optimal_permutation(
     model: nn.Module,
     data_loader: DataLoader,
-    target_layer_names: List[str],
-    cluster_size_range: Tuple[int, int],
+    target_layer_names: Optional[List[str]] = None,
+    cluster_size_range: Tuple[int, int] = (16, 128),
     device: Optional[str] = None,
+    *,
+    # Backwards-compatibility keyword – accepted but ignored if target_layer_names provided
+    target_layer_name: Optional[str] = None,
 ) -> List[int]:
     """
     Compute the optimal permutation for a given model layer.
@@ -275,13 +293,25 @@ def find_optimal_permutation(
     Args:
         model: The PyTorch model to analyze.
         data_loader: The dataloader providing data samples.
-        target_layer_name: The name of the layer to hook for activations.
+        target_layer_names: The name of the layer to hook for activations.
         cluster_size_range: Tuple of (min_cluster_size, max_cluster_size).
         device: Device to run the model on. If None, defaults to 'cuda' if available, else 'cpu'.
 
     Returns:
         A list of integers representing the optimal permutation of indices.
     """
+    # ------------------------------------------------------------------
+    # Parameter handling
+    # ------------------------------------------------------------------
+    if target_layer_names is None and target_layer_name is not None:
+        target_layer_names = [target_layer_name]
+
+    if target_layer_names is None:
+        raise ValueError("Either 'target_layer_names' or 'target_layer_name' must be provided.")
+
+    if isinstance(target_layer_names, str):
+        target_layer_names = [target_layer_names]
+
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"No device specified, auto-detected: {device}")
@@ -291,6 +321,7 @@ def find_optimal_permutation(
         dataloader=data_loader,
         target_layer_names=target_layer_names,
         device=device,
+        target_layer_name=target_layer_name,
     )
 
     d_model = correlation_matrix.shape[0]
