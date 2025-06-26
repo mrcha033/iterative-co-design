@@ -319,7 +319,7 @@ def run_model_inference():
 
         print("📊 Profiling runs...")
         for i in range(2):
-            print(f"  Run {i+1}/2")
+            print(f"  Run {{i+1}}/2")
             output = model(**dummy_input)
             torch.cuda.synchronize()
 
