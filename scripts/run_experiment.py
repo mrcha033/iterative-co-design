@@ -111,7 +111,12 @@ def get_model_and_data(cfg: DictConfig):
     
     def tokenize_function(examples):
         text_column = "text" if "text" in examples else "sentence"
-        return tokenizer(examples[text_column], truncation=True, max_length=512)
+        return tokenizer(
+            examples[text_column], 
+            truncation=True, 
+            max_length=512, 
+            padding="max_length"
+        )
 
     tokenized_dataset = eval_dataset.map(tokenize_function, batched=True, remove_columns=eval_dataset.column_names)
     tokenized_dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
