@@ -312,6 +312,7 @@ def run_model_inference():
         print(f"⚠️  Using random weights (couldn't load model state): {{e}}")
 
     # 🔥 Run actual model inference for realistic profiling
+    output = None
     try:
         with torch.inference_mode():
             _ = model(**dummy_input)
@@ -323,15 +324,16 @@ def run_model_inference():
             output = model(**dummy_input)
             torch.cuda.synchronize()
 
-        print(f"🎉 Model inference complete! Output shape: {output.shape}")
+        print(f"🎉 Model inference complete! Output shape: {{output.shape}}")
     except Exception as e:
-        print(f"⚠️ Model inference failed: {e}. Running fallback workload.")
+        print(f"⚠️ Model inference failed: {{e}}. Running fallback workload.")
         torch.cuda.empty_cache()
         dummy = torch.randn(2048, 2048, device=device)
         for _ in range(4):
             dummy = dummy @ dummy
         torch.cuda.synchronize()
         output = dummy
+        print(f"🎉 Fallback complete! Output shape: {{output.shape}}")
 
 if __name__ == "__main__":
     try:
