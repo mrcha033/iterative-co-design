@@ -60,7 +60,7 @@ import wandb
 from utils.evaluation import calculate_task_metric
 from utils.profiler import LatencyProfiler
 from utils.cleanup import cleanup_old_runs
-from co_design.iasp import find_optimal_permutation, collect_activations
+from co_design.iasp import find_optimal_permutation, get_activation_correlation
 from co_design.modularity import calculate_modularity
 from models.wrapper import ModelWrapper
 from co_design.hds import apply_hds
@@ -157,9 +157,12 @@ def _measure_and_collect_metrics(wrapped_model, tokenizer, data_loader, eval_dat
     if partition is None:
         modularity = 0.0
     else:
-        activations = collect_activations(wrapped_model.model, tokenizer, eval_dataset, target_layer_spec, num_samples=iasp_cfg.get("num_samples", 128))
-        correlation_matrix = np.corrcoef(activations.T.numpy())
-        correlation_matrix = np.nan_to_num(correlation_matrix)
+        correlation_matrix = get_activation_correlation(
+            model=wrapped_model.model,
+            dataloader=data_loader,
+            target_layer_names=target_layer_spec,
+            max_samples=iasp_cfg.get("num_samples", 128)
+        )
         modularity = calculate_modularity(correlation_matrix, partition)
     
     logger.info(f"Modularity: {modularity:.4f}")
@@ -224,11 +227,9 @@ def run_permute_only(cfg: DictConfig):
     target_layer_spec = iasp_cfg.get("target_layer_names", iasp_cfg.get("target_layer_name"))
     permutation = find_optimal_permutation(
         model=wrapped_model.model,
-        tokenizer=tokenizer,
-        dataset=eval_dataset,
+        data_loader=data_loader,
         target_layer_names=target_layer_spec,
         cluster_size_range=tuple(iasp_cfg.cluster_size_range),
-        num_samples=iasp_cfg.get("num_samples", 128)
     )
     wrapped_model.permute_model(permutation)
     
@@ -258,11 +259,9 @@ def run_linear_pipeline(cfg: DictConfig):
     target_layer_spec = iasp_cfg.get("target_layer_names", iasp_cfg.get("target_layer_name"))
     permutation = find_optimal_permutation(
         model=wrapped_model.model,
-        tokenizer=tokenizer,
-        dataset=eval_dataset,
+        data_loader=data_loader,
         target_layer_names=target_layer_spec,
         cluster_size_range=tuple(iasp_cfg.cluster_size_range),
-        num_samples=iasp_cfg.get("num_samples", 128)
     )
     wrapped_model.permute_model(permutation)
     
@@ -301,11 +300,9 @@ def run_iterative(cfg: DictConfig):
         target_layer_spec = iasp_cfg.get("target_layer_names", iasp_cfg.get("target_layer_name"))
         permutation = find_optimal_permutation(
             model=wrapped_model.model,
-            tokenizer=tokenizer,
-            dataset=eval_dataset,
+            data_loader=data_loader,
             target_layer_names=target_layer_spec,
             cluster_size_range=tuple(iasp_cfg.cluster_size_range),
-            num_samples=iasp_cfg.get("num_samples", 128)
         )
         wrapped_model.permute_model(permutation)
 
