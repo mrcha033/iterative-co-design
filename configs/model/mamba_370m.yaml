@@ -1,17 +1,18 @@
 # Mamba-370M Model Configuration
 name: "state-spaces/mamba-370m-hf"
-vocab_size: 50277
+vocab_size: 50280
 hidden_size: 1024
 task: "language_modeling"
 
 # IASP Configuration
 iasp:
-  # Use multiple representative layers spread across the depth so that
-  # activation correlations capture global structure, leading to better
-  # cache-aware permutations.
+  # Use layers that operate on full hidden dimension (1024), not state space dimension (96)
+  # in_proj: (4096, 1024) - operates on full hidden dim
+  # out_proj: (1024, 2048) - operates on full hidden dim  
   target_layer_names:
-    - "model.backbone.layers.0.mixer.x_proj"
-    - "model.backbone.layers.8.mixer.x_proj"
-    - "model.backbone.layers.16.mixer.x_proj"
-    - "model.backbone.layers.23.mixer.x_proj"
+    - "model.backbone.layers.0.mixer.in_proj"
+    - "model.backbone.layers.8.mixer.in_proj"
+    - "model.backbone.layers.16.mixer.in_proj"
+    - "model.backbone.layers.32.mixer.in_proj"
+    - "model.backbone.layers.47.mixer.in_proj"
   cluster_size_range: [16, 128] 

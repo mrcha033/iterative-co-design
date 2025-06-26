@@ -110,6 +110,10 @@ def get_activation_correlation(
 
         if target_layer is None:
             logger.error(f"Layer '{target_layer_name}' not found in the model.")
+            # Debug: Print first 10 layer names that contain 'mixer'
+            mixer_layers = [name for name, module in model.named_modules() if 'mixer' in name and hasattr(module, 'weight')]
+            logger.error(f"Available mixer layers (first 10): {mixer_layers[:10]}")
+            
             available_layers = [name for name, module in model.named_modules() if hasattr(module, 'weight') or hasattr(module, 'bias')]
             logger.debug(f"Available layers: {available_layers[:DEBUG_LAYER_DISPLAY_LIMIT]}")
             raise ValueError(f"Layer '{target_layer_name}' not found in the model.")
@@ -327,6 +331,14 @@ def _mamba_aware_permutation(
     logger.info(f"  - d_model: {d_model}")
     logger.info(f"  - clusters_range: {clusters_range}")
     
+    # Safety check: if d_model is unexpectedly small, skip permutation  
+    if d_model < 512:
+        logger.warning(f"d_model ({d_model}) smaller than expected for Mamba, using identity permutation for safety")
+        return list(range(d_model))
+
+    # Now working with correct dimension (1024), apply conservative block-wise permutation
+    logger.info("🔧 Applying conservative block-wise permutation for Mamba model")
+    
     # Define block size for local permutation - conservative approach
     # Use smaller blocks to minimize disruption to Mamba's functional structure
     if clusters_range:
@@ -334,13 +346,13 @@ def _mamba_aware_permutation(
         # clusters_range contains the number of clusters, not cluster sizes
         # Convert to reasonable block size: d_model / num_clusters gives avg cluster size
         avg_cluster_size = d_model // max_clusters  # Use max_clusters for smaller blocks
-        block_size = min(avg_cluster_size * 2, 256, d_model // 4)  # Allow larger blocks for local optimization
+        block_size = min(avg_cluster_size * 2, 128, d_model // 8)  # More conservative for Mamba
         logger.info(f"  - max_clusters: {max_clusters}, avg_cluster_size: {avg_cluster_size}")
-        logger.info(f"  - calculated block_size: min({avg_cluster_size * 2}, 256, {d_model // 4}) = {block_size}")
+        logger.info(f"  - calculated block_size: min({avg_cluster_size * 2}, 128, {d_model // 8}) = {block_size}")
     else:
         # Conservative default: 64 dimensions per block
-        block_size = min(128, d_model // 4)
-        logger.info(f"  - using default block_size: min(128, {d_model // 4}) = {block_size}")
+        block_size = min(64, d_model // 8)
+        logger.info(f"  - using default block_size: min(64, {d_model // 8}) = {block_size}")
     
     if block_size < 16:
         logger.warning(f"Block size {block_size} too small for meaningful permutation, using identity")
