@@ -143,19 +143,29 @@ def test_run_sparsity_only(tiny_model, tiny_data, base_config):
 def test_run_permute_only(tiny_model, tiny_data, base_config):
     # IASP can be slow, so we mock it to just return a dummy score
     with patch("run_experiment._run_iasp") as mock_run_iasp:
-        mock_run_iasp.return_value = 0.5 # Dummy modularity score
+        mock_run_iasp.return_value = (list(range(16)), 0.5) # Dummy permutation and modularity score
         run_test("permute_only", tiny_model=tiny_model, tiny_data=tiny_data, base_config=base_config)
         mock_run_iasp.assert_called_once()
 
 def test_run_linear_pipeline(tiny_model, tiny_data, base_config):
     with patch("run_experiment._run_iasp") as mock_run_iasp:
-        mock_run_iasp.return_value = 0.5
+        mock_run_iasp.return_value = (list(range(16)), 0.5)
         run_test("linear_pipeline", tiny_model=tiny_model, tiny_data=tiny_data, base_config=base_config)
         mock_run_iasp.assert_called_once()
 
 def test_run_iterative(tiny_model, tiny_data, base_config):
     with patch("run_experiment._run_iasp") as mock_run_iasp:
-        mock_run_iasp.return_value = 0.5
+        mock_run_iasp.return_value = (list(range(16)), 0.5) # Return permutation and score
         run_test("iterative", tiny_model=tiny_model, tiny_data=tiny_data, base_config=base_config)
         # Should be called once per iteration
         assert mock_run_iasp.call_count == base_config.method_configs.iterative.iterations
+
+def test_run_bidirectional_iterative(tiny_model, tiny_data, base_config):
+    with patch("run_experiment._run_iasp") as mock_run_iasp:
+        mock_run_iasp.return_value = (list(range(16)), 0.5) # Return permutation and score
+        # Mock the layout-aware finetuning to avoid heavy computation
+        with patch("run_experiment.apply_layout_aware_hds_finetuning") as mock_layout_aware:
+            run_test("bidirectional_iterative", tiny_model=tiny_model, tiny_data=tiny_data, base_config=base_config)
+            # Should be called once per iteration
+            assert mock_run_iasp.call_count == base_config.method_configs.iterative.iterations
+            assert mock_layout_aware.call_count == base_config.method_configs.iterative.iterations

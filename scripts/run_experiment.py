@@ -64,6 +64,7 @@ from utils.cleanup import cleanup_old_runs
 from co_design.iasp import run_iasp_on_mamba, run_iasp_on_bert
 from models.wrapper import ModelWrapper
 from co_design.hds import apply_hds
+from co_design.layout_aware import apply_layout_aware_hds_finetuning
 import logging
 
 logger = logging.getLogger(__name__)
@@ -249,7 +250,7 @@ def run_permute_only(cfg: DictConfig):
     profiler = LatencyProfiler()
     
     logger.info("--- Applying IASP Permutation ---")
-    modularity_score = _run_iasp(wrapped_model.model, data_loader, cfg)
+    _, modularity_score = _run_iasp(wrapped_model.model, data_loader, cfg)
     
     logger.info("--- Measuring Performance for Permutation-Only ---")
     metrics = _measure_and_collect_metrics(
@@ -269,7 +270,7 @@ def run_linear_pipeline(cfg: DictConfig):
     profiler = LatencyProfiler()
 
     logger.info("--- Step 1: IASP Permutation ---")
-    modularity_score = _run_iasp(wrapped_model.model, data_loader, cfg)
+    _, modularity_score = _run_iasp(wrapped_model.model, data_loader, cfg)
     
     logger.info("--- Step 2: HDS Sparsification ---")
     apply_hds(wrapped_model, data_loader, cfg.model.hds)
@@ -300,7 +301,7 @@ def run_iterative(cfg: DictConfig):
         apply_hds(wrapped_model, data_loader, cfg.model.hds)
         
         logger.info(f"--- Iteration {i+1}, Step 2: IASP Permutation ---")
-        current_modularity = _run_iasp(wrapped_model.model, data_loader, cfg)
+        _, current_modularity = _run_iasp(wrapped_model.model, data_loader, cfg)
         if i == num_iterations - 1:
             modularity_score = current_modularity
         
@@ -309,6 +310,40 @@ def run_iterative(cfg: DictConfig):
         wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, modularity=modularity_score
     )
     save_results(cfg, "iterative", metrics)
+
+
+def run_bidirectional_iterative(cfg: DictConfig):
+    """Runs the fully bidirectional iterative co-design experiment."""
+    set_random_seeds(cfg.seed)
+    model, tokenizer, data_loader, eval_dataset = get_model_and_data(cfg)
+    if torch.cuda.is_available():
+        model.cuda()
+
+    wrapped_model = ModelWrapper(model)
+    profiler = LatencyProfiler()
+    num_iterations = cfg.method_configs.iterative.iterations
+    
+    modularity_score = 0.0
+    permutation = list(range(model.config.hidden_size)) # Start with identity permutation
+
+    for i in range(num_iterations):
+        logger.info(f"\n--- Bidirectional Iteration {i+1}/{num_iterations} ---")
+        
+        logger.info(f"--- Iteration {i+1}, Step 1: Layout-Aware HDS Sparsification ---")
+        apply_layout_aware_hds_finetuning(
+            wrapped_model.model, data_loader, cfg.model, torch.tensor(permutation)
+        )
+        
+        logger.info(f"--- Iteration {i+1}, Step 2: IASP Permutation ---")
+        permutation, current_modularity = _run_iasp(wrapped_model.model, data_loader, cfg)
+        if i == num_iterations - 1:
+            modularity_score = current_modularity
+        
+    logger.info("--- Final Performance Measurement for Bidirectional Iterative ---")
+    metrics = _measure_and_collect_metrics(
+        wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, modularity=modularity_score
+    )
+    save_results(cfg, "bidirectional_iterative", metrics)
 
 def run_cleanup_if_configured(cfg: DictConfig, dry_run: bool = False):
     """Runs the cleanup utility if enabled in the config."""
@@ -395,6 +430,7 @@ def main(cfg: DictConfig):
         "permute_only": run_permute_only,
         "linear_pipeline": run_linear_pipeline,
         "iterative": run_iterative,
+        "bidirectional_iterative": run_bidirectional_iterative,
     }
 
     runner = METHOD_RUNNERS.get(cfg.method)

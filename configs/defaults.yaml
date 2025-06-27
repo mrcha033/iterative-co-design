@@ -28,6 +28,10 @@ hds:
   m: 4                    # Block size for N:M sparsity
   fine_tuning_epochs: 1   # Number of epochs to fine-tune sparsity masks
   gumbel_temp: 1.0        # Temperature for Gumbel-Top-K sampling
+  
+  # Layout-aware regularization (for bidirectional co-design)
+  layout_aware_lambda: 0.01 # Strength of the regularization
+  penalty_fn: "inverse"     # Penalty function type ('inverse' or 'exp')
 
 # IO-Aware Scan Permutation (IASP) Configuration
 iasp:
