@@ -1,11 +1,9 @@
 import pytest
 import torch
 import torch.nn as nn
-import numpy as np
 import copy
 from torch.utils.data import DataLoader, TensorDataset
 from src.co_design.iasp import run_iasp_on_mamba
-from src.co_design.modularity import calculate_modularity # For completeness
 
 # A more realistic mock Mamba block for testing
 class MockMambaBlock(nn.Module):

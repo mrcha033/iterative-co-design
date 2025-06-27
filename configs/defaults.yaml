@@ -28,3 +28,20 @@ hds:
   m: 4                    # Block size for N:M sparsity
   fine_tuning_epochs: 1   # Number of epochs to fine-tune sparsity masks
   gumbel_temp: 1.0        # Temperature for Gumbel-Top-K sampling
+
+# IO-Aware Scan Permutation (IASP) Configuration
+iasp:
+  # Target layer name for activation correlation analysis.
+  # This is model-specific and should be overridden in model configs.
+  target_layer_name: null
+  
+  # Range of cluster sizes to search for optimal permutation.
+  # This is also model-specific.
+  cluster_size_range: [16, 128]
+  
+  # Number of samples to collect for correlation analysis.
+  max_samples: 4096
+  
+  # Spectral clustering parameters
+  spectral_n_init: 10
+  spectral_random_state: 0

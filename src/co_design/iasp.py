@@ -18,14 +18,15 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import logging
 
+from numpy.linalg import LinAlgError
+from omegaconf import DictConfig
+
 # --- Setup ---
 logger = logging.getLogger(__name__)
 
 # --- Constants ---
 DEFAULT_MAX_SAMPLES = 4096
 MIN_CLUSTER_SIZE = 2
-SPECTRAL_CLUSTERING_N_INIT = 10
-SPECTRAL_CLUSTERING_RANDOM_STATE = 0
 NAN_REPLACEMENT_VALUE = 0.0
 DIAGONAL_CORRELATION_VALUE = 1.0
 
@@ -65,22 +66,27 @@ def _get_activation_correlation(
             layer = model.get_submodule(name)
             hooks.append(layer.register_forward_hook(create_hook(name)))
         except AttributeError:
-            for h in hooks: h.remove()
+            for h in hooks:
+                h.remove()
             raise ValueError(f"Layer '{name}' not found.")
 
     collected_tokens = 0
     pbar = tqdm(dataloader, desc="1/3: Collecting Activations", leave=False)
     for batch in pbar:
-        if collected_tokens >= max_samples: break
+        if collected_tokens >= max_samples:
+            break
         inputs = {k: v.to(device) for k, v in batch.items() if torch.is_tensor(v)}
-        with torch.no_grad(): _ = model(**inputs)
+        with torch.no_grad():
+            _ = model(**inputs)
         collected_tokens += next(iter(inputs.values())).shape[0] * next(iter(inputs.values())).shape[1]
         pbar.set_postfix({"tokens": f"{collected_tokens}/{max_samples}"})
-    for h in hooks: h.remove()
+    for h in hooks:
+        h.remove()
 
     correlation_matrices = []
     for name, acts_list in activations.items():
-        if not acts_list: continue
+        if not acts_list:
+            continue
         all_acts = torch.cat(acts_list, dim=0)[:max_samples]
         corr_matrix = torch.corrcoef(all_acts.T).cpu().numpy()
         if np.any(np.isnan(corr_matrix)):
@@ -88,28 +94,37 @@ def _get_activation_correlation(
             np.fill_diagonal(corr_matrix, DIAGONAL_CORRELATION_VALUE)
         correlation_matrices.append(corr_matrix)
 
-    if not correlation_matrices: raise ValueError("Failed to compute correlation.")
+    if not correlation_matrices:
+        raise ValueError("Failed to compute correlation.")
     return np.mean(correlation_matrices, axis=0)
 
 
 def _find_optimal_permutation(
-    correlation_matrix: np.ndarray, clusters_range: Tuple[int, int]
+    correlation_matrix: np.ndarray,
+    clusters_range: Tuple[int, int],
+    iasp_config: DictConfig,
 ) -> Tuple[List[int], float]:
     """Finds the permutation that maximizes modularity and returns it with the score."""
     dim = correlation_matrix.shape[0]
     best_modularity, best_permutation = -np.inf, list(range(dim))
     affinity_matrix = np.abs(correlation_matrix)
-    
+
+    n_init = iasp_config.get("spectral_n_init", 10)
+    random_state = iasp_config.get("spectral_random_state", 0)
+
     search_space = range(clusters_range[0], clusters_range[1] + 1)
     pbar = tqdm(search_space, desc="2/3: Finding Optimal Permutation", leave=False)
     for k in pbar:
-        if not (1 < k < dim): continue
+        if not (1 < k < dim):
+            continue
         try:
             clustering = SpectralClustering(
-                n_clusters=k, affinity="precomputed",
-                random_state=SPECTRAL_CLUSTERING_RANDOM_STATE, n_init=SPECTRAL_CLUSTERING_N_INIT
+                n_clusters=k,
+                affinity="precomputed",
+                random_state=random_state,
+                n_init=n_init,
             ).fit(affinity_matrix)
-            
+
             partition = [np.where(clustering.labels_ == i)[0] for i in range(k)]
             modularity = calculate_modularity(correlation_matrix, partition)
 
@@ -117,9 +132,13 @@ def _find_optimal_permutation(
                 best_modularity = modularity
                 best_permutation = [node for cluster in partition for node in cluster]
                 pbar.set_postfix({"best_modularity": f"{best_modularity:.4f}", "k": k})
-        except Exception:
+        except LinAlgError:
+            logger.warning(f"Spectral clustering failed for k={k} due to a linear algebra error (e.g., matrix not positive definite). Skipping.")
             continue
-            
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during spectral clustering for k={k}: {e}")
+            continue
+
     logger.info(f"Found optimal permutation with modularity: {best_modularity:.4f}")
     return best_permutation, best_modularity
 
@@ -132,7 +151,8 @@ def _apply_permutation_to_mamba(model: nn.Module, permutation: List[int]):
         if all(hasattr(layer, attr) for attr in ["in_proj", "out_proj", "dt_proj", "A_log", "D"]):
             pbar.set_postfix({"layer": name})
             d_inner = layer.out_proj.in_features
-            if p.numel() != d_inner: continue
+            if p.numel() != d_inner:
+                continue
 
             dev = layer.in_proj.weight.device
             p = p.to(dev)
@@ -158,8 +178,7 @@ def _apply_permutation_to_mamba(model: nn.Module, permutation: List[int]):
 def run_iasp_on_mamba(
     model: nn.Module,
     dataloader: DataLoader,
-    cluster_size_range: Tuple[int, int] = (32, 256),
-    target_layer_names: Optional[List[str]] = None,
+    iasp_config: DictConfig,
     device: Optional[str] = None,
 ) -> Tuple[List[int], float]:
     """
@@ -183,6 +202,7 @@ def run_iasp_on_mamba(
     """
     logger.info("🚀 Starting IASP optimization pipeline for Mamba model...")
 
+    target_layer_names = iasp_config.get("target_layer_names")
     if target_layer_names is None:
         logger.info("Auto-detecting Mamba 'in_proj' layers...")
         target_layer_names = [
@@ -195,17 +215,18 @@ def run_iasp_on_mamba(
 
     # Step 1: Get activation correlation for the d_inner dimension
     correlation_matrix = _get_activation_correlation(
-        model, dataloader, target_layer_names, is_mamba_in_proj=True, device=device
+        model, dataloader, target_layer_names, is_mamba_in_proj=True, device=device,
+        max_samples=iasp_config.get("max_samples", DEFAULT_MAX_SAMPLES)
     )
 
     # Step 2: Find the optimal permutation
     d_inner = correlation_matrix.shape[0]
-    min_size, max_size = cluster_size_range
+    min_size, max_size = iasp_config.cluster_size_range
     min_clusters = max(MIN_CLUSTER_SIZE, d_inner // max_size)
     max_clusters = max(MIN_CLUSTER_SIZE, d_inner // min_size)
     
     permutation, modularity = _find_optimal_permutation(
-        correlation_matrix, clusters_range=(min_clusters, max_clusters)
+        correlation_matrix, clusters_range=(min_clusters, max_clusters), iasp_config=iasp_config
     )
 
     # Step 3: Apply the permutation to the model
@@ -252,8 +273,7 @@ def _apply_permutation_to_bert_ffn(model: nn.Module, permutation: List[int], tar
 def run_iasp_on_bert(
     model: nn.Module,
     dataloader: DataLoader,
-    cluster_size_range: Tuple[int, int] = (128, 1024),
-    target_layer_names: Optional[List[str]] = None,
+    iasp_config: DictConfig,
     device: Optional[str] = None,
 ) -> Tuple[List[int], float]:
     """
@@ -278,6 +298,7 @@ def run_iasp_on_bert(
     """
     logger.info("🚀 Starting IASP optimization pipeline for BERT model...")
 
+    target_layer_names = iasp_config.get("target_layer_names")
     if target_layer_names is None:
         logger.info("Auto-detecting BERT FFN 'up-projection' layers...")
         target_layer_names = [
@@ -290,17 +311,18 @@ def run_iasp_on_bert(
 
     # Step 1: Get activation correlation for the FFN intermediate dimension
     correlation_matrix = _get_activation_correlation(
-        model, dataloader, target_layer_names, is_mamba_in_proj=False, device=device
+        model, dataloader, target_layer_names, is_mamba_in_proj=False, device=device,
+        max_samples=iasp_config.get("max_samples", DEFAULT_MAX_SAMPLES)
     )
 
     # Step 2: Find the optimal permutation
     d_ffn = correlation_matrix.shape[0]
-    min_size, max_size = cluster_size_range
+    min_size, max_size = iasp_config.cluster_size_range
     min_clusters = max(MIN_CLUSTER_SIZE, d_ffn // max_size)
     max_clusters = max(MIN_CLUSTER_SIZE, d_ffn // min_size)
     
     permutation, modularity = _find_optimal_permutation(
-        correlation_matrix, clusters_range=(min_clusters, max_clusters)
+        correlation_matrix, clusters_range=(min_clusters, max_clusters), iasp_config=iasp_config
     )
 
     # Step 3: Apply the permutation to the model

@@ -54,7 +54,7 @@ from transformers import (
 )
 from datasets import load_dataset
 import hydra
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from utils.logging import initialize_wandb
 import wandb
 
@@ -162,12 +162,15 @@ def _measure_and_collect_metrics(
     logger.info(f"{metric_name.title()}: {metric_value:.4f}")
 
     logger.info("Measuring latency...")
-    dummy_input = {"input_ids": torch.randint(0, cfg.model.vocab_size, (1, 512)).cuda()}
+    device = next(wrapped_model.model.parameters()).device
+    dummy_input = {"input_ids": torch.randint(0, cfg.model.vocab_size, (1, 512), device=device)}
     latency = profiler.measure_latency(wrapped_model.model, dummy_input)
     logger.info(f"Latency: {latency:.2f} ms")
 
     logger.info("Measuring L2 cache hit rate...")
-    cache_result = profiler.measure_cache_hits(wrapped_model.model, dummy_input)
+    # Move dummy_input to CPU for cache measurement if it's on CUDA
+    cache_dummy_input = {k: v.cpu() for k, v in dummy_input.items()}
+    cache_result = profiler.measure_cache_hits(wrapped_model.model, cache_dummy_input)
     cache_hits = cache_result.get("lts__t_sector_hit_rate.pct", 0.0) if cache_result else 0.0
     
     logger.info(f"Modularity: {modularity:.4f}")
@@ -217,20 +220,20 @@ def run_sparsity_only(cfg: DictConfig):
     save_results(cfg, "sparsity_only", metrics)
 
 
+IASP_DISPATCH = {
+    "mamba": run_iasp_on_mamba,
+    "bert": run_iasp_on_bert,
+}
+
 def _run_iasp(model, data_loader, cfg) -> float:
     """Helper function to run the correct IASP function based on model type."""
-    model_type = cfg.model.get("type", "bert") # Default to bert if type not specified
+    model_type = cfg.model.get("type", "bert")  # Default to bert if type not specified
     
-    if 'mamba' in model_type:
-        logger.info("Running IASP for Mamba model...")
-        return run_iasp_on_mamba(
-            model, data_loader, cluster_size_range=tuple(cfg.model.iasp.cluster_size_range)
-        )
-    elif 'bert' in model_type:
-        logger.info("Running IASP for BERT model...")
-        return run_iasp_on_bert(
-            model, data_loader, cluster_size_range=tuple(cfg.model.iasp.cluster_size_range)
-        )
+    iasp_runner = IASP_DISPATCH.get(model_type)
+    if iasp_runner:
+        logger.info(f"Running IASP for {model_type} model...")
+        # Pass the model-specific IASP config
+        return iasp_runner(model, data_loader, cfg.model.iasp)
     else:
         raise NotImplementedError(f"IASP is not implemented for model type: {model_type}")
 
@@ -239,7 +242,8 @@ def run_permute_only(cfg: DictConfig):
     """Runs the permutation-only experiment."""
     set_random_seeds(cfg.seed)
     model, tokenizer, data_loader, eval_dataset = get_model_and_data(cfg)
-    if torch.cuda.is_available(): model.cuda()
+    if torch.cuda.is_available():
+        model.cuda()
     
     wrapped_model = ModelWrapper(model)
     profiler = LatencyProfiler()
@@ -258,7 +262,8 @@ def run_linear_pipeline(cfg: DictConfig):
     """Runs the linear pipeline (IASP -> HDS) experiment."""
     set_random_seeds(cfg.seed)
     model, tokenizer, data_loader, eval_dataset = get_model_and_data(cfg)
-    if torch.cuda.is_available(): model.cuda()
+    if torch.cuda.is_available():
+        model.cuda()
 
     wrapped_model = ModelWrapper(model)
     profiler = LatencyProfiler()
@@ -280,7 +285,8 @@ def run_iterative(cfg: DictConfig):
     """Runs the iterative co-design experiment."""
     set_random_seeds(cfg.seed)
     model, tokenizer, data_loader, eval_dataset = get_model_and_data(cfg)
-    if torch.cuda.is_available(): model.cuda()
+    if torch.cuda.is_available():
+        model.cuda()
 
     wrapped_model = ModelWrapper(model)
     profiler = LatencyProfiler()

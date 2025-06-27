@@ -18,9 +18,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 import shutil
-import warnings
 import numpy as np
-import os
 import sys
 from typing import Dict, Optional, Any
 import torch.nn as nn
@@ -348,44 +346,72 @@ class LatencyProfiler:
     
     def get_profiling_summary(self) -> Dict[str, Any]:
         """
-        Get a summary of all cached profiling results.
+        Get a summary of all cached profiling results by reading all individual cache files.
         
         Returns:
             Dictionary with profiling statistics
         """
-        cache = self._read_cache()
-        
-        if not cache:
+        all_metrics_data = []
+        if not self.profiler_cache_dir.exists():
+            return {
+                "num_models_profiled": 0,
+                "avg_latency_ms": 0.0,
+                "avg_l2_cache_hit_rate": 0.0,
+            }
+
+        # Iterate over all .json files in the cache directory
+        for cache_file in self.profiler_cache_dir.glob("*.json"):
+            with open(cache_file, "r") as f:
+                try:
+                    data = json.load(f)
+                    all_metrics_data.append(data)
+                except json.JSONDecodeError:
+                    logger.warning(f"Could not decode JSON from {cache_file}, skipping.")
+                    continue
+
+        if not all_metrics_data:
             return {
                 "num_models_profiled": 0,
                 "avg_latency_ms": 0.0,
                 "avg_l2_cache_hit_rate": 0.0,
             }
         
-        latencies = []
-        cache_hits = []
-        
-        for model_hash, metrics in cache.items():
-            if "latency_ms" in metrics:
-                latencies.append(metrics["latency_ms"])
-            if "lts__t_sector_hit_rate.pct" in metrics:
-                cache_hits.append(metrics["lts__t_sector_hit_rate.pct"])
+        # Use pandas for easy statistics calculation
+        df = pd.DataFrame(all_metrics_data)
         
         summary = {
-            "num_models_profiled": len(cache),
-            "avg_latency_ms": np.mean(latencies) if latencies else 0.0,
-            "std_latency_ms": np.std(latencies) if latencies else 0.0,
-            "avg_l2_cache_hit_rate": np.mean(cache_hits) if cache_hits else 0.0,
-            "std_l2_cache_hit_rate": np.std(cache_hits) if cache_hits else 0.0,
+            "num_models_profiled": len(df),
         }
+
+        # Calculate stats for columns that exist, handling potential missing columns
+        if "latency_ms" in df.columns and not df["latency_ms"].isnull().all():
+            summary["avg_latency_ms"] = df["latency_ms"].mean()
+            summary["std_latency_ms"] = df["latency_ms"].std()
         
+        if "lts__t_sector_hit_rate.pct" in df.columns and not df["lts__t_sector_hit_rate.pct"].isnull().all():
+            summary["avg_l2_cache_hit_rate"] = df["lts__t_sector_hit_rate.pct"].mean()
+            summary["std_l2_cache_hit_rate"] = df["lts__t_sector_hit_rate.pct"].std()
+            
         return summary
     
     def clear_cache(self):
-        """Clear the profiler cache."""
-        if self.cache_file.exists():
-            self.cache_file.unlink()
-            logger.info("Profiler cache cleared")
+        """Clear the profiler cache by deleting all individual cache files."""
+        if not self.profiler_cache_dir.exists():
+            logger.info("Profiler cache directory does not exist. Nothing to clear.")
+            return
+            
+        num_files_deleted = 0
+        for cache_file in self.profiler_cache_dir.glob("*.json"):
+            try:
+                cache_file.unlink()
+                num_files_deleted += 1
+            except OSError as e:
+                logger.error(f"Error deleting cache file {cache_file}: {e}")
+
+        if num_files_deleted > 0:
+            logger.info(f"Profiler cache cleared. Deleted {num_files_deleted} files.")
+        else:
+            logger.info("Profiler cache was already empty.")
     
     def profile_all_metrics(self, model: nn.Module, 
                            dummy_input: Dict[str, torch.Tensor]) -> Dict[str, Any]:

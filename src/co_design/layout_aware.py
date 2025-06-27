@@ -18,7 +18,6 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 import logging
-from typing import List
 
 # Import components from the main HDS module
 from .hds import HDSLinear, DEFAULT_FINE_TUNING_EPOCHS, DEFAULT_LEARNING_RATE

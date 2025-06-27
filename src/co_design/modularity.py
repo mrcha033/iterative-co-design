@@ -67,7 +67,8 @@ def calculate_modularity(
     # --- 3. Build community membership matrix ---
     community_membership = np.full(num_nodes, -1, dtype=int)
     for i, community in enumerate(partition):
-        if not community: continue # Skip empty communities
+        if not community:
+            continue # Skip empty communities
         community_membership[community] = i
     
     if np.any(community_membership == -1):
