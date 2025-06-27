@@ -18,6 +18,10 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import fnmatch
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..models.wrapper import ModelWrapper
 
 logger = logging.getLogger(__name__)
 

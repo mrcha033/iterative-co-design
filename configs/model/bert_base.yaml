@@ -1,20 +1,23 @@
 # BERT-base Model Configuration
 name: "google-bert/bert-base-uncased"
 vocab_size: 30522
-hidden_size: 768
+hidden_size: 768 # d_model
 task: "sequence_classification"
 
 # IASP Configuration
 iasp:
-  # Target all attention output layers and FFN output layers
-  target_layer_names: "bert.encoder.layer.*.output.dense"
-  cluster_size_range: [16, 64] # Smaller clusters for BERT
+  # Target the first FFN layer (up-projection) for IASP.
+  # Its output activations are in the d_ffn (3072) dimension, so IASP
+  # will find the optimal permutation for this larger dimension.
+  target_layer_names: "bert.encoder.layer.*.intermediate.dense"
+  cluster_size_range: [64, 256] # Larger cluster sizes for the d_ffn dimension
   num_samples: 128
 
 hds:
+  # Focus HDS on the second FFN layer (down-projection).
+  # Its input is the d_ffn dimension, allowing HDS to apply sparsity
+  # to the same space that IASP permutes.
   target_layers:
-    - "bert.encoder.layer.*.attention.output.dense"
-    - "bert.encoder.layer.*.intermediate.dense"
     - "bert.encoder.layer.*.output.dense"
   n: 2
   m: 4

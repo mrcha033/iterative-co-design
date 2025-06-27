@@ -44,11 +44,12 @@ import json
 import pandas as pd
 from tqdm import tqdm
 import subprocess
+import copy
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
 from utils.config import load_config
 from utils.profiler import LatencyProfiler
-from co_design.iasp import find_optimal_permutation
+from co_design.iasp import run_iasp_on_mamba, _apply_permutation_to_mamba
 from models.wrapper import ModelWrapper
 
 # Suppress warnings for cleaner output
@@ -75,26 +76,31 @@ def generate_random_permutations(model_size: int, n_samples: int = 20) -> list:
     """Generate multiple random permutations for comparison."""
     permutations = []
     for _ in range(n_samples):
-        perm = list(range(model_size))
-        np.random.shuffle(perm)
+        # Use numpy's permutation for consistency with scientific computing standards
+        perm = np.random.permutation(model_size).tolist()
         permutations.append(perm)
     return permutations
 
-def measure_permutation_latency(model, permutation, dummy_input_dict, profiler):
-    """Measure latency for a specific permutation."""
-    wrapped_model = ModelWrapper(model)
+def measure_permutation_latency(original_model, permutation, dummy_input_dict, profiler):
+    """
+    Safely measure latency for a specific permutation by applying it to a model copy.
+    """
+    # Create a deep copy to avoid modifying the original model
+    model_copy = copy.deepcopy(original_model)
     if torch.cuda.is_available():
-        wrapped_model.cuda()
+        model_copy.cuda()
 
-    # Apply permutation
-    wrapped_model.permute_model_weights(permutation)
+    # Apply the permutation using the safe, internal function from IASP
+    _apply_permutation_to_mamba(model_copy, permutation)
+    
+    # ModelWrapper is now just a simple container
+    wrapped_model = ModelWrapper(model_copy)
 
-    # Measure latency
     latency = profiler.measure_latency(wrapped_model, dummy_input_dict)
     return latency
 
 def setup_model_and_data(
-    model_name="state-spaces/mamba-2.8b-hf",
+    model_name="state-spaces/mamba-370m-hf",
     dataset_name="wikitext",
     dataset_config="wikitext-103-raw-v1",
     sample_size=100,
@@ -132,64 +138,57 @@ def generate_figure1(quick_mode=False):
     print("\n📊 Generating Figure 1: Random vs. Optimized Permutation Latency")
 
     try:
-        # Load model config to get target layer
         model_config = load_config("configs/model/mamba_370m.yaml")
         iasp_cfg = model_config["iasp"]
-        target_layer_spec = iasp_cfg.get("target_layer_names", iasp_cfg["target_layer_name"])
 
-        # Setup
-        model, tokenizer, data_loader = setup_model_and_data()
+        model, tokenizer, data_loader = setup_model_and_data(model_name=model_config['name'])
         profiler = LatencyProfiler()
 
-        # Create dummy input
-        dummy_input = torch.randint(0, 50277, (1, 512))  # Mamba vocab size
-        dummy_input_dict = {"input_ids": dummy_input}
-        if torch.cuda.is_available():
-            dummy_input_dict = {k: v.cuda() for k, v in dummy_input_dict.items()}
+        dummy_input = torch.randint(0, model.config.vocab_size, (1, 512))
+        dummy_input_dict = {"input_ids": dummy_input.cuda() if torch.cuda.is_available() else dummy_input}
 
-        model_size = model.config.hidden_size
+        # --- CRITICAL FIX: Target the correct dimension (d_inner) ---
+        try:
+            # Get d_inner from the standard structure of HuggingFace Mamba models
+            first_mixer = model.backbone.layers[0].mixer
+            d_inner = first_mixer.out_proj.in_features
+            print(f"Correctly identified Mamba's d_inner for permutation: {d_inner}")
+        except (AttributeError, IndexError):
+            # Fallback for different Mamba versions or if model structure changes
+            d_inner = getattr(model.config, 'd_inner', model.config.hidden_size * getattr(model.config, 'expand', 2))
+            warnings.warn(f"Using d_inner from config or calculation: {d_inner}")
+        
         n_samples = 10 if quick_mode else 20
 
-        # 1. Generate random permutations and measure latency
-        print("🎲 Testing random permutations...")
-        random_permutations = generate_random_permutations(model_size, n_samples)
-        random_latencies = []
-
-        # Measure baseline (identity) latency
-        identity_permutation = list(range(model_size))
+        # 1. Measure latency for baseline and random permutations on the correct 'd_inner' dimension
+        print(f"🎲 Testing random & baseline permutations for d_inner ({d_inner})...")
+        identity_permutation = list(range(d_inner))
         baseline_latency = measure_permutation_latency(
             model, identity_permutation, dummy_input_dict, profiler
         )
         print(f"   📊 Baseline latency: {baseline_latency:.2f} ms")
-
+        
+        random_permutations = generate_random_permutations(d_inner, n_samples)
+        random_latencies = []
         for perm in tqdm(random_permutations, desc="Testing random permutations"):
-            latency = measure_permutation_latency(
-                model, perm, dummy_input_dict, profiler
-            )
+            latency = measure_permutation_latency(model, perm, dummy_input_dict, profiler)
             random_latencies.append(latency)
 
-        # 2. Find optimal permutation using IASP
-        print("🔍 Finding optimal permutation...")
-        wrapped_model = ModelWrapper(model)
-        if torch.cuda.is_available():
-            wrapped_model.cuda()
-
-        cluster_range = (32, 128)
-        optimal_permutation = find_optimal_permutation(
-            wrapped_model,
+        # 2. Find and apply optimal permutation for d_inner using the full IASP pipeline
+        print("🔍 Finding and measuring optimal permutation using IASP...")
+        iasp_model_copy = copy.deepcopy(model)
+        
+        # run_iasp_on_mamba correctly targets the d_inner dimension internally
+        optimal_permutation, _ = run_iasp_on_mamba(
+            iasp_model_copy,
             data_loader,
-            target_layer_spec,
-            cluster_range,
+            cluster_size_range=tuple(iasp_cfg["cluster_size_range"]),
         )
-
-        # 3. Measure optimal permutation latency
-        print("⚡ Measuring optimized latency...")
-        optimal_latency = measure_permutation_latency(
-            model, optimal_permutation, dummy_input_dict, profiler
-        )
+        
+        optimal_latency = profiler.measure_latency(ModelWrapper(iasp_model_copy), dummy_input_dict)
         print(f"   📊 Optimized latency: {optimal_latency:.2f} ms")
 
-        # 4. Create visualization
+        # 3. Create visualization
         improvement_vs_baseline = (
             (baseline_latency - optimal_latency) / baseline_latency
         ) * 100
@@ -290,6 +289,8 @@ def generate_figure1(quick_mode=False):
         return True
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"❌ Figure 1 generation failed: {e}")
         return False
 
@@ -436,6 +437,8 @@ def generate_figure2(non_interactive=False):
         return True
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"❌ Figure 2 generation failed: {e}")
         return False
 
@@ -545,6 +548,8 @@ def generate_figure3():
         return True
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"❌ Figure 3 generation failed: {e}")
         return False
 
@@ -656,6 +661,8 @@ def generate_figure4():
         return True
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"❌ Figure 4 generation failed: {e}")
         return False
 

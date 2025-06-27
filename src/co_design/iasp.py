@@ -20,7 +20,6 @@ import logging
 
 # --- Setup ---
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Constants ---
 DEFAULT_MAX_SAMPLES = 4096
@@ -162,7 +161,7 @@ def run_iasp_on_mamba(
     cluster_size_range: Tuple[int, int] = (32, 256),
     target_layer_names: Optional[List[str]] = None,
     device: Optional[str] = None,
-) -> float:
+) -> Tuple[List[int], float]:
     """
     Runs the full IASP optimization pipeline on a Mamba model.
 
@@ -178,6 +177,9 @@ def run_iasp_on_mamba(
         cluster_size_range: Tuple (min, max) for the size of clusters to search for.
         target_layer_names: Manually specify `in_proj` layers. If None, they are auto-detected.
         device: The device to run on (e.g., 'cuda:0'). Auto-detected if None.
+
+    Returns:
+        A tuple containing the optimal permutation and its modularity score.
     """
     logger.info("🚀 Starting IASP optimization pipeline for Mamba model...")
 
@@ -210,7 +212,7 @@ def run_iasp_on_mamba(
     _apply_permutation_to_mamba(model, permutation)
 
     logger.info("✅ IASP optimization for Mamba completed successfully.")
-    return modularity
+    return permutation, modularity
 
 
 def _apply_permutation_to_bert_ffn(model: nn.Module, permutation: List[int], target_layer_names: List[str]):
@@ -253,7 +255,7 @@ def run_iasp_on_bert(
     cluster_size_range: Tuple[int, int] = (128, 1024),
     target_layer_names: Optional[List[str]] = None,
     device: Optional[str] = None,
-) -> float:
+) -> Tuple[List[int], float]:
     """
     Runs the full IASP optimization pipeline on a BERT-like model's FFN layers.
 
@@ -270,6 +272,9 @@ def run_iasp_on_bert(
         target_layer_names: Manually specify FFN 'up-projection' layers. 
                             If None, they are auto-detected.
         device: The device to run on. Auto-detected if None.
+
+    Returns:
+        A tuple containing the optimal permutation and its modularity score.
     """
     logger.info("🚀 Starting IASP optimization pipeline for BERT model...")
 
@@ -302,4 +307,4 @@ def run_iasp_on_bert(
     _apply_permutation_to_bert_ffn(model, permutation, target_layer_names)
 
     logger.info("✅ IASP optimization for BERT completed successfully.")
-    return modularity
+    return permutation, modularity

@@ -18,6 +18,7 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 import logging
+from typing import List
 
 # Import components from the main HDS module
 from .hds import HDSLinear, DEFAULT_FINE_TUNING_EPOCHS, DEFAULT_LEARNING_RATE
@@ -26,44 +27,42 @@ logger = logging.getLogger(__name__)
 
 
 def calculate_layout_regularization(
-    hds_layer: HDSLinear, permutation: torch.Tensor, cluster_size: int
+    hds_layer: HDSLinear,
+    permutation: torch.Tensor,
+    penalty_fn_type: str = 'inverse' # 'inverse' or 'exp'
 ) -> torch.Tensor:
     """
-    Calculates a regularization term that penalizes sparsity masks that break clusters.
-
-    The goal is to encourage the sparsity mask to preserve connections within the
-    high-modularity clusters identified by IASP.
-
-    Args:
-        hds_layer: The HDSLinear layer to analyze.
-        permutation: The current memory permutation from IASP.
-        cluster_size: The size of clusters to preserve.
-
-    Returns:
-        A scalar tensor representing the regularization loss.
+    Calculates a regularization term based on the pairwise distance
+    between permuted dimensions, directly implementing the paper's proposal.
     """
-    mask = hds_layer.get_sparsity_mask()
+    mask = hds_layer.get_sparsity_mask() # Shape: (out_features, in_features)
+    n_in = mask.shape[1]
+    device = mask.device
+    
+    # 1. 순열에 따른 거리 행렬(distance matrix) 생성
+    # inv_permutation을 사용하여 원래 인덱스가 순열 후 어디로 갔는지 찾음
+    inv_permutation = torch.argsort(permutation.to(device))
+    # 각 위치 i와 j 간의 순열 후 거리 |π(i) - π(j)| 계산
+    pos_i = inv_permutation.unsqueeze(1).float()
+    pos_j = inv_permutation.unsqueeze(0).float()
+    dist_matrix = torch.abs(pos_i - pos_j) # Shape: (in_features, in_features)
 
-    # Permute the mask according to the memory layout
-    perm_mask = mask[:, permutation]
-
-    # Reshape the permuted mask into clusters
-    num_clusters = perm_mask.shape[1] // cluster_size
-    if num_clusters == 0:
-        return torch.tensor(0.0, device=mask.device) # Not enough features for a full cluster
-
-    clustered_mask = perm_mask[:, : num_clusters * cluster_size].view(
-        perm_mask.shape[0], num_clusters, cluster_size
-    )
-
-    # Calculate the density of sparse elements within each cluster
-    cluster_density = torch.mean(clustered_mask, dim=2)
-
-    # The regularization loss is the negative of the mean density.
-    # Minimizing this loss is equivalent to maximizing the cluster density.
-    regularization_loss = -torch.mean(cluster_density)
-
-    return regularization_loss
+    # 2. 페널티 행렬 생성
+    if penalty_fn_type == 'inverse':
+        # 거리가 가까울수록 페널티가 커짐 (0으로 나누는 것 방지)
+        penalty_matrix = 1.0 / (dist_matrix + 1e-6)
+    elif penalty_fn_type == 'exp':
+        penalty_matrix = torch.exp(-dist_matrix / n_in) # 스케일링
+    else:
+        raise ValueError("Unknown penalty function type.")
+        
+    # 3. 정규화 손실 계산
+    # (1 - mask)는 "연결이 끊어진 정도"를 나타냄
+    # 이를 페널티 행렬과 곱하여, 가까운 연결을 끊을수록 높은 손실을 부여
+    # out_features 차원에 대해 평균을 내어 최종 손실 계산
+    reg_loss = torch.mean((1 - mask) @ penalty_matrix)
+    
+    return reg_loss
 
 
 def apply_layout_aware_hds_finetuning(
@@ -85,18 +84,40 @@ def apply_layout_aware_hds_finetuning(
     logger.info(">>> Fine-tuning with Layout-Aware HDS Regularization...")
 
     hds_config = config.get("hds", {})
-    dataset_lr = config.get("dataset", {}).get("learning_rate")
-    lr = dataset_lr if dataset_lr is not None else config.get("learning_rate", DEFAULT_LEARNING_RATE)
+    lr = hds_config.get("learning_rate", DEFAULT_LEARNING_RATE)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    # Freeze all parameters first, then unfreeze only the ones we need to train.
+    for param in model.parameters():
+        param.requires_grad = False
+    
+    trainable_params = []
+    for module in model.modules():
+        if isinstance(module, HDSLinear):
+            # For layout-aware tuning, we train both the sparsity scores
+            # and the underlying weights to adapt to the layout.
+            module.scores.requires_grad = True
+            module.linear.weight.requires_grad = True
+            trainable_params.append(module.scores)
+            trainable_params.append(module.linear.weight)
+            if module.linear.bias is not None:
+                module.linear.bias.requires_grad = True
+                trainable_params.append(module.linear.bias)
+
+    if not trainable_params:
+        logger.warning("No trainable parameters for layout-aware HDS. Skipping.")
+        return model
+
+    optimizer = torch.optim.AdamW(trainable_params, lr=lr)
     num_epochs = hds_config.get("fine_tuning_epochs", DEFAULT_FINE_TUNING_EPOCHS)
     
     # Hyperparameters for the layout-aware regularization
     reg_lambda = hds_config.get("layout_aware_lambda", 0.01)
-    cluster_size = hds_config.get("cluster_size", 64)
+    penalty_fn = hds_config.get("penalty_fn", "inverse")
 
     device = next(model.parameters()).device
     model.train()
+
+    perm_tensor = torch.tensor(permutation, device=device, dtype=torch.long)
 
     for epoch in range(num_epochs):
         logger.info(f"  - Layout-Aware Fine-tuning Epoch {epoch + 1}/{num_epochs}")
@@ -118,7 +139,7 @@ def apply_layout_aware_hds_finetuning(
             for module in model.modules():
                 if isinstance(module, HDSLinear):
                     layout_reg_loss += calculate_layout_regularization(
-                        module, permutation, cluster_size
+                        module, perm_tensor, penalty_fn
                     )
                     num_hds_layers += 1
             

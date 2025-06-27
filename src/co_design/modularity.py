@@ -19,17 +19,17 @@ def calculate_modularity(
     correlation_matrix: np.ndarray, partition: List[List[int]]
 ) -> float:
     """
-    Calculates the modularity of a partitioned graph using vectorized operations.
+    Calculates the modularity of a partitioned graph for a signed network.
 
-    The graph's adjacency matrix is represented by the given correlation matrix.
-    This function uses the formula for modularity defined by Newman (2006),
-    optimized with NumPy vectorization for better performance on large graphs.
+    This function implements the extended modularity definition for networks
+    with both positive and negative weights (e.g., correlation matrices),
+    as proposed by Gomez, Jensen, and Sarle (2009).
 
     Args:
         correlation_matrix: A square NumPy array representing the weighted adjacency
-                            matrix of the graph (e.g., Pearson correlation).
+                            matrix of the graph.
         partition: A list of lists, where each inner list contains the indices of
-                   nodes in a community. E.g., [[0, 1], [2, 3]].
+                   nodes in a community.
 
     Returns:
         The modularity score (Q) of the given partition.
@@ -38,49 +38,58 @@ def calculate_modularity(
         raise ValueError("Correlation matrix must be square.")
 
     num_nodes = correlation_matrix.shape[0]
-
-    # Create a community membership array for vectorized operations
-    community_membership = np.full(num_nodes, -1, dtype=int)
-    for community_idx, community in enumerate(partition):
-        for node in community:
-            if node >= num_nodes or node < 0:
-                raise ValueError(
-                    f"Node index {node} is out of range [0, {num_nodes - 1}]."
-                )
-            if community_membership[node] != -1:
-                raise ValueError(f"Node {node} appears in multiple communities.")
-            community_membership[node] = community_idx
-
-    if np.any(community_membership == -1):
-        raise ValueError("Partition must include all nodes from 0 to N-1 exactly once.")
-
+    
+    # --- 1. Pre-process the graph ---
+    # Create a copy to avoid modifying the original matrix
+    W = correlation_matrix.copy()
+    # Exclude self-loops from the calculation, as is standard
+    np.fill_diagonal(W, 0)
+    
     # Separate positive and negative weights
-    A_plus = np.maximum(0, correlation_matrix)
-    A_minus = np.maximum(0, -correlation_matrix)
+    W_plus = np.maximum(0, W)
+    W_minus = np.maximum(0, -W)
 
+    # --- 2. Calculate graph-level statistics ---
     # Total weight of all positive and negative edges
-    m_plus = np.sum(A_plus) / 2.0
-    m_minus = np.sum(A_minus) / 2.0
+    m_plus = np.sum(W_plus) / 2.0
+    m_minus = np.sum(W_minus) / 2.0
+    
+    # Epsilon for numerical stability
+    eps = np.finfo(float).eps
 
-    if m_plus + m_minus == 0:
+    if m_plus + m_minus < eps:
         return 0.0
 
-    # Sum of positive and negative weights for each node
-    k_plus = np.sum(A_plus, axis=1)
-    k_minus = np.sum(A_minus, axis=1)
+    # Strength of each node (sum of positive/negative weights)
+    s_plus = np.sum(W_plus, axis=1)
+    s_minus = np.sum(W_minus, axis=1)
 
-    # Create a matrix indicating which pairs of nodes are in the same community
-    same_community_matrix = (
-        community_membership[:, np.newaxis] == community_membership[np.newaxis, :]
-    )
+    # --- 3. Build community membership matrix ---
+    community_membership = np.full(num_nodes, -1, dtype=int)
+    for i, community in enumerate(partition):
+        if not community: continue # Skip empty communities
+        community_membership[community] = i
+    
+    if np.any(community_membership == -1):
+        # Find which nodes were not in the partition for a better error message
+        missing_nodes = np.where(community_membership == -1)[0]
+        raise ValueError(f"Partition must include all nodes. Missing nodes: {missing_nodes}")
 
-    # Calculate the null model terms for positive and negative weights
-    null_model_plus = np.outer(k_plus, k_plus) / (2 * m_plus) if m_plus > 0 else 0
-    null_model_minus = np.outer(k_minus, k_minus) / (2 * m_minus) if m_minus > 0 else 0
+    # Create a boolean matrix where S_ij is True if node i and j are in the same community
+    same_community_matrix = community_membership[:, np.newaxis] == community_membership
+    
+    # --- 4. Calculate modularity using the Newman-Girvan formula extended for signed networks ---
+    # Expected number of edges in the null model
+    null_model_plus = np.outer(s_plus, s_plus) / (2 * m_plus + eps)
+    null_model_minus = np.outer(s_minus, s_minus) / (2 * m_minus + eps)
 
-    # Calculate modularity for signed networks
-    modularity_plus = (A_plus - null_model_plus) * same_community_matrix
-    modularity_minus = (A_minus - null_model_minus) * same_community_matrix
-    modularity_sum = np.sum(modularity_plus - modularity_minus)
-
-    return modularity_sum / (2 * (m_plus + m_minus))
+    # Sum of (Observed - Expected) for pairs within the same community
+    mod_matrix = (W_plus - null_model_plus) - (W_minus - null_model_minus)
+    
+    # Apply the community mask
+    Q_matrix = mod_matrix * same_community_matrix
+    
+    # Final modularity score is the sum over the normalization factor
+    modularity_score = np.sum(Q_matrix) / (2 * (m_plus + m_minus) + eps)
+    
+    return float(modularity_score)

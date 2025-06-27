@@ -27,6 +27,8 @@ import torch.nn as nn
 import hashlib
 import json
 import logging
+from io import StringIO
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +40,7 @@ DEFAULT_CACHE_DIR = "./outputs/profiler_cache"
 DEFAULT_NCU_METRICS = ["lts__t_sector_hit_rate.pct"]
 
 # Cache hit rate defaults (for fallback when profiling fails)
-TYPICAL_L2_CACHE_HIT_RATE = 75.0
+TYPICAL_L2_CACHE_HIT_RATE = 85.0
 TYPICAL_L1_CACHE_HIT_RATE = 85.0
 CONSERVATIVE_L2_CACHE_HIT_RATE = 72.5
 CONSERVATIVE_L1_CACHE_HIT_RATE = 82.0
@@ -48,67 +50,89 @@ MINIMAL_L2_CACHE_HIT_RATE = 68.0
 MINIMAL_L1_CACHE_HIT_RATE = 78.0
 
 # NCU profiling settings
-NCU_TIMEOUT_SECONDS = 300  # Increased timeout to accommodate full model profiling
+NCU_TIMEOUT_SECONDS = 180  # Reduced timeout for faster profiling
 NCU_CSV_METRICS = "lts__t_sector_hit_rate.pct,sm__sass_average_data_bytes_per_sector_mem_global_op_ld.pct"
 
 # Add retry settings
 NCU_MAX_RETRIES = 2
 NCU_KERNEL_TIMEOUT = 30
 
+# Fallback values if hardware profiling is unavailable or fails
+FALLBACK_LATENCY_MS = 100.0
+
 class LatencyProfiler:
     def __init__(
         self,
-        cache_dir: str = DEFAULT_CACHE_DIR,
-        ncu_metrics: Optional[list] = None,
         enable_gpu_profiling: bool = True,
+        cache_dir: str = "results/profiler_cache",
     ):
-        """Initialize the profiler with configurable cache directory and metrics.
-
-        Args:
-            cache_dir: Directory to store profiling cache
-            ncu_metrics: List of NCU metrics to collect. Defaults to L2 cache metrics.
-            enable_gpu_profiling: Whether to attempt GPU profiling with NCU/nvprof
-        """
-        self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.cache_file = self.cache_dir / "profiler_cache.json"
-        self.ncu_metrics = ncu_metrics or DEFAULT_NCU_METRICS
         self.enable_gpu_profiling = enable_gpu_profiling
+        self.profiler_cache_dir = Path(cache_dir)
+        self.profiler_cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def _get_model_hash(self, model_state_dict) -> str:
-        """Creates a deterministic SHA256 hash of a model's state_dict."""
-        # Create a deterministic hash by sorting keys and using binary tensor data
+    def _get_model_hash(self, model: nn.Module) -> str:
+        """Generates a deterministic hash for the model's state dictionary."""
         hasher = hashlib.sha256()
-
+        # Use an ordered dictionary to ensure consistent key order
+        model_state_dict = model.state_dict()
         for key in sorted(model_state_dict.keys()):
             param = model_state_dict[key]
-            # Add key name to hash
-            hasher.update(key.encode("utf-8"))
-            # Add tensor data to hash (convert to consistent numpy bytes)
+            hasher.update(key.encode('utf-8'))
             if isinstance(param, torch.Tensor):
-                # Detach and move to CPU to ensure consistent representation
-                tensor_bytes = param.detach().cpu().numpy().tobytes()
+                # Include shape and dtype for robustness
+                hasher.update(str(param.shape).encode('utf-8'))
+                hasher.update(str(param.dtype).encode('utf-8'))
+                # Convert to a consistent format (float64) before hashing
+                tensor_bytes = param.detach().to(torch.float64).cpu().numpy().tobytes()
                 hasher.update(tensor_bytes)
             else:
-                # Handle non-tensor values (though rare in state_dict)
-                hasher.update(str(param).encode("utf-8"))
-
+                # Handle non-tensor parameters (e.g., from quantization)
+                hasher.update(str(param).encode('utf-8'))
         return hasher.hexdigest()
 
-    def _read_cache(self) -> Dict:
-        """Reads the profiler cache file."""
-        if not self.cache_file.exists():
-            return {}
-        with open(self.cache_file, "r") as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                return {}
+    def _find_ncu_path(self) -> Optional[str]:
+        """Finds the path to the ncu executable."""
+        return shutil.which("ncu")
 
-    def _write_cache(self, cache: Dict):
-        """Writes to the profiler cache file."""
-        with open(self.cache_file, "w") as f:
-            json.dump(cache, f)
+    def _parse_ncu_csv_output(self, csv_output: str) -> Optional[Dict[str, float]]:
+        """Parses the CSV output from Nsight Compute (ncu) using pandas for robustness."""
+        try:
+            # Clean the output: Find where the actual CSV data starts.
+            # NCU output can have informational text and multiple headers.
+            csv_lines = [line for line in csv_output.splitlines() if not line.strip().startswith('#')]
+            
+            # Find the line with "Metric Name", which is the real header
+            header_index = -1
+            for i, line in enumerate(csv_lines):
+                if '"Metric Name"' in line:
+                    header_index = i
+                    break
+            
+            if header_index == -1:
+                logger.warning("Could not find CSV header in NCU output.")
+                return None
+
+            csv_data = "\n".join(csv_lines[header_index:])
+            df = pd.read_csv(StringIO(csv_data))
+
+            # Clean and convert metric values
+            df['Metric Value'] = pd.to_numeric(df['Metric Value'], errors='coerce')
+            df.dropna(subset=['Metric Value'], inplace=True)
+
+            # Find the L2 cache hit rate metric
+            hit_rate_row = df[df['Metric Name'] == 'lts__t_sector_hit_rate.pct']
+            
+            if not hit_rate_row.empty:
+                # In case of multiple kernels, we can average, max, or sum.
+                # Here, we take the mean value across all profiled kernels.
+                hit_rate = hit_rate_row['Metric Value'].mean()
+                return {'lts__t_sector_hit_rate.pct': float(hit_rate)}
+            else:
+                logger.warning("L2 cache hit rate metric not found in NCU output.")
+                return None
+        except Exception as e:
+            logger.error(f"Failed to parse NCU CSV with pandas: {e}\nNCU output:\n{csv_output}")
+            return None
 
     def measure_latency(
         self,
@@ -181,349 +205,92 @@ class LatencyProfiler:
     def measure_cache_hits(
         self, model: nn.Module, dummy_input: Dict[str, torch.Tensor]
     ) -> Optional[Dict[str, float]]:
-        """Measures cache hit rates and other metrics using NVIDIA's Nsight Compute."""
-        # Skip GPU profiling if disabled via parameter or environment variable
-        if not self.enable_gpu_profiling or os.getenv("DISABLE_GPU_PROFILING", "").lower() in ["true", "1", "yes"]:
-            logger.info("GPU profiling disabled (via parameter or DISABLE_GPU_PROFILING env var), using typical cache hit rate values")
-            return {"lts__t_sector_hit_rate.pct": TYPICAL_L2_CACHE_HIT_RATE}
-            
+        """
+        Measures the L2 cache hit rate of a model using NVIDIA's Nsight Compute (ncu).
+
+        This method now saves the model and input to temporary files and calls a
+        dedicated, stable profiling script, which is a much more robust approach.
+        """
         if not torch.cuda.is_available():
-            warnings.warn("CUDA not available - skipping hardware profiling")
+            logger.warning("Cache measurement requires CUDA, skipping.")
             return None
 
-        ncu_path = shutil.which("ncu")
+        ncu_path = self._find_ncu_path()
         if not ncu_path:
-            warnings.warn("NVIDIA Nsight Compute (ncu) not found in PATH")
+            logger.warning("NVIDIA Nsight Compute (ncu) not found in PATH. Skipping cache measurement.")
             return None
+            
+        model_hash = self._get_model_hash(model)
+        cache_file = self.profiler_cache_dir / f"{model_hash}.json"
 
-        model_hash = self._get_model_hash(model.state_dict())
-        cache = self._read_cache()
-        if model_hash in cache:
-            logger.info(f"Using cached profiling results for model hash: {model_hash[:8]}...")
-            return cache[model_hash]
+        if cache_file.exists():
+            logger.info(f"Using cached profiling results from {cache_file}")
+            with open(cache_file, "r") as f:
+                return json.load(f)
 
-        with tempfile.TemporaryDirectory(prefix="ncu_profile_") as temp_dir:
-            temp_dir = Path(temp_dir)
-            script_path = temp_dir / "profile.py"
-            input_path = temp_dir / "input.pt"
-            model_path = temp_dir / "model.pt"  # Path for model state_dict
-
-            # Save both the dummy input and the model's state dictionary
-            torch.save(dummy_input, input_path)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            model_path = temp_path / "model.pt"
+            input_path = temp_path / "input.pt"
+            
             torch.save(model.state_dict(), model_path)
+            torch.save(dummy_input, input_path)
 
-            script_content = f"""
-import torch
-import torch.nn as nn
-print("🚀 Starting GPU profiling script...")
-
-class SimplifiedModel(nn.Module):
-    \"\"\"Simplified model that mimics the memory access patterns of the actual model.\"\"\"
-    def __init__(self, hidden_size={getattr(model.config, 'hidden_size', 2560)}, 
-                 vocab_size={getattr(model.config, 'vocab_size', 50277)},
-                 num_layers={getattr(model.config, 'num_hidden_layers', getattr(model.config, 'n_layer', 24))}):
-        super().__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        
-        # Embedding layer
-        self.embedding = nn.Embedding(vocab_size, hidden_size)
-        
-        # Simulate transformer/mamba layers with realistic memory patterns
-        self.layers = nn.ModuleList([
-            nn.ModuleDict({{
-                'attention': nn.Linear(hidden_size, hidden_size * 3),  # Q, K, V
-                'proj': nn.Linear(hidden_size, hidden_size),
-                'mlp': nn.Sequential(
-                    nn.Linear(hidden_size, hidden_size * 4),
-                    nn.GELU(),
-                    nn.Linear(hidden_size * 4, hidden_size)
-                ),
-                'norm1': nn.LayerNorm(hidden_size),
-                'norm2': nn.LayerNorm(hidden_size)
-            }})
-            for _ in range(min(num_layers, 6))  # Limit layers for profiling speed
-        ])
-        
-        self.final_norm = nn.LayerNorm(hidden_size)
-        self.lm_head = nn.Linear(hidden_size, vocab_size)
-
-    def forward(self, input_ids, **kwargs):
-        # Embedding
-        x = self.embedding(input_ids)
-        batch_size, seq_len = input_ids.shape
-        
-        # Process through layers (simplified transformer-like processing)
-        for layer in self.layers:
-            # Self-attention pattern
-            residual = x
-            x = layer['norm1'](x)
+            profiling_script = Path(__file__).resolve().parents[1] / "scripts" / "profiling_target.py"
+            if not profiling_script.exists():
+                logger.error(f"Profiling target script not found at {profiling_script}")
+                return None
             
-            # Attention computation (simplified)
-            qkv = layer['attention'](x)
-            q, k, v = qkv.chunk(3, dim=-1)
-            
-            # Simulate attention computation with realistic memory access
-            attn_weights = torch.matmul(q, k.transpose(-2, -1)) / (self.hidden_size ** 0.5)
-            attn_weights = torch.softmax(attn_weights, dim=-1)
-            attn_output = torch.matmul(attn_weights, v)
-            
-            x = layer['proj'](attn_output)
-            x = x + residual
-            
-            # MLP
-            residual = x
-            x = layer['norm2'](x)
-            x = layer['mlp'](x)
-            x = x + residual
-        
-        # Final output
-        x = self.final_norm(x)
-        logits = self.lm_head(x)
-        return logits
+            # Use model's config to pass its original name for architecture loading
+            model_name = model.config._name_or_path
 
-def run_model_inference():
-    if not torch.cuda.is_available():
-        print("❌ CUDA not available")
-        return
+            # Infer the task from the model's config for robust model loading in the target script.
+            config_dict = model.config.to_dict()
+            task = "text-generation" # Default task
+            if "architectures" in config_dict and config_dict["architectures"]:
+                arch = config_dict["architectures"][0]
+                if "ForSequenceClassification" in arch:
+                    task = "sequence-classification"
 
-    device = torch.device('cuda')
-    print(f"✅ Using device: {{device}} ({{torch.cuda.get_device_name()}})")
-
-    # Load dummy input
-    dummy_input = torch.load('{input_path}')
-    dummy_input = {{k: v.to(device) for k, v in dummy_input.items()}}
-    print(f"✅ Input loaded. Shape: {{dummy_input['input_ids'].shape}}")
-
-    # Create model with realistic architecture
-    model = SimplifiedModel().to(device)
-    model.eval()
-    
-    # Try to load actual model weights if available
-    try:
-        state_dict = torch.load('{model_path}', map_location=device)
-        # Load matching parameters only
-        model_state = model.state_dict()
-        for name, param in state_dict.items():
-            if name in model_state and param.shape == model_state[name].shape:
-                model_state[name].copy_(param)
-        print("✅ Loaded available model parameters")
-    except Exception as e:
-        print(f"⚠️  Using random weights (couldn't load model state): {{e}}")
-
-    # 🔥 Run actual model inference for realistic profiling
-    output = None
-    try:
-        with torch.inference_mode():
-            _ = model(**dummy_input)
-        torch.cuda.synchronize()
-
-        print("📊 Profiling runs...")
-        for i in range(2):
-            print(f"  Run {{i+1}}/2")
-            output = model(**dummy_input)
-            torch.cuda.synchronize()
-
-        print(f"🎉 Model inference complete! Output shape: {{output.shape}}")
-    except Exception as e:
-        print(f"⚠️ Model inference failed: {{e}}. Running fallback workload.")
-        torch.cuda.empty_cache()
-        dummy = torch.randn(2048, 2048, device=device)
-        for _ in range(4):
-            dummy = dummy @ dummy
-        torch.cuda.synchronize()
-        output = dummy
-        print(f"🎉 Fallback complete! Output shape: {{output.shape}}")
-
-if __name__ == "__main__":
-    try:
-        run_model_inference()
-        print("🎯 Script completed successfully")
-    except Exception as e:
-        print(f"❌ Error: {{e}}")
-        import traceback
-        traceback.print_exc()
-"""
-            script_path.write_text(script_content, encoding='utf-8')
-            python_path = sys.executable
-            logger.info(f"Using Python executable: {python_path}")
-
-            # Optimized NCU command - collect available L2 cache metrics
-            output_file = temp_dir / "ncu_output.csv"
-            command_str = (
-                f"sudo -E {ncu_path} "
-                f"--metrics lts__t_sector_hit_rate.pct "
-                f"--csv --log-file {output_file} "
-                f"--force-overwrite "
-                f"{python_path} {str(script_path)}"
-            )
+            command = [
+                ncu_path,
+                "--metrics", "lts__t_sector_hit_rate.pct",
+                "--csv",
+                sys.executable,
+                str(profiling_script),
+                str(model_path),
+                str(input_path),
+                model_name,
+                task,
+            ]
 
             try:
-                logger.info("Starting GPU profiling with Nsight Compute (sudo -E)...")
-                logger.info(f"NCU command: {command_str}")
-                
                 result = subprocess.run(
-                    command_str,
-                    shell=True,
+                    command,
                     capture_output=True,
                     text=True,
-                    timeout=NCU_TIMEOUT_SECONDS,
-                    cwd=temp_dir
+                    check=True,
+                    encoding="utf-8",
                 )
                 
-                logger.info(f"NCU result: returncode={result.returncode}")
-                if result.stdout:
-                    logger.info(f"NCU stdout: {result.stdout[:500]}...")
-                if result.stderr:
-                    logger.info(f"NCU stderr: {result.stderr[:500]}...")
+                cache_metrics = self._parse_ncu_csv_output(result.stdout)
                 
-                # Try to read from output file if it exists
-                csv_content = ""
-                if output_file.exists():
-                    csv_content = output_file.read_text()
-                    logger.info(f"Found NCU CSV output file with {len(csv_content)} characters")
-                    if csv_content:
-                        logger.info(f"CSV content preview: {csv_content[:200]}...")
-                elif result.stdout:
-                    csv_content = result.stdout
-                    logger.info("Using stdout as CSV content")
+                if cache_metrics:
+                    logger.info(f"Saving new profiling results to {cache_file}")
+                    with open(cache_file, "w") as f:
+                        json.dump(cache_metrics, f)
                 
-                if result.returncode == 0 and csv_content:
-                    metrics = self._parse_ncu_csv_output(csv_content)
-                    if metrics:
-                        logger.info(f"🎉 GPU Profiling successful! L2 Cache Hit Rate: {metrics.get('lts__t_sector_hit_rate.pct', 'N/A')}%")
-                        cache[model_hash] = metrics
-                        self._write_cache(cache)
-                        return metrics
-                    else:
-                        logger.info("Failed to parse NCU output. Raw output for debugging:")
-                        logger.info(f"CSV content length: {len(csv_content)}")
-                        if csv_content:
-                            logger.info(f"First 1000 chars: {csv_content[:1000]}")
-                        return None
-                else:
-                    logger.info(f"NCU profiling failed (returncode={result.returncode}). Using fallback cache hit rate.")
-                    return None
+                return cache_metrics
 
-            except subprocess.TimeoutExpired:
-                warnings.warn("GPU profiling timed out.")
-                return {"lts__t_sector_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Nsight Compute execution failed with return code {e.returncode}.")
+                logger.error(f"Command: {' '.join(command)}")
+                logger.error(f"Stderr: {e.stderr}")
+                return None
             except Exception as e:
-                warnings.warn(f"An unexpected error occurred during profiling: {e}")
-                return {"lts__t_sector_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
-
-    def _parse_ncu_csv_output(self, csv_output: str) -> Optional[Dict[str, float]]:
-        """Parses NCU CSV output to extract metrics."""
-        try:
-            logger.info("Starting NCU CSV parsing...")
-            
-            lines = [line for line in csv_output.strip().split('\n') if line.strip()]
-            logger.info(f"Processing {len(lines)} lines from NCU output")
-            
-            if not lines:
-                logger.warning("NCU output is empty.")
+                logger.error(f"An unexpected error occurred during cache measurement: {e}")
                 return None
 
-            # Find the header row containing column names
-            header_line = None
-            header_idx = -1
-            for i, line in enumerate(lines):
-                if '"Metric Name"' in line and '"Metric Value"' in line:
-                    header_line = line
-                    header_idx = i
-                    logger.info(f"Found header line at index {i}")
-                    break
-            
-            if header_line is None:
-                logger.error("Could not find CSV header with 'Metric Name' and 'Metric Value' columns")
-                return {"lts__t_sector_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
-
-            # Parse header to find column indices
-            import csv
-            from io import StringIO
-            
-            # Clean and parse header
-            header_reader = csv.reader(StringIO(header_line))
-            header = next(header_reader)
-            header = [h.strip().strip('"') for h in header]
-            
-            logger.info(f"CSV headers: {header}")
-            
-            try:
-                metric_name_idx = header.index("Metric Name")
-                metric_value_idx = header.index("Metric Value")
-                logger.info(f"Found column indices - Metric Name: {metric_name_idx}, Metric Value: {metric_value_idx}")
-            except ValueError:
-                logger.error(f"Could not find required columns in header: {header}")
-                return {"lts__t_sector_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
-
-            # Process data lines
-            metrics = {}
-            data_lines = lines[header_idx + 1:]  # Skip header and any lines before it
-            
-            for line_num, line in enumerate(data_lines):
-                if not line.strip() or not line.startswith('"'):
-                    continue
-                    
-                try:
-                    # Parse CSV line
-                    csv_reader = csv.reader(StringIO(line))
-                    parts = next(csv_reader)
-                    
-                    if len(parts) <= max(metric_name_idx, metric_value_idx):
-                        continue
-                        
-                    metric_name = parts[metric_name_idx].strip()
-                    metric_value = parts[metric_value_idx].strip()
-                    
-                    logger.info(f"Row {line_num}: Metric '{metric_name}' = '{metric_value}'")
-                    
-                    # Look for L2 cache metrics we care about
-                    target_metrics = [
-                        'lts__t_sector_hit_rate.pct',
-                        'lts__t_sectors_hit_rate.pct', 
-                        'l2_tex_hit_rate.pct',
-                        'l2_cache_hit_rate'
-                    ]
-                    
-                    metric_found = False
-                    for target in target_metrics:
-                        if target.lower() in metric_name.lower():
-                            try:
-                                # Clean and convert value
-                                clean_value = metric_value.replace('%', '').strip()
-                                if clean_value and clean_value.lower() not in ['n/a', 'na', '', 'inf', '-inf']:
-                                    value = float(clean_value)
-                                    if 0 <= value <= 100:  # Reasonable hit rate range
-                                        metrics['lts__t_sector_hit_rate.pct'] = value
-                                        logger.info(f"✅ Found L2 cache hit rate: {value}% from metric '{metric_name}'")
-                                        metric_found = True
-                                        break
-                            except (ValueError, TypeError) as e:
-                                logger.warning(f"Could not parse value '{metric_value}' for metric '{metric_name}': {e}")
-                                continue
-                    
-                    if metric_found:
-                        break
-                        
-                except Exception as e:
-                    logger.warning(f"Error parsing line {line_num}: {e}")
-                    continue
-            
-            # Use fallback if no metrics found
-            if not metrics:
-                logger.info("No cache metrics found in NCU output, using fallback L2 cache hit rate")
-                metrics['lts__t_sector_hit_rate.pct'] = FALLBACK_L2_CACHE_HIT_RATE
-            
-            logger.info(f"Successfully parsed metrics: {metrics}")
-            return metrics
-            
-        except Exception as e:
-            logger.error(f"Failed to parse NCU CSV output: {e}")
-            logger.error(f"CSV output preview: {csv_output[:500]}...")
-            warnings.warn(f"Failed to parse NCU CSV output: {e}")
-            return {"lts__t_sector_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
-    
     def profile_memory_usage(self, model: nn.Module, 
                            dummy_input: Dict[str, torch.Tensor]) -> Dict[str, float]:
         """
