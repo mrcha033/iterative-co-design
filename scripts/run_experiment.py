@@ -61,8 +61,7 @@ import wandb
 from utils.evaluation import calculate_task_metric
 from utils.profiler import LatencyProfiler
 from utils.cleanup import cleanup_old_runs
-from co_design.iasp import find_optimal_permutation, get_activation_correlation
-from co_design.modularity import calculate_modularity
+from co_design.iasp import run_iasp_on_mamba, run_iasp_on_bert
 from models.wrapper import ModelWrapper
 from co_design.hds import apply_hds
 import logging
@@ -151,7 +150,9 @@ def _expand_target_layers(model, target_spec):
     return target_spec if isinstance(target_spec, list) else [target_spec]
 
 
-def _measure_and_collect_metrics(wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, permutation=None, partition=None, target_layer_names=None):
+def _measure_and_collect_metrics(
+    wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, modularity: float = 0.0
+):
     """Helper function to measure and collect all relevant metrics."""
     logger.info("Calculating evaluation metric...")
     task_metric = calculate_task_metric(
@@ -168,20 +169,6 @@ def _measure_and_collect_metrics(wrapped_model, tokenizer, data_loader, eval_dat
     logger.info("Measuring L2 cache hit rate...")
     cache_result = profiler.measure_cache_hits(wrapped_model.model, dummy_input)
     cache_hits = cache_result.get("lts__t_sector_hit_rate.pct", 0.0) if cache_result else 0.0
-    
-    logger.info("Calculating modularity...")
-    
-    if partition is None or target_layer_names is None:
-        modularity = 0.0
-    else:
-        iasp_cfg = cfg.model.iasp
-        correlation_matrix = get_activation_correlation(
-            model=wrapped_model.model,
-            dataloader=data_loader,
-            target_layer_names=target_layer_names,
-            max_samples=iasp_cfg.get("num_samples", 128)
-        )
-        modularity = calculate_modularity(correlation_matrix, partition)
     
     logger.info(f"Modularity: {modularity:.4f}")
 
@@ -205,7 +192,7 @@ def run_dense(cfg: DictConfig):
 
     logger.info("--- Dense Baseline Performance ---")
     metrics = _measure_and_collect_metrics(
-        wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, partition=[list(range(model.config.hidden_size))]
+        wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, modularity=0.0
     )
     save_results(cfg, "dense", metrics)
 
@@ -221,50 +208,48 @@ def run_sparsity_only(cfg: DictConfig):
     profiler = LatencyProfiler()
 
     logger.info("--- Applying HDS Sparsification ---")
-    partition, _ = apply_hds(wrapped_model, data_loader, cfg.model.hds)
+    apply_hds(wrapped_model, data_loader, cfg.model.hds)
     
-    # Expand target layers for modularity calculation
-    iasp_cfg = cfg.model.iasp
-    target_layer_spec = iasp_cfg.get("target_layer_names", iasp_cfg.get("target_layer_name"))
-    target_layer_names = _expand_target_layers(wrapped_model.model, target_layer_spec)
-
     logger.info("--- Measuring Performance for Sparsity-Only ---")
     metrics = _measure_and_collect_metrics(
-        wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, partition=partition, target_layer_names=target_layer_names
+        wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, modularity=0.0
     )
     save_results(cfg, "sparsity_only", metrics)
+
+
+def _run_iasp(model, data_loader, cfg) -> float:
+    """Helper function to run the correct IASP function based on model type."""
+    model_type = cfg.model.get("type", "bert") # Default to bert if type not specified
+    
+    if 'mamba' in model_type:
+        logger.info("Running IASP for Mamba model...")
+        return run_iasp_on_mamba(
+            model, data_loader, cluster_size_range=tuple(cfg.model.iasp.cluster_size_range)
+        )
+    elif 'bert' in model_type:
+        logger.info("Running IASP for BERT model...")
+        return run_iasp_on_bert(
+            model, data_loader, cluster_size_range=tuple(cfg.model.iasp.cluster_size_range)
+        )
+    else:
+        raise NotImplementedError(f"IASP is not implemented for model type: {model_type}")
 
 
 def run_permute_only(cfg: DictConfig):
     """Runs the permutation-only experiment."""
     set_random_seeds(cfg.seed)
     model, tokenizer, data_loader, eval_dataset = get_model_and_data(cfg)
-    if torch.cuda.is_available():
-        model.cuda()
+    if torch.cuda.is_available(): model.cuda()
     
     wrapped_model = ModelWrapper(model)
     profiler = LatencyProfiler()
-    iasp_cfg = cfg.model.iasp
     
     logger.info("--- Applying IASP Permutation ---")
-    target_layer_spec = iasp_cfg.get("target_layer_names", iasp_cfg.get("target_layer_name"))
-    target_layer_names = _expand_target_layers(wrapped_model.model, target_layer_spec)
-
-    permutation = find_optimal_permutation(
-        model=wrapped_model.model,
-        data_loader=data_loader,
-        target_layer_names=target_layer_names,
-        cluster_size_range=tuple(iasp_cfg.cluster_size_range),
-    )
-    wrapped_model.permute_model_weights(permutation)
-    
-    # For modularity calculation, we need a partition
-    nodes_per_cluster = model.config.hidden_size // (model.config.hidden_size // 32)
-    partition = [permutation[i:i+nodes_per_cluster] for i in range(0, len(permutation), nodes_per_cluster)]
+    modularity_score = _run_iasp(wrapped_model.model, data_loader, cfg)
     
     logger.info("--- Measuring Performance for Permutation-Only ---")
     metrics = _measure_and_collect_metrics(
-        wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, permutation=permutation, partition=partition, target_layer_names=target_layer_names
+        wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, modularity=modularity_score
     )
     save_results(cfg, "permute_only", metrics)
 
@@ -273,31 +258,20 @@ def run_linear_pipeline(cfg: DictConfig):
     """Runs the linear pipeline (IASP -> HDS) experiment."""
     set_random_seeds(cfg.seed)
     model, tokenizer, data_loader, eval_dataset = get_model_and_data(cfg)
-    if torch.cuda.is_available():
-        model.cuda()
+    if torch.cuda.is_available(): model.cuda()
 
     wrapped_model = ModelWrapper(model)
     profiler = LatencyProfiler()
-    iasp_cfg = cfg.model.iasp
 
     logger.info("--- Step 1: IASP Permutation ---")
-    target_layer_spec = iasp_cfg.get("target_layer_names", iasp_cfg.get("target_layer_name"))
-    target_layer_names = _expand_target_layers(wrapped_model.model, target_layer_spec)
-    
-    permutation = find_optimal_permutation(
-        model=wrapped_model.model,
-        data_loader=data_loader,
-        target_layer_names=target_layer_names,
-        cluster_size_range=tuple(iasp_cfg.cluster_size_range),
-    )
-    wrapped_model.permute_model_weights(permutation)
+    modularity_score = _run_iasp(wrapped_model.model, data_loader, cfg)
     
     logger.info("--- Step 2: HDS Sparsification ---")
-    partition, _ = apply_hds(wrapped_model, data_loader, cfg.model.hds)
+    apply_hds(wrapped_model, data_loader, cfg.model.hds)
     
     logger.info("--- Measuring Performance for Linear Pipeline ---")
     metrics = _measure_and_collect_metrics(
-        wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, permutation=permutation, partition=partition, target_layer_names=target_layer_names
+        wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, modularity=modularity_score
     )
     save_results(cfg, "linear_pipeline", metrics)
 
@@ -306,45 +280,27 @@ def run_iterative(cfg: DictConfig):
     """Runs the iterative co-design experiment."""
     set_random_seeds(cfg.seed)
     model, tokenizer, data_loader, eval_dataset = get_model_and_data(cfg)
-    if torch.cuda.is_available():
-        model.cuda()
+    if torch.cuda.is_available(): model.cuda()
 
     wrapped_model = ModelWrapper(model)
     profiler = LatencyProfiler()
-    iasp_cfg = cfg.model.iasp
     num_iterations = cfg.method_configs.iterative.iterations
     
-    # Initialize permutation as identity
-    permutation = list(range(model.config.hidden_size))
-    
+    modularity_score = 0.0
     for i in range(num_iterations):
         logger.info(f"\n--- Iteration {i+1}/{num_iterations} ---")
         
         logger.info(f"--- Iteration {i+1}, Step 1: HDS Sparsification ---")
-        partition, _ = apply_hds(wrapped_model, data_loader, cfg.model.hds)
+        apply_hds(wrapped_model, data_loader, cfg.model.hds)
         
         logger.info(f"--- Iteration {i+1}, Step 2: IASP Permutation ---")
-        target_layer_spec = iasp_cfg.get("target_layer_names", iasp_cfg.get("target_layer_name"))
-        target_layer_names = _expand_target_layers(wrapped_model.model, target_layer_spec)
-
-        permutation = find_optimal_permutation(
-            model=wrapped_model.model,
-            data_loader=data_loader,
-            target_layer_names=target_layer_names,
-            cluster_size_range=tuple(iasp_cfg.cluster_size_range),
-        )
-        wrapped_model.permute_model_weights(permutation)
-
-    # For modularity calculation, we need a partition
-    nodes_per_cluster = model.config.hidden_size // (model.config.hidden_size // 32)
-    final_partition = [permutation[i:i+nodes_per_cluster] for i in range(0, len(permutation), nodes_per_cluster)]
-
+        current_modularity = _run_iasp(wrapped_model.model, data_loader, cfg)
+        if i == num_iterations - 1:
+            modularity_score = current_modularity
+        
     logger.info("--- Final Performance Measurement for Iterative ---")
-    # We need the target layers again for the final measurement
-    target_layer_spec = iasp_cfg.get("target_layer_names", iasp_cfg.get("target_layer_name"))
-    target_layer_names = _expand_target_layers(wrapped_model.model, target_layer_spec)
     metrics = _measure_and_collect_metrics(
-        wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, permutation=permutation, partition=final_partition, target_layer_names=target_layer_names
+        wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, modularity=modularity_score
     )
     save_results(cfg, "iterative", metrics)
 
@@ -364,7 +320,7 @@ def print_dry_run_plan(cfg: DictConfig):
     print(" " * 18 + "DRY RUN PLAN")
     print("="*50)
     print(f"Project: {cfg.project_name}")
-    print(f"Experiment: {cfg.experiment_name}")
+    print(f"Experiment: {cfg.get('experiment_name', 'default_experiment')}")
     print(f"Method: {cfg.method}")
     print("-" * 50)
     print("Configuration:")

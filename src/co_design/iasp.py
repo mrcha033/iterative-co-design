@@ -1,15 +1,11 @@
 """
 IO-Aware Scan Permutation (IASP) module.
 
-This module implements the IO-Aware Scan Permutation algorithm, which optimizes
-memory layout by finding permutations that maximize modularity. IASP uses spectral
-clustering to group correlated model dimensions into contiguous memory regions,
-improving cache locality and reducing memory access latency.
+This module optimizes memory layout by finding permutations of model dimensions
+that maximize data locality, thereby reducing memory access latency. It is
+particularly effective for models like Mamba where I/O is a bottleneck.
 
-Key functions:
-- get_activation_correlation: Collect model activations and compute correlation matrix
-- find_optimal_permutation_from_matrix: Find optimal permutation using modularity
-- find_optimal_permutation: End-to-end permutation optimization for models
+The main entry point for Mamba models is `run_iasp_on_mamba`.
 """
 
 import torch
@@ -22,471 +18,288 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import logging
 
+# --- Setup ---
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Constants for IASP algorithm
-DEFAULT_MAX_ACTIVATION_SAMPLES = 512
+# --- Constants ---
+DEFAULT_MAX_SAMPLES = 4096
 MIN_CLUSTER_SIZE = 2
-DEFAULT_MIN_CLUSTERS_DIVISOR = 128  # d_model // 128
-DEFAULT_MAX_CLUSTERS_DIVISOR = 16   # d_model // 16
 SPECTRAL_CLUSTERING_N_INIT = 10
-SPECTRAL_CLUSTERING_RANDOM_STATE = 0  # For reproducibility
+SPECTRAL_CLUSTERING_RANDOM_STATE = 0
 NAN_REPLACEMENT_VALUE = 0.0
 DIAGONAL_CORRELATION_VALUE = 1.0
-DEBUG_LAYER_DISPLAY_LIMIT = 20
 
 
-def get_activation_correlation(
+# --- Internal Helper Functions ---
+
+def _get_activation_correlation(
     model: nn.Module,
     dataloader: DataLoader,
-    target_layer_names: List[str] | str | None = None,
-    max_samples: int = DEFAULT_MAX_ACTIVATION_SAMPLES,
+    target_layer_names: List[str],
+    is_mamba_in_proj: bool,
+    max_samples: int = DEFAULT_MAX_SAMPLES,
     device: Optional[str] = None,
-    *,
-    # Backwards-compatibility alias. If provided, `target_layer_names` is ignored
-    target_layer_name: Optional[str] = None,
 ) -> np.ndarray:
-    """
-    Computes the average activation correlation matrix across multiple target layers.
-
-    Args:
-        model: The PyTorch model to analyze.
-        dataloader: The dataloader providing data samples.
-        target_layer_names: A list of layer names to hook for activations.
-        max_samples: The maximum number of samples to use for calculation.
-        device: The device to run the model on.
-
-    Returns:
-        A 2D numpy array representing the average Pearson correlation matrix.
-    """
-    # ------------------------------------------------------------------
-    # Parameter handling
-    # ------------------------------------------------------------------
-    if target_layer_names is None and target_layer_name is not None:
-        target_layer_names = [target_layer_name]
-
-    if target_layer_names is None:
-        raise ValueError("Either 'target_layer_names' or 'target_layer_name' must be provided.")
-
-    if isinstance(target_layer_names, str):
-        target_layer_names = [target_layer_names]
-
+    """Computes activation correlation, with special handling for Mamba's in_proj."""
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        logger.info(f"No device specified, auto-detected: {device}")
+    model.to(device).eval()
 
-    model.to(device)
-    model.eval()
-
-    # Create a dictionary to hold activations for each layer
     activations = {name: [] for name in target_layer_names}
     hooks = []
 
-    # Define a hook factory to capture activations for the correct layer
-    def create_hook(name):
+    def create_hook(layer_name):
         def hook_fn(module, input, output):
-            act = input[0]
+            act = output
+            if is_mamba_in_proj:
+                d_inner = module.out_features // 2
+                act = output[..., :d_inner] # Crucially, target the 'x' part of d_inner
+
             if act.ndim == 3:
-                act = act[:, 0, :]  # (batch, hidden_size)
-            activations[name].append(act.detach().cpu().numpy())
+                act = act.reshape(-1, act.shape[-1])
+            activations[layer_name].append(act.detach().cpu())
         return hook_fn
 
-    # Register all hooks at once
     for name in target_layer_names:
         try:
             layer = model.get_submodule(name)
             hooks.append(layer.register_forward_hook(create_hook(name)))
         except AttributeError:
-            logger.error(f"Layer '{name}' not found in the model.")
-            # Clean up any previously registered hooks
-            for h in hooks:
-                h.remove()
-            raise ValueError(f"Layer '{name}' not found in the model.")
+            for h in hooks: h.remove()
+            raise ValueError(f"Layer '{name}' not found.")
 
-    # Iterate through the dataloader only once
-    samples_collected = 0
-    for batch in tqdm(dataloader, desc="Collecting activations for all layers"):
-        if samples_collected >= max_samples:
-            break
-
-        inputs = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
-        with torch.no_grad():
-            _ = model(**inputs)
-
-        first_tensor = next((v for v in inputs.values() if torch.is_tensor(v)), None)
-        if first_tensor is not None:
-            samples_collected += first_tensor.size(0)
-        else:
-            # Fallback if no tensor is found in inputs
-            # This is a bit of a guess, might need adjustment based on data structure
-            # For now, let's assume the first activation list gives a clue
-            if any(activations.values()):
-                 samples_collected += next(iter(activations.values()))[-1].shape[0]
-
-        if samples_collected >= max_samples:
-            break
-
-    # Remove all hooks
-    for h in hooks:
-        h.remove()
+    collected_tokens = 0
+    pbar = tqdm(dataloader, desc="1/3: Collecting Activations", leave=False)
+    for batch in pbar:
+        if collected_tokens >= max_samples: break
+        inputs = {k: v.to(device) for k, v in batch.items() if torch.is_tensor(v)}
+        with torch.no_grad(): _ = model(**inputs)
+        collected_tokens += next(iter(inputs.values())).shape[0] * next(iter(inputs.values())).shape[1]
+        pbar.set_postfix({"tokens": f"{collected_tokens}/{max_samples}"})
+    for h in hooks: h.remove()
 
     correlation_matrices = []
-    for name in target_layer_names:
-        layer_activations = activations[name]
-        if not layer_activations:
-            logger.warning(f"No activations collected for layer {name}. Skipping.")
-            continue
+    for name, acts_list in activations.items():
+        if not acts_list: continue
+        all_acts = torch.cat(acts_list, dim=0)[:max_samples]
+        corr_matrix = torch.corrcoef(all_acts.T).cpu().numpy()
+        if np.any(np.isnan(corr_matrix)):
+            corr_matrix = np.nan_to_num(corr_matrix, nan=NAN_REPLACEMENT_VALUE)
+            np.fill_diagonal(corr_matrix, DIAGONAL_CORRELATION_VALUE)
+        correlation_matrices.append(corr_matrix)
 
-        all_activations = np.concatenate(layer_activations, axis=0)[:max_samples]
-        
-        if all_activations.ndim == 3:
-            num_samples, seq_len, hidden_dim = all_activations.shape
-            all_activations_reshaped = all_activations.reshape(num_samples * seq_len, hidden_dim)
-        elif all_activations.ndim == 2:
-            all_activations_reshaped = all_activations
-        else:
-            raise ValueError(f"Expected 2D or 3D activations, but got {all_activations.ndim}D.")
-
-        correlation_matrix = np.corrcoef(all_activations_reshaped, rowvar=False)
-
-        if np.any(np.isnan(correlation_matrix)):
-            logger.warning(f"Found NaN values in correlation matrix for layer {name}, replacing with identity.")
-            correlation_matrix = np.nan_to_num(correlation_matrix, nan=NAN_REPLACEMENT_VALUE)
-            np.fill_diagonal(correlation_matrix, DIAGONAL_CORRELATION_VALUE)
-        
-        correlation_matrices.append(correlation_matrix)
+    if not correlation_matrices: raise ValueError("Failed to compute correlation.")
+    return np.mean(correlation_matrices, axis=0)
 
 
-    if not correlation_matrices:
-        raise ValueError("No correlation matrices were computed.")
-
-    # Return the average correlation matrix
-    avg_correlation_matrix = np.mean(correlation_matrices, axis=0)
-    logger.info(f"Computed average correlation matrix from {len(correlation_matrices)} layers.")
-    return avg_correlation_matrix
-
-
-def find_permutation_from_matrix(
-    correlation_matrix: np.ndarray, n_clusters: int
-) -> List[int]:
-    """
-    Finds an optimal permutation from a correlation matrix using spectral clustering.
-
-    This function takes a correlation matrix, computes clusters using spectral
-    clustering on the absolute values of the correlations (to treat strong
-    positive and negative correlations as strong connections), and then generates
-    a permutation that groups nodes from the same cluster together.
-
-    Args:
-        correlation_matrix: The N x N correlation matrix.
-        n_clusters: The number of clusters to form.
-
-    Returns:
-        A list of integers representing the permutation.
-    """
-    logger.info("Step 2a: Performing spectral clustering...")
-    # We use the absolute value of correlation as affinity for clustering,
-    # as strong negative correlations are also meaningful for grouping.
+def _find_optimal_permutation(
+    correlation_matrix: np.ndarray, clusters_range: Tuple[int, int]
+) -> Tuple[List[int], float]:
+    """Finds the permutation that maximizes modularity and returns it with the score."""
+    dim = correlation_matrix.shape[0]
+    best_modularity, best_permutation = -np.inf, list(range(dim))
     affinity_matrix = np.abs(correlation_matrix)
-
-    clustering = SpectralClustering(
-        n_clusters=n_clusters,
-        affinity="precomputed",
-        random_state=SPECTRAL_CLUSTERING_RANDOM_STATE,  # for reproducibility
-    ).fit(affinity_matrix)
-
-    labels = clustering.labels_
-
-    logger.info("Step 2b: Constructing permutation from clusters...")
-    # argsort provides a permutation that groups indices by their corresponding labels.
-    # Using a stable sort for robustness.
-    permutation = np.argsort(labels, kind="mergesort")
-
-    return permutation.tolist()
-
-
-def find_optimal_permutation_from_matrix(
-    correlation_matrix: np.ndarray,
-    clusters_range: Optional[Tuple[int, int]] = None,
-    num_clusters: Optional[int] = None,
-    model_type: Optional[str] = None,
-) -> List[int]:
-    """
-    Finds the optimal permutation of neuron indices to maximize modularity.
-
-    This function takes a correlation matrix and performs spectral clustering to
-    group correlated neurons. It then orders the neurons based on these
-    clusters to find a permutation that improves data locality. If num_clusters
-    is not provided, it searches for the optimal number of clusters that
-    maximizes the modularity score.
     
-    For Mamba models, applies dimension-aware permutation that respects 
-    functional block boundaries to preserve architectural integrity.
-
-    Args:
-        correlation_matrix: A 2D numpy array of activation correlations.
-        clusters_range: Range of cluster numbers to search over.
-        num_clusters: The number of clusters to form. If None, the optimal
-            number of clusters will be determined automatically.
-        model_type: Type of model (e.g., "mamba") for specialized handling.
-
-    Returns:
-        A list of integers representing the optimal permutation of indices.
-    """
-    d_model = correlation_matrix.shape[0]
-    
-    # Check if this is a Mamba model - apply dimension-aware permutation
-    if model_type and "mamba" in model_type.lower():
-        logger.info("🔧 Applying dimension-aware permutation for Mamba model")
-        return _mamba_aware_permutation(correlation_matrix, clusters_range)
-    
-    # Standard IASP for other models
-    if num_clusters is None:
-        # Determine search bounds
-        if clusters_range is None:
-            min_clusters = max(MIN_CLUSTER_SIZE, d_model // DEFAULT_MIN_CLUSTERS_DIVISOR)
-            max_clusters = max(MIN_CLUSTER_SIZE, d_model // DEFAULT_MAX_CLUSTERS_DIVISOR)
-        else:
-            min_clusters, max_clusters = clusters_range
-
-        # Search for the best number of clusters to maximize modularity
-        best_modularity = -1
-        best_permutation = list(range(d_model))
-
-        for k in range(min_clusters, max_clusters + 1):
-            if k <= 1:
-                continue
-
-            logger.info(f"  - Testing with {k} clusters...")
+    search_space = range(clusters_range[0], clusters_range[1] + 1)
+    pbar = tqdm(search_space, desc="2/3: Finding Optimal Permutation", leave=False)
+    for k in pbar:
+        if not (1 < k < dim): continue
+        try:
             clustering = SpectralClustering(
-                n_clusters=k,
-                affinity="precomputed",
-                random_state=SPECTRAL_CLUSTERING_RANDOM_STATE,
-                n_init=SPECTRAL_CLUSTERING_N_INIT,
-            )
-            # Use absolute value of correlation as affinity for clustering,
-            # consistent with find_permutation_from_matrix
-            affinity_matrix = np.abs(correlation_matrix)
-            labels = clustering.fit_predict(affinity_matrix)
+                n_clusters=k, affinity="precomputed",
+                random_state=SPECTRAL_CLUSTERING_RANDOM_STATE, n_init=SPECTRAL_CLUSTERING_N_INIT
+            ).fit(affinity_matrix)
+            
+            partition = [np.where(clustering.labels_ == i)[0] for i in range(k)]
+            modularity = calculate_modularity(correlation_matrix, partition)
 
-            partition = [[] for _ in range(k)]
-            for node_idx, cluster_idx in enumerate(labels):
-                partition[cluster_idx].append(node_idx)
-
-            current_modularity = calculate_modularity(correlation_matrix, partition)
-            logger.info(f"    - Modularity: {current_modularity:.4f}")
-
-            if current_modularity > best_modularity:
-                best_modularity = current_modularity
+            if modularity > best_modularity:
+                best_modularity = modularity
                 best_permutation = [node for cluster in partition for node in cluster]
-                logger.info(
-                    f"    - New best modularity found! Optimal clusters so far: {k}"
-                )
-
-        logger.info(f"Finished search. Best modularity {best_modularity:.4f} found.")
-        return best_permutation
-    else:
-        clustering = SpectralClustering(
-            n_clusters=num_clusters,
-            affinity="precomputed",
-            random_state=SPECTRAL_CLUSTERING_RANDOM_STATE,
-            n_init=SPECTRAL_CLUSTERING_N_INIT,
-        )
-        # Use absolute value of correlation as affinity for clustering,
-        # consistent with find_permutation_from_matrix
-        affinity_matrix = np.abs(correlation_matrix)
-        labels = clustering.fit_predict(affinity_matrix)
-
-        partition = [[] for _ in range(num_clusters)]
-        for node_idx, cluster_idx in enumerate(labels):
-            partition[cluster_idx].append(node_idx)
-
-        permutation = [node for cluster in partition for node in cluster]
-        return permutation
-
-
-def _mamba_aware_permutation(
-    correlation_matrix: np.ndarray, 
-    clusters_range: Optional[Tuple[int, int]] = None
-) -> List[int]:
-    """
-    Applies dimension-aware permutation for Mamba models that respects
-    functional block boundaries while still optimizing for modularity.
-    
-    Mamba's hidden dimensions may have specific functional roles:
-    - Input projection blocks
-    - State space computation blocks  
-    - Output projection blocks
-    - Gate mechanism blocks
-    
-    Instead of global permutation, we apply local permutation within
-    reasonably-sized blocks to preserve architectural integrity.
-    """
-    d_model = correlation_matrix.shape[0]
-    logger.info(f"  - d_model: {d_model}")
-    logger.info(f"  - clusters_range: {clusters_range}")
-    
-    # Safety check: if d_model is unexpectedly small, skip permutation  
-    if d_model < 512:
-        logger.warning(f"d_model ({d_model}) smaller than expected for Mamba, using identity permutation for safety")
-        return list(range(d_model))
-
-    # Now working with correct dimension (1024), apply conservative block-wise permutation
-    logger.info("🔧 Applying conservative block-wise permutation for Mamba model")
-    
-    # Define block size for local permutation - conservative approach
-    # Use smaller blocks to minimize disruption to Mamba's functional structure
-    if clusters_range:
-        min_clusters, max_clusters = clusters_range
-        # clusters_range contains the number of clusters, not cluster sizes
-        # Convert to reasonable block size: d_model / num_clusters gives avg cluster size
-        avg_cluster_size = d_model // max_clusters  # Use max_clusters for smaller blocks
-        block_size = min(avg_cluster_size * 2, 128, d_model // 8)  # More conservative for Mamba
-        logger.info(f"  - max_clusters: {max_clusters}, avg_cluster_size: {avg_cluster_size}")
-        logger.info(f"  - calculated block_size: min({avg_cluster_size * 2}, 128, {d_model // 8}) = {block_size}")
-    else:
-        # Conservative default: 64 dimensions per block
-        block_size = min(64, d_model // 8)
-        logger.info(f"  - using default block_size: min(64, {d_model // 8}) = {block_size}")
-    
-    if block_size < 16:
-        logger.warning(f"Block size {block_size} too small for meaningful permutation, using identity")
-        return list(range(d_model))
-    
-    logger.info(f"  - Using block-wise permutation with block_size={block_size}")
-    logger.info(f"  - Total blocks: {d_model // block_size}")
-    
-    global_permutation = []
-    
-    # Apply IASP within each functional block
-    for start_idx in range(0, d_model, block_size):
-        end_idx = min(start_idx + block_size, d_model)
-        block_indices = list(range(start_idx, end_idx))
-        
-        if len(block_indices) < 8:  # Too small to meaningfully cluster
-            global_permutation.extend(block_indices)
+                pbar.set_postfix({"best_modularity": f"{best_modularity:.4f}", "k": k})
+        except Exception:
             continue
             
-        # Extract block correlation matrix
-        block_corr = correlation_matrix[start_idx:end_idx, start_idx:end_idx]
-        
-        # Determine optimal clusters for this block
-        block_size_actual = len(block_indices)
-        min_clusters = max(2, block_size_actual // 16)
-        max_clusters = max(2, block_size_actual // 4)
-        
-        # Find best permutation for this block
-        best_modularity = -1
-        best_block_perm = list(range(block_size_actual))
-        
-        for k in range(min_clusters, max_clusters + 1):
-            if k <= 1 or k >= block_size_actual:
-                continue
-                
-            try:
-                clustering = SpectralClustering(
-                    n_clusters=k,
-                    affinity="precomputed", 
-                    random_state=SPECTRAL_CLUSTERING_RANDOM_STATE,
-                    n_init=SPECTRAL_CLUSTERING_N_INIT,
-                )
-                
-                affinity_matrix = np.abs(block_corr)
-                labels = clustering.fit_predict(affinity_matrix)
-                
-                partition = [[] for _ in range(k)]
-                for node_idx, cluster_idx in enumerate(labels):
-                    partition[cluster_idx].append(node_idx)
-                
-                current_modularity = calculate_modularity(block_corr, partition)
-                
-                if current_modularity > best_modularity:
-                    best_modularity = current_modularity
-                    best_block_perm = [node for cluster in partition for node in cluster]
-                    
-            except Exception as e:
-                logger.warning(f"Clustering failed for block {start_idx}-{end_idx}: {e}")
-                continue
-        
-        # Convert local permutation to global indices
-        global_block_perm = [start_idx + local_idx for local_idx in best_block_perm]
-        global_permutation.extend(global_block_perm)
-        
-        logger.info(f"    Block {start_idx}-{end_idx}: modularity={best_modularity:.4f}")
-    
-    logger.info(f"✅ Completed dimension-aware permutation for Mamba")
-    return global_permutation
+    logger.info(f"Found optimal permutation with modularity: {best_modularity:.4f}")
+    return best_permutation, best_modularity
 
-def find_optimal_permutation(
+
+def _apply_permutation_to_mamba(model: nn.Module, permutation: List[int]):
+    """Applies a permutation to Mamba weights while preserving mathematical equivalence."""
+    p = torch.tensor(permutation, dtype=torch.long)
+    pbar = tqdm(model.named_modules(), desc="3/3: Applying Permutation", leave=False)
+    for name, layer in pbar:
+        if all(hasattr(layer, attr) for attr in ["in_proj", "out_proj", "dt_proj", "A_log", "D"]):
+            pbar.set_postfix({"layer": name})
+            d_inner = layer.out_proj.in_features
+            if p.numel() != d_inner: continue
+
+            dev = layer.in_proj.weight.device
+            p = p.to(dev)
+
+            with torch.no_grad():
+                # Permute output of in_proj (P @ W)
+                w_in, b_in = layer.in_proj.weight.data, layer.in_proj.bias.data
+                layer.in_proj.weight.data.copy_(torch.cat((w_in[:d_inner][p], w_in[d_inner:][p])))
+                if b_in is not None:
+                    layer.in_proj.bias.data.copy_(torch.cat((b_in[:d_inner][p], b_in[d_inner:][p])))
+                
+                # Permute inputs of subsequent layers (W @ P^T -> W[:, p])
+                layer.dt_proj.weight.data = layer.dt_proj.weight.data[:, p]
+                layer.out_proj.weight.data = layer.out_proj.weight.data[:, p]
+                
+                # Permute parameters aligned with d_inner
+                layer.A_log.data = layer.A_log.data[:, p]
+                layer.D.data = layer.D.data[p]
+
+
+# --- Main Public Function ---
+
+def run_iasp_on_mamba(
     model: nn.Module,
-    data_loader: DataLoader,
+    dataloader: DataLoader,
+    cluster_size_range: Tuple[int, int] = (32, 256),
     target_layer_names: Optional[List[str]] = None,
-    cluster_size_range: Tuple[int, int] = (16, 128),
     device: Optional[str] = None,
-    *,
-    # Backwards-compatibility keyword – accepted but ignored if target_layer_names provided
-    target_layer_name: Optional[str] = None,
-) -> List[int]:
+) -> float:
     """
-    Compute the optimal permutation for a given model layer.
+    Runs the full IASP optimization pipeline on a Mamba model.
+
+    This function automates:
+    1. Finding the Mamba 'in_proj' layers.
+    2. Collecting activations for the `d_inner` dimension.
+    3. Finding the optimal permutation that maximizes modularity.
+    4. Applying the permutation consistently to all Mamba blocks.
 
     Args:
-        model: The PyTorch model to analyze.
-        data_loader: The dataloader providing data samples.
-        target_layer_names: The name of the layer to hook for activations.
-        cluster_size_range: Tuple of (min_cluster_size, max_cluster_size).
-        device: Device to run the model on. If None, defaults to 'cuda' if available, else 'cpu'.
-
-    Returns:
-        A list of integers representing the optimal permutation of indices.
+        model: The Mamba model to be optimized.
+        dataloader: DataLoader for collecting sample activations.
+        cluster_size_range: Tuple (min, max) for the size of clusters to search for.
+        target_layer_names: Manually specify `in_proj` layers. If None, they are auto-detected.
+        device: The device to run on (e.g., 'cuda:0'). Auto-detected if None.
     """
-    # ------------------------------------------------------------------
-    # Parameter handling
-    # ------------------------------------------------------------------
-    if target_layer_names is None and target_layer_name is not None:
-        target_layer_names = [target_layer_name]
+    logger.info("🚀 Starting IASP optimization pipeline for Mamba model...")
 
     if target_layer_names is None:
-        raise ValueError("Either 'target_layer_names' or 'target_layer_name' must be provided.")
+        logger.info("Auto-detecting Mamba 'in_proj' layers...")
+        target_layer_names = [
+            name for name, mod in model.named_modules()
+            if name.endswith("in_proj") and isinstance(mod, nn.Linear)
+        ]
+        if not target_layer_names:
+            raise ValueError("Could not auto-detect 'in_proj' layers. Please specify them manually.")
+        logger.info(f"Found {len(target_layer_names)} target layers.")
 
-    if isinstance(target_layer_names, str):
-        target_layer_names = [target_layer_names]
-
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        logger.info(f"No device specified, auto-detected: {device}")
-
-    # Detect model type for specialized handling
-    model_type = None
-    if hasattr(model, 'config') and hasattr(model.config, 'model_type'):
-        model_type = model.config.model_type
-        logger.info(f"Detected model type: {model_type}")
-    elif hasattr(model, '__class__'):
-        model_class_name = model.__class__.__name__.lower()
-        if 'mamba' in model_class_name:
-            model_type = 'mamba'
-            logger.info(f"Detected Mamba model from class name: {model.__class__.__name__}")
-
-    correlation_matrix = get_activation_correlation(
-        model=model,
-        dataloader=data_loader,
-        target_layer_names=target_layer_names,
-        device=device,
-        target_layer_name=target_layer_name,
+    # Step 1: Get activation correlation for the d_inner dimension
+    correlation_matrix = _get_activation_correlation(
+        model, dataloader, target_layer_names, is_mamba_in_proj=True, device=device
     )
 
-    d_model = correlation_matrix.shape[0]
+    # Step 2: Find the optimal permutation
+    d_inner = correlation_matrix.shape[0]
     min_size, max_size = cluster_size_range
-    min_clusters = max(MIN_CLUSTER_SIZE, d_model // max_size)
-    max_clusters = max(MIN_CLUSTER_SIZE, d_model // min_size)
-
-    logger.info(f"  - d_model: {d_model}")
-    logger.info(f"  - cluster_size_range: {cluster_size_range}")
-    logger.info(f"  - calculated clusters_range: ({min_clusters}, {max_clusters})")
-
-    return find_optimal_permutation_from_matrix(
-        correlation_matrix,
-        clusters_range=(min_clusters, max_clusters),
-        model_type=model_type,
+    min_clusters = max(MIN_CLUSTER_SIZE, d_inner // max_size)
+    max_clusters = max(MIN_CLUSTER_SIZE, d_inner // min_size)
+    
+    permutation, modularity = _find_optimal_permutation(
+        correlation_matrix, clusters_range=(min_clusters, max_clusters)
     )
 
+    # Step 3: Apply the permutation to the model
+    _apply_permutation_to_mamba(model, permutation)
+
+    logger.info("✅ IASP optimization for Mamba completed successfully.")
+    return modularity
+
+
+def _apply_permutation_to_bert_ffn(model: nn.Module, permutation: List[int], target_layer_names: List[str]):
+    """Applies a permutation to the specified FFN layers of a BERT-like model."""
+    p = torch.tensor(permutation, dtype=torch.long)
+    d_ffn = len(permutation)
+    
+    pbar = tqdm(target_layer_names, desc="3/3: Applying Permutation to BERT FFN", leave=False)
+    for layer_name in pbar:
+        # Get the parent module of the 'intermediate.dense' layer
+        parent_module_name = ".".join(layer_name.split('.')[:-2])
+        parent_module = model.get_submodule(parent_module_name)
+
+        if hasattr(parent_module, 'intermediate') and hasattr(parent_module, 'output'):
+            if hasattr(parent_module.intermediate, 'dense') and hasattr(parent_module.output, 'dense'):
+                up_proj = parent_module.intermediate.dense
+                down_proj = parent_module.output.dense
+                
+                # Verify that the dimensions match our permutation
+                if up_proj.out_features != d_ffn or down_proj.in_features != d_ffn:
+                    continue
+
+                pbar.set_postfix({"layer": layer_name})
+                dev = up_proj.weight.device
+                p = p.to(dev)
+
+                with torch.no_grad():
+                    # Permute the output of the 'up' projection (rows) -> P @ W
+                    up_proj.weight.data = up_proj.weight.data[p]
+                    if up_proj.bias is not None:
+                        up_proj.bias.data = up_proj.bias.data[p]
+
+                    # Permute the input of the 'down' projection (columns) -> W @ P^T
+                    down_proj.weight.data = down_proj.weight.data[:, p]
+
+
+def run_iasp_on_bert(
+    model: nn.Module,
+    dataloader: DataLoader,
+    cluster_size_range: Tuple[int, int] = (128, 1024),
+    target_layer_names: Optional[List[str]] = None,
+    device: Optional[str] = None,
+) -> float:
+    """
+    Runs the full IASP optimization pipeline on a BERT-like model's FFN layers.
+
+    This function automates:
+    1. Finding the FFN 'up-projection' layers (e.g., `intermediate.dense`).
+    2. Collecting activations for the FFN intermediate dimension.
+    3. Finding the optimal permutation that maximizes modularity.
+    4. Applying the permutation consistently to all FFN blocks.
+
+    Args:
+        model: The BERT-like model to be optimized.
+        dataloader: DataLoader for collecting sample activations.
+        cluster_size_range: Tuple (min, max) for the size of clusters to search for.
+        target_layer_names: Manually specify FFN 'up-projection' layers. 
+                            If None, they are auto-detected.
+        device: The device to run on. Auto-detected if None.
+    """
+    logger.info("🚀 Starting IASP optimization pipeline for BERT model...")
+
+    if target_layer_names is None:
+        logger.info("Auto-detecting BERT FFN 'up-projection' layers...")
+        target_layer_names = [
+            name for name, mod in model.named_modules()
+            if name.endswith("intermediate.dense") and isinstance(mod, nn.Linear)
+        ]
+        if not target_layer_names:
+            raise ValueError("Could not auto-detect FFN layers ('*.intermediate.dense'). Please specify them manually.")
+        logger.info(f"Found {len(target_layer_names)} target layers.")
+
+    # Step 1: Get activation correlation for the FFN intermediate dimension
+    correlation_matrix = _get_activation_correlation(
+        model, dataloader, target_layer_names, is_mamba_in_proj=False, device=device
+    )
+
+    # Step 2: Find the optimal permutation
+    d_ffn = correlation_matrix.shape[0]
+    min_size, max_size = cluster_size_range
+    min_clusters = max(MIN_CLUSTER_SIZE, d_ffn // max_size)
+    max_clusters = max(MIN_CLUSTER_SIZE, d_ffn // min_size)
+    
+    permutation, modularity = _find_optimal_permutation(
+        correlation_matrix, clusters_range=(min_clusters, max_clusters)
+    )
+
+    # Step 3: Apply the permutation to the model
+    _apply_permutation_to_bert_ffn(model, permutation, target_layer_names)
+
+    logger.info("✅ IASP optimization for BERT completed successfully.")
+    return modularity

@@ -7,13 +7,14 @@ and modularity analysis tools.
 """
 
 from .hds import apply_hds
-from .iasp import find_optimal_permutation
+from .iasp import run_iasp_on_mamba, run_iasp_on_bert
 from .modularity import calculate_modularity
 from .layout_aware import apply_layout_aware_hds_finetuning
 
 __all__ = [
     "apply_hds",
-    "find_optimal_permutation",
+    "run_iasp_on_mamba",
+    "run_iasp_on_bert",
     "calculate_modularity",
     "apply_layout_aware_hds_finetuning",
 ]

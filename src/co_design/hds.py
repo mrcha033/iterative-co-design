@@ -79,11 +79,10 @@ class HDSLinear(nn.Module):
         self.in_features = linear_layer.in_features
         self.padding = (self.m - (self.in_features % self.m)) % self.m
 
-        # Scores are created for the padded dimension
-        padded_features = self.in_features + self.padding
+        # Scores are created for the original, unpadded dimension
         self.scores = nn.Parameter(
             torch.randn(
-                self.linear.out_features, padded_features, device=self.linear.weight.device
+                self.linear.out_features, self.in_features, device=self.linear.weight.device
             )
         )
 
@@ -91,7 +90,7 @@ class HDSLinear(nn.Module):
         """
         Generates the N:M structured sparsity mask from the learnable scores.
         """
-        # Pad the scores to ensure divisibility by M
+        # Pad the scores dynamically to ensure divisibility by M
         padded_scores = F.pad(self.scores, (0, self.padding))
 
         # Reshape so that each group of size `m` is processed independently
@@ -175,10 +174,6 @@ def _replace_linear_with_hds(model: nn.Module, hds_config: dict):
 
         original_layer = getattr(parent_module, child_name)
         hds_layer = HDSLinear(original_layer, n=n, m=m)
-        # Freeze the underlying dense weight/bias to save memory during finetuning
-        hds_layer.linear.weight.requires_grad = False
-        if hds_layer.linear.bias is not None:
-            hds_layer.linear.bias.requires_grad = False
         setattr(parent_module, child_name, hds_layer)
 
         # Mark the underlying linear layer so future passes ignore it
@@ -187,35 +182,33 @@ def _replace_linear_with_hds(model: nn.Module, hds_config: dict):
         logger.info(f"  - Wrapped layer: {name} with {n}:{m} HDSLinear")
 
 
-def _freeze_parameters_except_hds_scores(model: nn.Module):
-    """Freeze all parameters except the learnable `scores` tensors inside HDSLinear modules."""
-    for module in model.modules():
-        if isinstance(module, HDSLinear):
-            # only module.scores should require grad (already True by default)
-            for name, param in module.named_parameters(recurse=False):
-                if name != "scores":
-                    param.requires_grad = False
-        else:
-            for param in module.parameters(recurse=False):
-                param.requires_grad = False
-
-
-def apply_hds(model: nn.Module, data_loader: torch.utils.data.DataLoader, config: dict):
+def apply_hds(wrapped_model: "ModelWrapper", data_loader: torch.utils.data.DataLoader, config: dict):
     """
     Applies HDS to the model by replacing target linear layers and fine-tuning.
     """
     logger.info(">>> Applying HDS by replacing Linear layers and fine-tuning...")
-
-    hds_config = config.get("hds", {})
+    
+    model = wrapped_model.model
+    hds_config = config # config is already the 'hds' sub-config
+    
     _replace_linear_with_hds(model, hds_config)
 
-    # Collect trainable params *before* freezing (scores + underlying weights)
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
-    if not trainable_params:
-        logger.warning("No trainable parameters detected for HDS fine-tuning. Skipping.")
-        return model
+    # Freeze all model parameters first
+    for param in model.parameters():
+        param.requires_grad = False
 
-    optimizer = torch.optim.AdamW(trainable_params, lr=DEFAULT_LEARNING_RATE)
+    # Unfreeze only the 'scores' parameters in HDSLinear layers
+    scores_params = []
+    for module in model.modules():
+        if isinstance(module, HDSLinear):
+            module.scores.requires_grad = True
+            scores_params.append(module.scores)
+
+    if not scores_params:
+        logger.warning("No HDS 'scores' parameters found to fine-tune. Skipping.")
+        return wrapped_model
+
+    optimizer = torch.optim.AdamW(scores_params, lr=hds_config.get("learning_rate", DEFAULT_LEARNING_RATE))
     num_epochs = hds_config.get("fine_tuning_epochs", DEFAULT_FINE_TUNING_EPOCHS)
 
     device = next(model.parameters()).device
@@ -237,13 +230,10 @@ def apply_hds(model: nn.Module, data_loader: torch.utils.data.DataLoader, config
             loss.backward()
 
             # Gradient clipping for stability
-            torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(scores_params, max_norm=1.0)
 
             optimizer.step()
 
-    # After fine-tuning, freeze dense weights to avoid further updates in rest of pipeline
-    _freeze_parameters_except_hds_scores(model)
-
     model.eval()
     logger.info(">>> HDS application complete.")
-    return model
+    return wrapped_model
