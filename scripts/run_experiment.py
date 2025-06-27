@@ -226,15 +226,16 @@ IASP_DISPATCH = {
     "bert": run_iasp_on_bert,
 }
 
-def _run_iasp(model, data_loader, cfg) -> float:
-    """Helper function to run the correct IASP function based on model type."""
-    model_type = cfg.model.get("type", "bert")  # Default to bert if type not specified
-    
+def _run_iasp(model, data_loader, cfg) -> tuple[list[int], float]:
+    """Helper function to run the correct IASP function and return permutation and modularity."""
+    model_type = cfg.model.get("type", "bert")
+    iasp_config = cfg.model.iasp # Get the IASP config sub-section
+
     iasp_runner = IASP_DISPATCH.get(model_type)
     if iasp_runner:
         logger.info(f"Running IASP for {model_type} model...")
-        # Pass the model-specific IASP config
-        return iasp_runner(model, data_loader, cfg.model.iasp)
+        # Pass the entire model-specific IASP config
+        return iasp_runner(model, data_loader, iasp_config)
     else:
         raise NotImplementedError(f"IASP is not implemented for model type: {model_type}")
 
@@ -250,7 +251,7 @@ def run_permute_only(cfg: DictConfig):
     profiler = LatencyProfiler()
     
     logger.info("--- Applying IASP Permutation ---")
-    _, modularity_score = _run_iasp(wrapped_model.model, data_loader, cfg)
+    permutation, modularity_score = _run_iasp(wrapped_model.model, data_loader, cfg)
     
     logger.info("--- Measuring Performance for Permutation-Only ---")
     metrics = _measure_and_collect_metrics(
@@ -270,7 +271,7 @@ def run_linear_pipeline(cfg: DictConfig):
     profiler = LatencyProfiler()
 
     logger.info("--- Step 1: IASP Permutation ---")
-    _, modularity_score = _run_iasp(wrapped_model.model, data_loader, cfg)
+    permutation, modularity_score = _run_iasp(wrapped_model.model, data_loader, cfg)
     
     logger.info("--- Step 2: HDS Sparsification ---")
     apply_hds(wrapped_model, data_loader, cfg.model.hds)
@@ -301,7 +302,7 @@ def run_iterative(cfg: DictConfig):
         apply_hds(wrapped_model, data_loader, cfg.model.hds)
         
         logger.info(f"--- Iteration {i+1}, Step 2: IASP Permutation ---")
-        _, current_modularity = _run_iasp(wrapped_model.model, data_loader, cfg)
+        permutation, current_modularity = _run_iasp(wrapped_model.model, data_loader, cfg)
         if i == num_iterations - 1:
             modularity_score = current_modularity
         
@@ -323,18 +324,43 @@ def run_bidirectional_iterative(cfg: DictConfig):
     profiler = LatencyProfiler()
     num_iterations = cfg.method_configs.iterative.iterations
     
+    # Determine the actual dimension being permuted by IASP
+    model_type = cfg.model.get("type", "bert")
+    target_dim = 0
+    if 'mamba' in model_type:
+        try:
+            # Safely get d_inner from the model's architecture
+            first_mixer = model.backbone.layers[0].mixer
+            target_dim = first_mixer.out_proj.in_features
+        except (AttributeError, IndexError):
+            # Fallback for different Mamba versions
+            target_dim = getattr(model.config, 'd_inner', model.config.hidden_size * getattr(model.config, 'expand', 2))
+    else: # BERT
+        try:
+            # Safely get d_ffn from the model's architecture
+            first_ffn = model.bert.encoder.layer[0].intermediate.dense
+            target_dim = first_ffn.out_features
+        except (AttributeError, IndexError):
+             # Fallback for different BERT versions
+            target_dim = model.config.intermediate_size
+
+    logger.info(f"Bidirectional iterative co-design targeting dimension: {target_dim}")
+    
     modularity_score = 0.0
-    permutation = list(range(model.config.hidden_size)) # Start with identity permutation
+    permutation = list(range(target_dim)) # Start with identity permutation of the correct size
 
     for i in range(num_iterations):
         logger.info(f"\n--- Bidirectional Iteration {i+1}/{num_iterations} ---")
         
         logger.info(f"--- Iteration {i+1}, Step 1: Layout-Aware HDS Sparsification ---")
+        # Ensure the permutation tensor is on the correct device
+        perm_tensor = torch.tensor(permutation, device=wrapped_model.device)
         apply_layout_aware_hds_finetuning(
-            wrapped_model.model, data_loader, cfg.model, torch.tensor(permutation)
+            wrapped_model, data_loader, cfg.model, perm_tensor
         )
         
         logger.info(f"--- Iteration {i+1}, Step 2: IASP Permutation ---")
+        # _run_iasp will return a new permutation of size target_dim
         permutation, current_modularity = _run_iasp(wrapped_model.model, data_loader, cfg)
         if i == num_iterations - 1:
             modularity_score = current_modularity

@@ -193,8 +193,7 @@ def run_iasp_on_mamba(
     Args:
         model: The Mamba model to be optimized.
         dataloader: DataLoader for collecting sample activations.
-        cluster_size_range: Tuple (min, max) for the size of clusters to search for.
-        target_layer_names: Manually specify `in_proj` layers. If None, they are auto-detected.
+        iasp_config: Configuration for IASP optimization.
         device: The device to run on (e.g., 'cuda:0'). Auto-detected if None.
 
     Returns:
@@ -288,9 +287,7 @@ def run_iasp_on_bert(
     Args:
         model: The BERT-like model to be optimized.
         dataloader: DataLoader for collecting sample activations.
-        cluster_size_range: Tuple (min, max) for the size of clusters to search for.
-        target_layer_names: Manually specify FFN 'up-projection' layers. 
-                            If None, they are auto-detected.
+        iasp_config: Configuration for IASP optimization.
         device: The device to run on. Auto-detected if None.
 
     Returns:
