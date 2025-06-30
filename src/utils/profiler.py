@@ -273,6 +273,8 @@ class LatencyProfiler:
                 ncu_path,
                 "--metrics", "lts__t_sector_hit_rate.pct",
                 "--csv",
+                "--mode=launch",
+                "--kernel-name", "mamba_selective_scan_fn",
                 sys.executable,
                 str(profiling_script),
                 str(model_path),
@@ -296,6 +298,7 @@ class LatencyProfiler:
                     text=True,
                     check=True,
                     encoding="utf-8",
+                    timeout=NCU_TIMEOUT_SECONDS,
                 )
                 
                 cache_metrics = self._parse_ncu_csv_output(result.stdout)
