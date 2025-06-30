@@ -310,37 +310,36 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
                 if hasattr(conv_layer, 'bias') and hasattr(conv_layer.bias, 'numel') and conv_layer.bias.numel() == d_inner:
                     inplace_permute_vector(conv_layer.bias, p)
             
+            # --- Permute x_proj (handles SSM projections) ---
             if hasattr(layer, 'x_proj'):
                 W = layer.x_proj.weight
-                # x_proj projects from d_model to d_inner, so we permute the output rows.
-                if W.shape[0] == 2 * d_inner:
-                    logger.debug(f"Permuting double-width x_proj layer in {layer.__class__.__name__}")
-                    alias_free_rows_slice(W, p, 0, d_inner)
-                    alias_free_rows_slice(W, p, d_inner, 2 * d_inner)
-                    if hasattr(layer.x_proj, 'bias') and layer.x_proj.bias is not None:
-                        # Bias would also be 2 * d_inner
-                        alias_free_rows_slice(layer.x_proj.bias, p, 0, d_inner)
-                        alias_free_rows_slice(layer.x_proj.bias, p, d_inner, 2 * d_inner)
-                elif W.shape[0] == d_inner:
+                # Automatically detect permutation axis based on shape
+                if W.shape[0] == p.numel(): # d_inner is on rows
                     inplace_permute_rows(W, p)
                     if hasattr(layer.x_proj, 'bias') and layer.x_proj.bias is not None:
                         inplace_permute_vector(layer.x_proj.bias, p)
+                elif W.shape[1] == p.numel(): # d_inner is on columns
+                    inplace_permute_cols(W, p_inv)
+                    # Bias is on the output dim, which is not permuted, so no-op for bias.
                 else:
                     logger.warning(f"x_proj layer {layer.__class__.__name__} has unexpected shape {W.shape}, skipping permutation.")
 
+            # --- Permute dt_proj (handles SSM projections) ---
             if hasattr(layer, 'dt_proj'):
-                 # dt_proj output creates state, so permute rows, but its input can also be permuted
                  W_dt = layer.dt_proj.weight
                  perm_dir = None
-                 if W_dt.shape[0] == d_inner:
+                 # Automatically detect permutation axis based on shape
+                 if W_dt.shape[0] == p.numel():
                      inplace_permute_rows(W_dt, p)
                      perm_dir = p
-                 elif W_dt.shape[1] == d_inner: # Input is permuted state
+                 elif W_dt.shape[1] == p.numel(): 
                      inplace_permute_cols(W_dt, p_inv)
-                     perm_dir = p_inv
-                 
-                 # Handle potential bias in dt_proj, using the correct permutation direction
-                 if perm_dir is not None and hasattr(layer.dt_proj, 'bias') and layer.dt_proj.bias is not None:
+                     perm_dir = p_inv # Bias would be on output dim, so it's not permuted with p_inv
+                 else:
+                    logger.warning(f"dt_proj layer {layer.__class__.__name__} has unexpected shape {W_dt.shape}, skipping permutation.")
+
+                 # Handle potential bias in dt_proj, using the correct permutation direction (only for row perm)
+                 if perm_dir is p and hasattr(layer.dt_proj, 'bias') and layer.dt_proj.bias is not None:
                     inplace_permute_vector(layer.dt_proj.bias, perm_dir)
 
             inplace_permute_rows(layer.A_log, p)
