@@ -16,6 +16,7 @@ iasp:
   max_samples: 65536
   sample_stride: 4
   knn_k: 128
+  corr_dtype: "fp32"  # Precision for correlation matrix calculation ('fp32' or 'fp16')
   spectral_n_init: 10
   spectral_random_state: 42
 

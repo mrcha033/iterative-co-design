@@ -69,11 +69,14 @@ def _get_activation_correlation(
     dataloader: DataLoader,
     target_layer_names: List[str],
     is_mamba_in_proj: bool,
+    iasp_config: DictConfig,
     max_samples: int = DEFAULT_MAX_SAMPLES,
     sample_stride: int = 1,
     device: Optional[str] = None,
-) -> np.ndarray:
-    """Computes activation correlation, with special handling for Mamba's in_proj."""
+) -> Optional[List[Tuple[np.ndarray, torch.Tensor]]]:
+    """
+    Computes activation correlation for specified layers.
+    """
     model.eval()  # Ensure model is in eval mode, but don't move device here
     device = next(model.parameters()).device  # Infer device from model
 
@@ -136,22 +139,24 @@ def _get_activation_correlation(
         # Concatenate all activation batches (stored on GPU in fp16).
         all_acts = torch.cat(acts_list, dim=0)[:max_samples]
 
-        # UP-CAST to float32 for stable correlation calculation to prevent NaN/Inf.
-        all_acts_fp32 = all_acts.to(torch.float32)
-
-        # Pre-process to remove zero-variance columns that cause NaNs in corrcoef
-        std_devs = all_acts_fp32.std(dim=0)
+        # Always use fp32 for stable std dev calculation
+        std_devs = all_acts.to(torch.float32).std(dim=0)
         valid_indices = std_devs > 1e-6
-        if valid_indices.sum() < all_acts_fp32.shape[1]:
-            logger.warning(f"Removed {all_acts_fp32.shape[1] - valid_indices.sum()} zero-variance columns before calculating correlation.")
+        if valid_indices.sum() < all_acts.shape[1]:
+            logger.warning(f"Removed {all_acts.shape[1] - valid_indices.sum()} zero-variance columns before calculating correlation for '{name}'.")
         
-        # If all columns have zero variance, skip
-        if valid_indices.sum() == 0:
-            logger.error("All activation channels have zero variance. Cannot compute correlation.")
+        if valid_indices.sum() < 2:
+            logger.error(f"Not enough valid activation channels for '{name}' to compute correlation.")
             continue
 
-        acts_for_corr = all_acts_fp32[:, valid_indices]
-
+        # --- Cast to desired dtype for correlation calculation ---
+        corr_dtype_str = iasp_config.get("corr_dtype", "fp32")
+        corr_dtype = torch.float32 if corr_dtype_str == "fp32" else torch.float16
+        if pbar is not None and pbar.n == 0:
+            logger.info(f"Using {corr_dtype_str} precision for correlation calculation.")
+        
+        acts_for_corr = all_acts[:, valid_indices].to(corr_dtype)
+        
         # Now compute correlation on the stable, valid tensor.
         corr_matrix = torch.corrcoef(acts_for_corr.T).cpu().numpy()
 
@@ -312,52 +317,65 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
                 conv_layer = getattr(layer, conv_name)
                 if hasattr(conv_layer, 'weight_v') and hasattr(conv_layer, 'weight_g'):
                     logger.debug(f"Permuting special case: weight-normalized {conv_name}")
-                    out_ch = conv_layer.weight_v.shape[0]
-                    if out_ch == d_inner: # Value-only path
-                        inplace_permute_rows(conv_layer.weight_v, p)
-                        inplace_permute_vector(conv_layer.weight_g, p)
-                    elif out_ch == 2 * d_inner: # Value and gate path
-                        logger.debug(f"Permuting only the first half of weight-normalized {conv_name}")
-                        # Permute only the value part (first d_inner), leave the gate part untouched
-                        alias_free_rows_slice(conv_layer.weight_v, p, 0, d_inner)
-                        # The gate part (second d_inner) is not permuted.
-                        
-                        # We assume weight_g corresponds to the value part only in this case.
-                        # This might need adjustment if a model uses a different convention.
-                        if conv_layer.weight_g.numel() == d_inner:
-                             inplace_permute_vector(conv_layer.weight_g, p)
-                        elif conv_layer.weight_g.numel() == 2* d_inner:
-                             #Also permute only the first half of the g vector
-                             inplace_permute_vector(conv_layer.weight_g[:d_inner], p)
-                    
-                    if hasattr(conv_layer, 'bias') and conv_layer.bias is not None:
-                        # Bias handling for weight-normed conv needs similar logic
-                        if conv_layer.bias.numel() == d_inner:
-                            inplace_permute_vector(conv_layer.bias, p)
-                        elif conv_layer.bias.numel() == 2 * d_inner:
-                            logger.debug("Permuting only the first half of double-width bias for weight-normed conv")
-                            bias_view = conv_layer.bias.view(2, d_inner).contiguous()
-                            inplace_permute_vector(bias_view[0], p)
+                    # Handle weight_v for both value and gate paths if applicable
+                    weight_v = conv_layer.weight_v
+                    if weight_v.shape[0] == d_inner: # Value-only path
+                        inplace_permute_rows(weight_v, p)
+                        # Also permute columns (in_channels) for value path
+                        if weight_v.shape[1] == d_inner:
+                             weight_v.data.copy_(weight_v.data.index_select(1, p))
+                    elif weight_v.shape[0] == 2 * d_inner: # Value and gate path
+                        # Permute rows and columns for the value part only
+                        alias_free_rows_slice(weight_v, p, 0, d_inner)
+                        value_slice = weight_v.data[:d_inner]
+                        if value_slice.shape[1] == d_inner:
+                             # Permute in-channels only for the value part
+                             value_slice.copy_(value_slice.index_select(1, p))
 
+                    # Permute weight_g (always corresponds to output channels)
+                    inplace_permute_vector(conv_layer.weight_g, p)
+                    
+                    # Handle bias if it exists
+                    if hasattr(conv_layer, 'bias') and conv_layer.bias is not None:
+                        # Bias permutation follows the output channel permutation logic
+                         inplace_permute_vector(conv_layer.bias, p)
                 else: # Plain convolution (can be 2D or 3D)
-                    # Handle double-width conv as a special case first due to its unique bias logic
-                    if conv_layer.weight.shape[0] == 2 * d_inner:
+                    w = conv_layer.weight
+                    if w.shape[0] == 2 * d_inner:
                          logger.debug(f"Permuting ONLY VALUE part of double-width {conv_name}")
-                         # --- VALUE PART PERMUTED ---
-                         alias_free_rows_slice(conv_layer.weight, p, 0, d_inner)
+                         # --- VALUE PART ROWS PERMUTED ---
+                         alias_free_rows_slice(w, p, 0, d_inner)
+                         # --- VALUE PART COLS PERMUTED ---
+                         value_slice = w.data[:d_inner]
+                         if value_slice.shape[1] == d_inner:
+                            # Permute in-channels only for the value part
+                            value_slice.copy_(value_slice.index_select(1, p))
                          # --- GATE PART UNTOUCHED ---
                          
                          if hasattr(conv_layer, 'bias') and conv_layer.bias is not None:
+                            # Permute only the value-path bias
                             if conv_layer.bias.numel() == 2 * d_inner:
                                 logger.debug("Permuting ONLY VALUE part of double-width conv bias")
                                 bias_view = conv_layer.bias.view(2, d_inner).contiguous()
                                 inplace_permute_vector(bias_view[0], p)
                             elif conv_layer.bias.numel() == d_inner:
                                 inplace_permute_vector(conv_layer.bias, p)
-                    else:
-                        # Handle all other generic conv layers via the blanket function
-                        _permute_params_in_module(conv_layer, p, p_inv)
+                    elif w.shape[0] == d_inner:
+                        inplace_permute_rows(w, p)
+                        if w.shape[1] == d_inner:
+                            w.data.copy_(w.data.index_select(1, p)) # Permute cols as well
+                        if hasattr(conv_layer, 'bias') and conv_layer.bias is not None:
+                             inplace_permute_vector(conv_layer.bias, p)
                 seen_modules.add(conv_name)
+
+        # 1d. Handle out_proj explicitly to ensure correct inverse permutation on columns
+        if hasattr(layer, 'out_proj') and "out_proj" not in seen_modules:
+            op = layer.out_proj
+            if op.weight.shape[1] == d_inner:
+                logger.debug(f"Permuting special case: out_proj columns in {layer.__class__.__name__}")
+                inplace_permute_cols(op.weight, p_inv)
+                # Bias acts on output dimension (d_model), which is not permuted.
+            seen_modules.add('out_proj')
 
         # --- Step 2: Handle all other direct child parameters automatically ---
         for name, child_module in layer.named_children():
@@ -441,12 +459,13 @@ def run_iasp_on_mamba(
     logger.info(f"Identified {len(mamba_mixers_to_permute)} Mamba mixer blocks to permute.")
 
     # Step 1: Get activation correlation for the d_inner dimension
-    correlation_matrix_tuple = _get_activation_correlation(
+    correlation_matrix_tuple_list = _get_activation_correlation(
         model, dataloader, target_layer_names, is_mamba_in_proj=True, device=device,
         max_samples=iasp_config.get("max_samples", DEFAULT_MAX_SAMPLES),
-        sample_stride=iasp_config.get("sample_stride", 1)
+        sample_stride=iasp_config.get("sample_stride", 1),
+        iasp_config=iasp_config,
     )
-    if not correlation_matrix_tuple:
+    if not correlation_matrix_tuple_list:
         logger.error("Could not compute a valid correlation matrix for Mamba. Skipping IASP.")
         # Try to infer d_inner for a valid identity permutation
         try:
@@ -456,10 +475,10 @@ def run_iasp_on_mamba(
             dim = getattr(model.config, 'd_inner', 2048) # Fallback
         return list(range(dim)), 0.0
 
-    correlation_matrix, valid_indices = correlation_matrix_tuple
+    correlation_matrix, valid_indices = correlation_matrix_tuple_list[0]
 
     # Step 2: Find the optimal permutation for the valid subset of channels
-    d_inner_valid = correlation_matrix.shape[0]
+    d_inner_valid = valid_indices.sum().item() # Use sum() for correct count of True values
     min_size, max_size = iasp_config.cluster_size_range
     min_clusters = max(MIN_CLUSTER_SIZE, d_inner_valid // max_size)
     max_clusters = max(MIN_CLUSTER_SIZE, d_inner_valid // min_size)
@@ -469,7 +488,7 @@ def run_iasp_on_mamba(
     )
 
     # Step 3: Map the permutation of valid channels back to the full dimension
-    d_inner_full = valid_indices.numel()
+    d_inner_full = d_inner_valid
     valid_indices_dev = valid_indices.to(device)
 
     original_indices = torch.arange(d_inner_full, device=device)[valid_indices_dev]
@@ -589,20 +608,21 @@ def run_iasp_on_bert(
     logger.info(f"Found {len(target_layer_names)} target layers.")
 
     # Step 1: Get activation correlation for the FFN intermediate dimension
-    correlation_matrix_tuple = _get_activation_correlation(
+    correlation_matrix_tuple_list = _get_activation_correlation(
         model, dataloader, target_layer_names, is_mamba_in_proj=False, device=device,
         max_samples=iasp_config.get("max_samples", DEFAULT_MAX_SAMPLES),
-        sample_stride=iasp_config.get("sample_stride", 1)
+        sample_stride=iasp_config.get("sample_stride", 1),
+        iasp_config=iasp_config,
     )
-    if not correlation_matrix_tuple:
+    if not correlation_matrix_tuple_list:
         logger.error("Could not compute a valid correlation matrix for BERT FFN. Skipping IASP.")
         dim = model.config.intermediate_size
         return list(range(dim)), 0.0
 
-    correlation_matrix, valid_indices = correlation_matrix_tuple
+    correlation_matrix, valid_indices = correlation_matrix_tuple_list[0]
 
     # Step 2: Find the optimal permutation for the valid subset of channels
-    d_ffn_valid = correlation_matrix.shape[0]
+    d_ffn_valid = valid_indices.sum().item() # Use sum() for correct count of True values
     min_size, max_size = iasp_config.cluster_size_range
     min_clusters = max(MIN_CLUSTER_SIZE, d_ffn_valid // max_size)
     max_clusters = max(MIN_CLUSTER_SIZE, d_ffn_valid // min_size)
@@ -612,7 +632,7 @@ def run_iasp_on_bert(
     )
 
     # Step 3: Map the permutation of valid channels back to the full dimension
-    d_ffn_full = valid_indices.numel()
+    d_ffn_full = d_ffn_valid
     valid_indices_dev = valid_indices.to(device)
 
     original_indices = torch.arange(d_ffn_full, device=device)[valid_indices_dev]
