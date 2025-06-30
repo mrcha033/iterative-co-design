@@ -19,7 +19,10 @@ iasp:
 
 hds:
   target_layers:
+    - "backbone.layers.*.mixer.in_proj"
     - "backbone.layers.*.mixer.out_proj"
+    - "backbone.layers.*.mixer.conv1d"
+    - "backbone.layers.*.mixer.dt_proj"
   n: 2
   m: 4
   fine_tuning_epochs: 1
