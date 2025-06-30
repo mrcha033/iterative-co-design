@@ -50,7 +50,7 @@ MINIMAL_L2_CACHE_HIT_RATE = 68.0
 MINIMAL_L1_CACHE_HIT_RATE = 78.0
 
 # NCU profiling settings
-NCU_TIMEOUT_SECONDS = 180  # Reduced timeout for faster profiling
+NCU_TIMEOUT_SECONDS = 600  # 10-minute timeout for safety
 NCU_CSV_METRICS = "lts__t_sector_hit_rate.pct,sm__sass_average_data_bytes_per_sector_mem_global_op_ld.pct"
 
 # Add retry settings
@@ -233,7 +233,7 @@ class LatencyProfiler:
         self,
         model: nn.Module,
         dummy_input: Dict[str, torch.Tensor],
-        kernel_name_filter: Optional[str] = None,
+        kernel_name_filter: str = "selective_scan_fwd_kernel",
         force_sudo: bool = False,
     ) -> Optional[Dict[str, float]]:
         """
@@ -281,11 +281,16 @@ class LatencyProfiler:
                 ncu_path,
                 "--metrics", "lts__t_sector_hit_rate.pct",
                 "--csv",
+                "--page", "disabled",          # ANSI 꺼
+                "--target-processes", "all",   # Python 포크 포함
+                "--sampling-interval", "auto", # 경량 샘플링
+                "-c", "2",                     # launch-count 2 → 앞 두 번만
+                "-k", "selective_scan_fwd_kernel$",  # 정확 매칭 (PCRE)
             ]
             
             # Conditionally add kernel filter only if it's explicitly provided
             if kernel_name_filter:
-                command.extend(["--kernel-name", kernel_name_filter])
+                command.extend(["-k", kernel_name_filter])  # Use -k for regex
             
             command.extend([
                 sys.executable,
