@@ -73,7 +73,7 @@ def _get_activation_correlation(
     max_samples: int = DEFAULT_MAX_SAMPLES,
     sample_stride: int = 1,
     device: Optional[str] = None,
-) -> Optional[List[Tuple[np.ndarray, torch.Tensor]]]:
+) -> Optional[Tuple[np.ndarray, torch.Tensor]]:
     """
     Computes activation correlation for specified layers.
     """
@@ -254,34 +254,56 @@ def _find_optimal_permutation(
     return best_permutation, best_modularity
 
 
-def _permute_params_in_module(module: nn.Module, p: torch.Tensor, p_inv: torch.Tensor):
+def _permute_params_in_module(module: nn.Module, p_val: torch.Tensor, p_inv_val: torch.Tensor, 
+                              p_full: torch.Tensor, p_inv_full: torch.Tensor):
     """
     Permutes parameters within a given module based on their shape, skipping known special cases.
     """
-    d_inner = p.numel()
+    d_inner = p_val.numel()
+    d_total = p_full.numel()
+    
     for name, param in module.named_parameters(recurse=False):
         # This function handles generic parameters. Special modules like in_proj
         # or weight_normed conv1d are handled separately.
         if name.endswith("out_proj.weight"): # Special handling for out_proj
-            if param.shape[1] == d_inner:
-                inplace_permute_cols(param, p_inv)
+            if param.shape[1] == d_total:
+                inplace_permute_cols(param, p_inv_full)
+            elif param.shape[1] == d_inner:
+                inplace_permute_cols(param, p_inv_val)
             elif param.shape[0] == d_inner: # Handle transposed layout
-                inplace_permute_rows(param, p)
+                inplace_permute_rows(param, p_val)
             continue
 
-        if param.ndim == 1 and param.numel() == d_inner:
-            inplace_permute_vector(param, p)
+        if param.ndim == 1:
+            if param.numel() == d_inner:
+                inplace_permute_vector(param, p_val)
+            elif param.numel() == d_total:
+                # Only permute if it's likely an activation-related parameter
+                # Skip LayerNorm gamma/beta and other model-level parameters
+                if not any(skip_name in name for skip_name in ['norm', 'ln', 'gamma', 'beta', 'weight_g']):
+                    inplace_permute_vector(param, p_full)
         elif param.ndim == 2:
             if param.shape[0] == d_inner:
-                inplace_permute_rows(param, p)
+                inplace_permute_rows(param, p_val)
             elif param.shape[1] == d_inner:
-                inplace_permute_cols(param, p_inv)
-        elif param.ndim == 3 and param.shape[0] == d_inner:
-             # Handle 3D tensors like non-weight-normed Conv1d
-             logger.debug(f"Auto-permuting 3D rows of '{name}' in {module.__class__.__name__}")
-             flat_param = param.data.view(d_inner, -1)
-             new_flat_data = flat_param.index_select(0, p).clone()
-             param.data.copy_(new_flat_data.view_as(param))
+                inplace_permute_cols(param, p_inv_val)
+            elif param.shape[1] == d_total:
+                inplace_permute_cols(param, p_inv_full)
+        elif param.ndim == 3:
+            if param.shape[0] == d_inner:
+                # Handle 3D tensors like non-weight-normed Conv1d (value part only)
+                logger.debug(f"Auto-permuting 3D rows of '{name}' in {module.__class__.__name__}")
+                flat_param = param.data.view(d_inner, -1)
+                new_flat_data = flat_param.index_select(0, p_val).clone()
+                param.data.copy_(new_flat_data.view_as(param))
+            elif param.shape[0] == d_total:
+                # Handle 3D tensors with full dimension (value+gate)
+                logger.debug(f"Auto-permuting 3D full rows+cols of '{name}' in {module.__class__.__name__}")
+                flat_param = param.data.view(d_total, -1)
+                new_flat_data = flat_param.index_select(0, p_full)
+                if flat_param.shape[1] == d_total:
+                    new_flat_data = new_flat_data.index_select(1, p_inv_full)
+                param.data.copy_(new_flat_data.view_as(param))
 
 
 def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List[int]):
@@ -290,10 +312,18 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
         return
 
     dev = mamba_mixers[0].in_proj.weight.device
-    p = torch.tensor(permutation, dtype=torch.long, device=dev)
+    d_inner_full = len(permutation)
+    d_inner = d_inner_full // 2  # Single part dimension (value only)
+    
+    # Extract value part permutation (first half)
+    p = torch.tensor(permutation[:d_inner], dtype=torch.long, device=dev)
     p_inv = torch.empty_like(p)
     p_inv[p] = torch.arange(p.numel(), device=dev)
-    d_inner = p.numel()
+    
+    # Full permutation for column operations
+    p_full = torch.tensor(permutation, dtype=torch.long, device=dev)
+    p_inv_full = torch.empty_like(p_full)
+    p_inv_full[p_full] = torch.arange(p_full.numel(), device=dev)
     
     pbar = tqdm(mamba_mixers, desc="3/3: Applying Permutation to Mamba Mixers", leave=False)
     for layer in pbar:
@@ -303,6 +333,7 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
         
         # 1a. Handle the split in_proj layer
         if hasattr(layer, 'in_proj'):
+            # Use p (d_inner size) not p_full - the function handles value+gate split internally
             inplace_permute_in_proj_split(layer.in_proj.weight, p, getattr(layer.in_proj, 'bias', None))
             seen_modules.add('in_proj')
         
@@ -321,35 +352,42 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
                     weight_v = conv_layer.weight_v
                     if weight_v.shape[0] == d_inner: # Value-only path
                         inplace_permute_rows(weight_v, p)
-                        # Also permute columns (in_channels) for value path
-                        if weight_v.shape[1] == d_inner:
-                             weight_v.data.copy_(weight_v.data.index_select(1, p))
+                        # Permute ALL input channels to match in_proj output order
+                        if weight_v.shape[1] == d_inner_full:
+                             weight_v.data.copy_(weight_v.data.index_select(1, p_inv_full))
                     elif weight_v.shape[0] == 2 * d_inner: # Value and gate path
                         # Permute rows and columns for the value part only
                         alias_free_rows_slice(weight_v, p, 0, d_inner)
-                        value_slice = weight_v.data[:d_inner]
-                        if value_slice.shape[1] == d_inner:
-                             # Permute in-channels only for the value part
-                             value_slice.copy_(value_slice.index_select(1, p))
+                        # Permute ALL input channels to match in_proj output order
+                        if weight_v.shape[1] == d_inner_full:
+                            weight_v.data.copy_(weight_v.data.index_select(1, p_inv_full))
 
-                    # Permute weight_g (always corresponds to output channels)
-                    inplace_permute_vector(conv_layer.weight_g, p)
+                    # Permute weight_g (handle both single and dual-path)
+                    if conv_layer.weight_g.numel() == d_inner:
+                        inplace_permute_vector(conv_layer.weight_g, p)
+                    elif conv_layer.weight_g.numel() == 2 * d_inner:
+                        # For dual-path conv, only permute value part of weight_g
+                        g_view = conv_layer.weight_g.view(2, d_inner).contiguous()
+                        inplace_permute_vector(g_view[0], p)  # value slice only
                     
-                    # Handle bias if it exists
+                    # Handle bias if it exists (handle both single and dual-path)
                     if hasattr(conv_layer, 'bias') and conv_layer.bias is not None:
-                        # Bias permutation follows the output channel permutation logic
-                         inplace_permute_vector(conv_layer.bias, p)
+                        if conv_layer.bias.numel() == d_inner:
+                            inplace_permute_vector(conv_layer.bias, p)
+                        elif conv_layer.bias.numel() == 2 * d_inner:
+                            # For dual-path conv, only permute value part of bias
+                            bias_view = conv_layer.bias.view(2, d_inner).contiguous()
+                            inplace_permute_vector(bias_view[0], p)  # value slice only
                 else: # Plain convolution (can be 2D or 3D)
                     w = conv_layer.weight
                     if w.shape[0] == 2 * d_inner:
                          logger.debug(f"Permuting ONLY VALUE part of double-width {conv_name}")
                          # --- VALUE PART ROWS PERMUTED ---
                          alias_free_rows_slice(w, p, 0, d_inner)
-                         # --- VALUE PART COLS PERMUTED ---
-                         value_slice = w.data[:d_inner]
-                         if value_slice.shape[1] == d_inner:
-                            # Permute in-channels only for the value part
-                            value_slice.copy_(value_slice.index_select(1, p))
+                         # --- ALL INPUT CHANNELS PERMUTED ---
+                         if w.shape[1] == d_inner_full:
+                            # Permute ALL input channels to match in_proj output order
+                            w.data.copy_(w.data.index_select(1, p_inv_full))
                          # --- GATE PART UNTOUCHED ---
                          
                          if hasattr(conv_layer, 'bias') and conv_layer.bias is not None:
@@ -362,18 +400,24 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
                                 inplace_permute_vector(conv_layer.bias, p)
                     elif w.shape[0] == d_inner:
                         inplace_permute_rows(w, p)
-                        if w.shape[1] == d_inner:
-                            w.data.copy_(w.data.index_select(1, p)) # Permute cols as well
+                        if w.shape[1] == d_inner_full:
+                            # Permute ALL input channels to match in_proj output order
+                            w.data.copy_(w.data.index_select(1, p_inv_full))
                         if hasattr(conv_layer, 'bias') and conv_layer.bias is not None:
-                             inplace_permute_vector(conv_layer.bias, p)
+                            if conv_layer.bias.numel() == d_inner:
+                                inplace_permute_vector(conv_layer.bias, p)
+                            elif conv_layer.bias.numel() == 2 * d_inner:
+                                # For dual-path conv, only permute value part of bias
+                                bias_view = conv_layer.bias.view(2, d_inner).contiguous()
+                                inplace_permute_vector(bias_view[0], p)  # value slice only
                 seen_modules.add(conv_name)
 
         # 1d. Handle out_proj explicitly to ensure correct inverse permutation on columns
         if hasattr(layer, 'out_proj') and "out_proj" not in seen_modules:
             op = layer.out_proj
-            if op.weight.shape[1] == d_inner:
+            if op.weight.shape[1] == d_inner_full:
                 logger.debug(f"Permuting special case: out_proj columns in {layer.__class__.__name__}")
-                inplace_permute_cols(op.weight, p_inv)
+                inplace_permute_cols(op.weight, p_inv_full)
                 # Bias acts on output dimension (d_model), which is not permuted.
             seen_modules.add('out_proj')
 
@@ -382,10 +426,10 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
             # Skip special modules that were already handled
             if name in seen_modules:
                 continue
-            _permute_params_in_module(child_module, p, p_inv)
+            _permute_params_in_module(child_module, p, p_inv, p_full, p_inv_full)
             
         # --- Step 3: Handle parameters that are direct attributes of the layer ---
-        _permute_params_in_module(layer, p, p_inv)
+        _permute_params_in_module(layer, p, p_inv, p_full, p_inv_full)
 
 
 # --- Main Public Function ---
@@ -488,22 +532,25 @@ def run_iasp_on_mamba(
     )
 
     # Step 3: Map the permutation of valid channels back to the full dimension
-    d_inner_full = valid_indices.numel()  # Total dimension including dropped channels
+    # For Mamba, we need to handle both value and gate parts (2 * d_inner)
+    d_inner_single = valid_indices.numel()  # Single part dimension (just value or just gate)
+    d_inner_valid = valid_indices.sum().item()  # Number of valid channels in single part
+    d_inner_full = d_inner_single * 2  # value + gate parts
     valid_indices_dev = valid_indices.to(device)
 
-    original_indices = torch.arange(d_inner_full, device=device)[valid_indices_dev]
+    # Map permutation from valid subset back to original indices
+    original_indices = torch.arange(d_inner_single, device=device)[valid_indices_dev]
     permuted_original_indices = original_indices[torch.tensor(perm_valid, device=device)]
     
-    full_permutation = torch.arange(d_inner_full, device=device)
+    # Create identity permutation for value part, then apply valid permutation
+    p_val = torch.arange(d_inner_single, device=device)
+    p_val[valid_indices_dev] = permuted_original_indices
     
-    # Get the indices of zero-variance channels that were dropped
-    dropped_indices = torch.where(~valid_indices_dev)[0]
+    # Apply same permutation to gate part (offset by d_inner_single)
+    p_gate = p_val + d_inner_single
     
-    # Apply permutation to valid channels and keep dropped channels in their original places
-    full_permutation[valid_indices_dev] = permuted_original_indices
-    # Ensure dropped channels map to themselves
-    if dropped_indices.numel() > 0:
-        full_permutation[dropped_indices] = dropped_indices
+    # Combine value and gate permutations
+    full_permutation = torch.cat([p_val, p_gate])
 
     # Final sanity check to ensure the permutation has the correct full dimension
     assert full_permutation.numel() == d_inner_full, "Full permutation length mismatch!"

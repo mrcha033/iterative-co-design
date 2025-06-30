@@ -58,7 +58,9 @@ data_loader = DataLoader(random_dataset, batch_size=8)
 print(f"\n🔍 Analyzing model dimensions:")
 for name, mod in perm.named_modules():
     if "MambaMixer" in mod.__class__.__name__:
-        print(f"  - {name}: in_proj.out_features = {mod.in_proj.out_features}")
+        print(f"  - {name}:")
+        print(f"    d_model (in_proj.in_features) = {mod.in_proj.in_features}")
+        print(f"    in_proj.out_features = {mod.in_proj.out_features}")
         print(f"    d_inner = {mod.in_proj.out_features // 2}")
         print(f"    out_proj.in_features = {mod.out_proj.in_features}")
         break
@@ -92,10 +94,11 @@ def check_mixer_equivalence(original_backbone, permuted_backbone):
 
     print("\n🔍 Verifying output of each Mixer block...")
     
-    mismatch_found = False
+    total_mismatches = 0
+    max_global_diff = 0.0
+    worst_layer = None
+    
     for name, orig_mixer in orig_mixers.items():
-        if mismatch_found: break
-        
         perm_mixer = perm_mixers[name]
         
         # Create a random input matching the mixer's input dimension (d_model)
@@ -106,7 +109,13 @@ def check_mixer_equivalence(original_backbone, permuted_backbone):
              print(f"[⚠️] Could not determine d_model for {name}, skipping.")
              continue
 
-        x = torch.randn(2, 16, d_model, device=device) # (B, L, D)
+        # Use realistic input with token embeddings instead of random noise
+        x_ids = torch.randint(0, tok.vocab_size, (2, 16), device=device)
+        if hasattr(orig, 'backbone') and hasattr(orig.backbone, 'embeddings'):
+            x = orig.backbone.embeddings(x_ids)  # Use actual token+pos embeddings
+        else:
+            # Fallback to random input if embeddings not found
+            x = torch.randn(2, 16, d_model, device=device)
 
         with torch.no_grad():
             y_orig = orig_mixer(x.clone())
@@ -118,11 +127,19 @@ def check_mixer_equivalence(original_backbone, permuted_backbone):
             
         diff = (y_orig - y_perm).abs().max().item()
         
-        if diff > 1e-4:
+        # Track global stats
+        if diff > max_global_diff:
+            max_global_diff = diff
+            worst_layer = name
+        
+        if diff > 1e-5:
             print(f"[❌] Mismatch @ {name:40s} | max_diff = {diff:.6f}")
-            mismatch_found = True
+            total_mismatches += 1
         else:
             print(f"[✅] {name:40s} | max_diff = {diff:.6f}")
+    
+    print(f"\n📊 Summary: {total_mismatches}/{len(orig_mixers)} layers with mismatches")
+    print(f"    Worst layer: {worst_layer} (diff = {max_global_diff:.6f})")
 
 # 4) 최종 모델 전체 출력 비교 (Sanity check) -------------------------------
 with torch.no_grad():
@@ -135,7 +152,7 @@ check_mixer_equivalence(orig.backbone, perm.backbone)
 print("="*50)
 
 print(f"\nFINAL LOGITS MAX DIFF: {final_diff:.6f}")
-if final_diff < 1e-4:
+if final_diff < 1e-5:
     print("\n✅  SUCCESS: Models are functionally equivalent.")
 else:
     print("\n❌  FAILURE: Models are NOT functionally equivalent.")
