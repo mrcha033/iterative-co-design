@@ -459,13 +459,13 @@ def run_iasp_on_mamba(
     logger.info(f"Identified {len(mamba_mixers_to_permute)} Mamba mixer blocks to permute.")
 
     # Step 1: Get activation correlation for the d_inner dimension
-    correlation_matrix_tuple_list = _get_activation_correlation(
+    correlation_result = _get_activation_correlation(
         model, dataloader, target_layer_names, is_mamba_in_proj=True, device=device,
         max_samples=iasp_config.get("max_samples", DEFAULT_MAX_SAMPLES),
         sample_stride=iasp_config.get("sample_stride", 1),
         iasp_config=iasp_config,
     )
-    if not correlation_matrix_tuple_list:
+    if correlation_result is None:
         logger.error("Could not compute a valid correlation matrix for Mamba. Skipping IASP.")
         # Try to infer d_inner for a valid identity permutation
         try:
@@ -475,7 +475,7 @@ def run_iasp_on_mamba(
             dim = getattr(model.config, 'd_inner', 2048) # Fallback
         return list(range(dim)), 0.0
 
-    correlation_matrix, valid_indices = correlation_matrix_tuple_list[0]
+    correlation_matrix, valid_indices = correlation_result
 
     # Step 2: Find the optimal permutation for the valid subset of channels
     d_inner_valid = valid_indices.sum().item() # Use sum() for correct count of True values
@@ -488,7 +488,7 @@ def run_iasp_on_mamba(
     )
 
     # Step 3: Map the permutation of valid channels back to the full dimension
-    d_inner_full = d_inner_valid
+    d_inner_full = valid_indices.numel()  # Total dimension including dropped channels
     valid_indices_dev = valid_indices.to(device)
 
     original_indices = torch.arange(d_inner_full, device=device)[valid_indices_dev]
@@ -608,18 +608,18 @@ def run_iasp_on_bert(
     logger.info(f"Found {len(target_layer_names)} target layers.")
 
     # Step 1: Get activation correlation for the FFN intermediate dimension
-    correlation_matrix_tuple_list = _get_activation_correlation(
+    correlation_result = _get_activation_correlation(
         model, dataloader, target_layer_names, is_mamba_in_proj=False, device=device,
         max_samples=iasp_config.get("max_samples", DEFAULT_MAX_SAMPLES),
         sample_stride=iasp_config.get("sample_stride", 1),
         iasp_config=iasp_config,
     )
-    if not correlation_matrix_tuple_list:
+    if correlation_result is None:
         logger.error("Could not compute a valid correlation matrix for BERT FFN. Skipping IASP.")
         dim = model.config.intermediate_size
         return list(range(dim)), 0.0
 
-    correlation_matrix, valid_indices = correlation_matrix_tuple_list[0]
+    correlation_matrix, valid_indices = correlation_result
 
     # Step 2: Find the optimal permutation for the valid subset of channels
     d_ffn_valid = valid_indices.sum().item() # Use sum() for correct count of True values
@@ -632,7 +632,7 @@ def run_iasp_on_bert(
     )
 
     # Step 3: Map the permutation of valid channels back to the full dimension
-    d_ffn_full = d_ffn_valid
+    d_ffn_full = valid_indices.numel()  # Total dimension including dropped channels
     valid_indices_dev = valid_indices.to(device)
 
     original_indices = torch.arange(d_ffn_full, device=device)[valid_indices_dev]
