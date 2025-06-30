@@ -10,6 +10,9 @@ import torch
 from tqdm import tqdm
 import math
 import logging
+from typing import Optional
+import torch.nn as nn
+from torch.utils.data import DataLoader
 
 logger = logging.getLogger(__name__)
 
@@ -59,20 +62,20 @@ def calculate_perplexity(model, data_loader, fp16: bool = True):
     # Use the model's pad_token_id, or eos_token_id as a fallback
     pad_token_id = getattr(model.config, "pad_token_id", None) or getattr(model.config, "eos_token_id", None)
 
-    with torch.amp.autocast(enabled=(fp16 and device.type == 'cuda')), torch.no_grad():
+    with torch.amp.autocast(device_type=device.type, enabled=(fp16 and device.type == 'cuda')), torch.no_grad():
         for batch in tqdm(data_loader, desc="Calculating Perplexity"):
             batch = {k: v.to(device) for k, v in batch.items()}
             
             # If the dataloader provides labels (like our SlidingWindowDataset), use them.
             # Otherwise, create them from input_ids for standard Causal LM evaluation.
             if 'labels' in batch:
-                outputs = model(**batch)
+                outputs = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
                 labels = batch['labels']
             else:
                 labels = batch["input_ids"].clone()
                 if pad_token_id is not None:
                     labels[labels == pad_token_id] = -100 # HF default ignore_index
-                outputs = model(**batch, labels=labels)
+                outputs = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"], labels=labels)
             
             # Loss is already averaged, so we multiply by the number of non-padded tokens
             nll = outputs.loss * labels.ne(-100).sum()
