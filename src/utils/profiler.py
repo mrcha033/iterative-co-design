@@ -281,12 +281,12 @@ class LatencyProfiler:
                 ncu_path,
                 "--metrics", "lts__t_sector_hit_rate.pct",
                 "--csv",
-                "--page", "disabled",          # ANSI 꺼
-                "--target-processes", "all",   # Python 포크 포함
-                "--sampling-interval", "auto", # 경량 샘플링
-                "-c", "2",                     # launch-count 2 → 앞 두 번만
-                "-k", "selective_scan_fwd_kernel$",  # 정확 매칭 (PCRE)
+                "--page", "disabled",
+                "--target-processes", "all",
+                "--set", "launch",
+                "-c", "2",
             ]
+
             
             # Conditionally add kernel filter only if it's explicitly provided
             if kernel_name_filter:
