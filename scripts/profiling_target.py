@@ -78,6 +78,8 @@ def main():
         # Log the full traceback for better debugging
         print(f"Profiling target failed for model {model_name_or_path}:", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
+        # Marker to indicate failure to the parent process
+        print("__NCU_ERROR__", file=sys.stdout)
         sys.exit(1)
 
 if __name__ == "__main__":

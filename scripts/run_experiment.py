@@ -44,6 +44,7 @@ import json
 import random
 import numpy as np
 import torch
+import torch.nn as nn
 import fnmatch
 from torch.utils.data import DataLoader
 from transformers import (
@@ -96,7 +97,11 @@ def get_model_and_data(cfg: DictConfig):
 
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.name)
     if not tokenizer.pad_token:
-        tokenizer.pad_token = tokenizer.eos_token
+        # Add a pad token if one doesn't exist, which is common for some base models.
+        # Use the EOS token as the pad token.
+        tokenizer.add_special_tokens({'pad_token': tokenizer.eos_token})
+        # The model's embedding matrix needs to be resized to reflect the new token.
+        model.resize_token_embeddings(len(tokenizer))
 
     print(f"Loading dataset: {cfg.dataset.name}")
     try:
@@ -161,14 +166,13 @@ def _measure_and_collect_metrics(
     
     # Use the correct metric for the task
     if cfg.model.task == "sequence_classification":
-        # Note: This requires an accuracy function in utils.evaluation
-        task_metric = calculate_task_metric(
-            wrapped_model.model, data_loader, "accuracy"
-        )
+        metric_to_calc = "accuracy"
     else:
-        task_metric = calculate_task_metric(
-            wrapped_model.model, data_loader, "perplexity"
-        )
+        metric_to_calc = "perplexity"
+
+    task_metric = calculate_task_metric(
+        wrapped_model.model, data_loader, metric_to_calc
+    )
 
     metric_name, metric_value = list(task_metric.items())[0]
     logger.info(f"{metric_name.title()}: {metric_value:.4f}")
@@ -199,8 +203,10 @@ def run_dense(cfg: DictConfig):
     """Runs the dense baseline experiment."""
     set_random_seeds(cfg.seed)
     model, tokenizer, data_loader, eval_dataset = get_model_and_data(cfg)
-    if torch.cuda.is_available():
-        model.cuda()
+    
+    # Device-agnostic model placement
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
     
     wrapped_model = ModelWrapper(model)
     profiler = LatencyProfiler()
@@ -216,8 +222,10 @@ def run_sparsity_only(cfg: DictConfig):
     """Runs the sparsity-only experiment."""
     set_random_seeds(cfg.seed)
     model, tokenizer, data_loader, eval_dataset = get_model_and_data(cfg)
-    if torch.cuda.is_available():
-        model.cuda()
+
+    # Device-agnostic model placement
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
     
     wrapped_model = ModelWrapper(model)
     profiler = LatencyProfiler()
@@ -265,8 +273,10 @@ def run_permute_only(cfg: DictConfig):
     """Runs the permutation-only experiment."""
     set_random_seeds(cfg.seed)
     model, tokenizer, data_loader, eval_dataset = get_model_and_data(cfg)
-    if torch.cuda.is_available():
-        model.cuda()
+    
+    # Device-agnostic model placement
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
     
     wrapped_model = ModelWrapper(model)
     profiler = LatencyProfiler()
@@ -300,8 +310,10 @@ def run_linear_pipeline(cfg: DictConfig):
     """Runs the linear pipeline (IASP -> HDS) experiment."""
     set_random_seeds(cfg.seed)
     model, tokenizer, data_loader, eval_dataset = get_model_and_data(cfg)
-    if torch.cuda.is_available():
-        model.cuda()
+    
+    # Device-agnostic model placement
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
 
     wrapped_model = ModelWrapper(model)
     profiler = LatencyProfiler()
@@ -323,8 +335,10 @@ def run_iterative(cfg: DictConfig):
     """Runs the iterative co-design experiment."""
     set_random_seeds(cfg.seed)
     model, tokenizer, data_loader, eval_dataset = get_model_and_data(cfg)
-    if torch.cuda.is_available():
-        model.cuda()
+
+    # Device-agnostic model placement
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
 
     wrapped_model = ModelWrapper(model)
     profiler = LatencyProfiler()
@@ -353,8 +367,10 @@ def run_bidirectional_iterative(cfg: DictConfig):
     """Runs the fully bidirectional iterative co-design experiment."""
     set_random_seeds(cfg.seed)
     model, tokenizer, data_loader, eval_dataset = get_model_and_data(cfg)
-    if torch.cuda.is_available():
-        model.cuda()
+
+    # Device-agnostic model placement
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
 
     wrapped_model = ModelWrapper(model)
     profiler = LatencyProfiler()
@@ -419,7 +435,7 @@ def run_cleanup_if_configured(cfg: DictConfig, dry_run: bool = False):
             logger.error("Refusing to clean output directories from the project root. "
                          "Please use Hydra's default output directory structure.")
             return
-    except (FileNotFoundError, TypeError):
+    except (FileNotFoundError, TypeError, OSError):
         # get_original_cwd can fail or return None in some contexts.
         pass
 
@@ -486,7 +502,7 @@ def print_dry_run_plan(cfg: DictConfig):
     print("="*50)
 
 
-@hydra.main(config_path="../configs", config_name="config", version_base=None)
+@hydra.main(config_path=str(project_root / "configs"), config_name="config", version_base=None)
 def main(cfg: DictConfig):
     if cfg.get("dry_run", False):
         print_dry_run_plan(cfg)

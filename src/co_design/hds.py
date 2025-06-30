@@ -89,6 +89,8 @@ class HDSLinear(nn.Module):
                 self.linear.out_features, self.in_features, device=self.linear.weight.device
             )
         )
+        # Buffer for the final, deterministic mask used during inference
+        self.register_buffer("fixed_mask", None)
 
     def get_sparsity_mask(self):
         """
@@ -98,7 +100,7 @@ class HDSLinear(nn.Module):
         padded_scores = F.pad(self.scores, (0, self.padding))
 
         # Reshape so that each group of size `m` is processed independently
-        grouped_scores = padded_scores.view(self.linear.out_features, -1, self.m)
+        grouped_scores = padded_scores.reshape(self.linear.out_features, -1, self.m)
 
         # Use the differentiable Gumbel-TopK to obtain the mask
         mask = gumbel_topk(grouped_scores, self.n, temperature=self.gumbel_temp)
@@ -107,8 +109,43 @@ class HDSLinear(nn.Module):
         mask = mask.view(self.linear.out_features, -1)
         return mask[:, : self.in_features]
 
+    def freeze_mask(self):
+        """
+        Computes the final deterministic mask from the learned scores and "bakes" it
+        into a buffer for efficient and deterministic inference.
+        """
+        if self.fixed_mask is not None:
+            logger.warning("Mask is already frozen. Skipping.")
+            return
+
+        logger.info(f"Freezing sparsity mask for layer: {self.linear}")
+        with torch.no_grad():
+            # Use a simple argmax on the scores to get the final hard mask
+            # This is more direct than re-sampling with Gumbel at temp=0
+            padded_scores = F.pad(self.scores, (0, self.padding))
+            grouped_scores = padded_scores.reshape(self.linear.out_features, -1, self.m)
+            
+            # Get the top-k indices directly from the scores
+            _, top_k_indices = torch.topk(grouped_scores, self.n, dim=-1)
+            
+            # Create a hard, binary mask
+            hard_mask = torch.zeros_like(grouped_scores).scatter_(-1, top_k_indices, 1.0)
+            
+            # Reshape and crop back to original size
+            hard_mask = hard_mask.view(self.linear.out_features, -1)
+            final_mask = hard_mask[:, : self.in_features]
+            
+            self.fixed_mask = final_mask
+            # We can now discard the scores to save memory
+            del self.scores
+
     def forward(self, x):
-        sparsity_mask = self.get_sparsity_mask()
+        # During inference, use the fixed mask if available. Otherwise, generate dynamically.
+        if self.training or self.fixed_mask is None:
+            sparsity_mask = self.get_sparsity_mask()
+        else:
+            sparsity_mask = self.fixed_mask
+            
         sparse_weight = self.linear.weight * sparsity_mask
         return F.linear(x, sparse_weight, self.linear.bias)
 
@@ -225,18 +262,38 @@ def apply_hds(wrapped_model: "ModelWrapper", data_loader: torch.utils.data.DataL
 
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
-            labels = batch.get("labels", input_ids).to(device)
+            
+            # Robustly determine labels
+            if "labels" in batch:
+                labels = batch["labels"].to(device)
+            elif "start_positions" in batch and "end_positions" in batch:
+                # Handle QA tasks if necessary in the future
+                continue # Or implement QA-specific loss
+            else:
+                # Default to language modeling loss
+                labels = input_ids
 
             outputs = model(
                 input_ids=input_ids, attention_mask=attention_mask, labels=labels
             )
             loss = outputs.loss
+            # Check for NaN loss, which can happen with unstable fine-tuning
+            if torch.isnan(loss):
+                logger.warning("NaN loss detected during HDS fine-tuning. Skipping batch.")
+                continue
+                
             loss.backward()
 
             # Gradient clipping for stability
             torch.nn.utils.clip_grad_norm_(scores_params, max_norm=1.0)
 
             optimizer.step()
+
+    # After fine-tuning, freeze the masks for all HDS layers for deterministic inference
+    logger.info(">>> Freezing all HDS masks...")
+    for module in model.modules():
+        if isinstance(module, HDSLinear):
+            module.freeze_mask()
 
     model.eval()
     logger.info(">>> HDS application complete.")

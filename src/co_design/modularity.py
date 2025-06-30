@@ -15,82 +15,69 @@ import numpy as np
 from typing import List
 
 
-def calculate_modularity(
-    correlation_matrix: np.ndarray, partition: List[List[int]]
-) -> float:
+def calculate_modularity(W: np.ndarray, partition: List[List[int]]) -> float:
     """
-    Calculates the modularity of a partitioned graph for a signed network.
-
-    This function implements the extended modularity definition for networks
-    with both positive and negative weights (e.g., correlation matrices),
-    as proposed by Gomez, Jensen, and Sarle (2009).
-
-    Args:
-        correlation_matrix: A square NumPy array representing the weighted adjacency
-                            matrix of the graph.
-        partition: A list of lists, where each inner list contains the indices of
-                   nodes in a community.
-
-    Returns:
-        The modularity score (Q) of the given partition.
+    Calculates the modularity of a partitioned graph for a signed network
+    in a memory-efficient and vectorized way.
     """
-    if correlation_matrix.shape[0] != correlation_matrix.shape[1]:
-        raise ValueError("Correlation matrix must be square.")
+    n = W.shape[0]
+    if W.shape[1] != n:
+        raise ValueError("Matrix must be square")
 
-    num_nodes = correlation_matrix.shape[0]
-    
-    # --- 1. Pre-process the graph ---
-    # Create a copy to avoid modifying the original matrix
-    W = correlation_matrix.copy()
-    # Exclude self-loops from the calculation, as is standard
+    # Work on a copy to avoid modifying the original matrix
+    W = W.copy()
+    # Exclude self-loops from the calculation
     np.fill_diagonal(W, 0)
-    
-    # Separate positive and negative weights
-    W_plus = np.maximum(0, W)
-    W_minus = np.maximum(0, -W)
 
-    # --- 2. Calculate graph-level statistics ---
-    # Total weight of all positive and negative edges
-    m_plus = np.sum(W_plus) / 2.0
-    m_minus = np.sum(W_minus) / 2.0
-    
-    # Epsilon for numerical stability
-    eps = np.finfo(float).eps
+    # Split into positive and negative weights once
+    Wp, Wn = np.maximum(W, 0), np.maximum(-W, 0)
+    mp, mn = Wp.sum() / 2.0, Wn.sum() / 2.0
 
-    if m_plus + m_minus < eps:
+    if mp + mn == 0:
         return 0.0
 
-    # Strength of each node (sum of positive/negative weights)
-    s_plus = np.sum(W_plus, axis=1)
-    s_minus = np.sum(W_minus, axis=1)
+    sp, sn = Wp.sum(axis=1), Wn.sum(axis=1)
 
-    # --- 3. Build community membership matrix ---
-    community_membership = np.full(num_nodes, -1, dtype=int)
-    for i, community in enumerate(partition):
-        if community.size == 0:
-            continue  # Skip empty communities
-        community_membership[community] = i
-    
-    if np.any(community_membership == -1):
-        # Find which nodes were not in the partition for a better error message
-        missing_nodes = np.where(community_membership == -1)[0]
+    # --- Vectorized community lookup (avoids N² matrices) ---
+    com_id = -np.ones(n, dtype=int)
+    # Use len() for safety, as partition elements are lists/arrays
+    for cid, nodes in enumerate(partition):
+        if len(nodes) == 0:
+            continue
+        com_id[nodes] = cid
+        
+    if (com_id == -1).any():
+        missing_nodes = np.where(com_id == -1)[0].tolist()
         raise ValueError(f"Partition must include all nodes. Missing nodes: {missing_nodes}")
 
-    # Create a boolean matrix where S_ij is True if node i and j are in the same community
-    same_community_matrix = community_membership[:, np.newaxis] == community_membership
-    
-    # --- 4. Calculate modularity using the Newman-Girvan formula extended for signed networks ---
-    # Expected number of edges in the null model
-    null_model_plus = np.outer(s_plus, s_plus) / (2 * m_plus + eps)
-    null_model_minus = np.outer(s_minus, s_minus) / (2 * m_minus + eps)
+    # Sort nodes by community ID to create contiguous blocks
+    order = np.argsort(com_id)
+    Wp, Wn = Wp[order][:, order], Wn[order][:, order]
+    sp, sn = sp[order], sn[order]
 
-    # Sum of (Observed - Expected) for pairs within the same community
-    mod_matrix = (W_plus - null_model_plus) - (W_minus - null_model_minus)
-    
-    # Apply the community mask
-    Q_matrix = mod_matrix * same_community_matrix
-    
-    # Final modularity score is the sum over the normalization factor
-    modularity_score = np.sum(Q_matrix) / (2 * (m_plus + m_minus) + eps)
-    
-    return float(modularity_score)
+    # Get the cumulative borders of each community block
+    # Filter out empty communities before calculating borders
+    partition_sizes = [len(p) for p in partition if len(p) > 0]
+    borders = np.cumsum(partition_sizes)
+    borders = np.insert(borders, 0, 0)
+
+    Q = 0.0
+    eps = 1e-9  # Epsilon for numerical stability
+
+    # Iterate over community blocks
+    for i in range(len(borders) - 1):
+        sl, sr = borders[i], borders[i+1]
+        comm_slice = slice(sl, sr)
+        
+        # Sum of weights within the current community
+        Wpc = Wp[comm_slice, comm_slice].sum()
+        Wnc = Wn[comm_slice, comm_slice].sum()
+        
+        # Sum of strengths for nodes in the current community
+        spc = sp[comm_slice].sum()
+        snc = sn[comm_slice].sum()
+
+        # Add this community's contribution to the total modularity
+        Q += (Wpc - (spc**2) / (2 * mp + eps)) - (Wnc - (snc**2) / (2 * mn + eps))
+
+    return Q / (2 * (mp + mn) + eps)

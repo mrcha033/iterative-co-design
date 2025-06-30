@@ -14,81 +14,73 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def calculate_task_metric(model, data_loader, task_type):
+def calculate_task_metric(model, data_loader, metric: str):
     """
-    Calculates the appropriate evaluation metric based on the task type.
+    Calculates the specified evaluation metric.
 
     Args:
         model: The model to evaluate
         data_loader: DataLoader with the evaluation data
-        task_type: Either "language_modeling" or "sequence_classification"
+        metric: The name of the metric to calculate ("perplexity" or "accuracy")
 
     Returns:
         dict: A dictionary with the metric name and value
     """
-    if task_type == "language_modeling":
-        perplexity = calculate_perplexity(model, data_loader)
-        return {"perplexity": perplexity}
-    elif task_type == "sequence_classification":
-        accuracy = calculate_accuracy(model, data_loader)
-        return {"accuracy": accuracy}
+    if metric == "perplexity":
+        value = calculate_perplexity(model, data_loader)
+        return {"perplexity": value}
+    elif metric == "accuracy":
+        value = calculate_accuracy(model, data_loader)
+        return {"accuracy": value}
     else:
-        raise ValueError(f"Unknown task type: {task_type}")
+        raise ValueError(f"Unknown metric type: {metric}")
 
 
-def calculate_perplexity(model, data_loader):
+def mask_labels(input_ids, attention_mask, pad_token_id, ignore_index=-100):
     """
-    Calculates the perplexity of a language model on a given dataset.
+    Creates labels for language modeling, ignoring padded tokens.
+    """
+    labels = input_ids.clone()
+    # In transformers, padded tokens are masked with 0.
+    labels[attention_mask == 0] = ignore_index
+    return labels
 
-    Assumes the data_loader yields batches of pre-tokenized data with
-    'input_ids' and 'attention_mask'.
+
+def calculate_perplexity(model, data_loader, fp16: bool = True):
+    """
+    Calculates the perplexity of a language model on a given dataset with
+    correct handling for padding and device placement.
     """
     model.eval()
-    if torch.cuda.is_available():
-        model.cuda()
-
-    total_loss = 0
+    device = next(model.parameters()).device
+    total_nll = 0.0
     total_tokens = 0
 
-    with torch.no_grad():
+    # Use the model's pad_token_id, or eos_token_id as a fallback
+    pad_token_id = getattr(model.config, "pad_token_id", None) or getattr(model.config, "eos_token_id", None)
+
+    with torch.cuda.amp.autocast(enabled=(fp16 and device.type == 'cuda')), torch.no_grad():
         for batch in tqdm(data_loader, desc="Calculating Perplexity"):
-            # --- Pre-computation validation ---
-            # Check for out-of-bounds indices which cause CUDA asserts
-            input_ids = batch["input_ids"]
-            vocab_size = model.config.vocab_size
-            if torch.any(input_ids >= vocab_size) or torch.any(input_ids < 0):
-                problematic_indices = input_ids[(input_ids >= vocab_size) | (input_ids < 0)]
-                logger.error(f"FATAL: Invalid input_ids found before sending to model.")
-                logger.error(f"  - Vocab size: {vocab_size}")
-                logger.error(f"  - Problematic indices: {problematic_indices}")
-                raise ValueError("Input IDs are out of range for the model's vocabulary. This might be caused by model state corruption.")
-            # --- End of validation ---
+            batch = {k: v.to(device) for k, v in batch.items()}
             
-            if torch.cuda.is_available():
-                batch = {k: v.cuda() for k, v in batch.items()}
+            # For CausalLM, labels are the input_ids, but with padding ignored
+            labels = batch["input_ids"].clone()
+            if pad_token_id is not None:
+                labels[labels == pad_token_id] = -100 # HF default ignore_index
 
-            # For CausalLM, labels are the input_ids.
-            # The model handles shifting internally when labels are provided.
-            outputs = model(**batch, labels=batch["input_ids"])
-            loss = outputs.loss
-
-            # Count actual tokens using attention mask (excludes padding tokens)
-            # The attention mask has 1s for real tokens and 0s for padding
-            batch_tokens = batch["attention_mask"].sum().item()
-
-            # Loss is already averaged over the sequence length and batch size by transformers
-            # We need to denormalize it to get the total loss for this batch
-            if batch_tokens > 0:
-                batch_loss = loss.item() * batch_tokens
-                total_loss += batch_loss
-                total_tokens += batch_tokens
+            outputs = model(**batch, labels=labels)
+            
+            # Loss is already averaged, so we multiply by the number of non-padded tokens
+            nll = outputs.loss * labels.ne(-100).sum()
+            total_nll += nll.item()
+            total_tokens += labels.ne(-100).sum().item()
 
     if total_tokens == 0:
         logger.warning("No tokens were processed, cannot calculate perplexity.")
         return float('inf')
 
-    avg_loss = total_loss / total_tokens
-    perplexity = math.exp(avg_loss)
+    avg_nll = total_nll / total_tokens
+    perplexity = math.exp(avg_nll)
     return perplexity
 
 
@@ -97,23 +89,19 @@ def calculate_accuracy(model, data_loader):
     Calculates the accuracy of a classification model.
     """
     model.eval()
-    if torch.cuda.is_available():
-        model.cuda()
+    device = next(model.parameters()).device
 
     correct_predictions = 0
     total_predictions = 0
 
     with torch.no_grad():
         for batch in tqdm(data_loader, desc="Calculating Accuracy"):
-            # Assuming batch is a dict with 'input_ids', 'attention_mask', 'labels'
-            inputs = (
-                {k: v.cuda() for k, v in batch.items() if k != "labels"}
-                if torch.cuda.is_available()
-                else batch
-            )
-            labels = (
-                batch["labels"].cuda() if torch.cuda.is_available() else batch["labels"]
-            )
+            # Move all tensors to the model's device
+            inputs = {k: v.to(device) for k, v in batch.items() if torch.is_tensor(v)}
+            labels = inputs.pop("labels", None) # Pop labels to avoid passing them as model inputs
+            
+            if labels is None:
+                continue
 
             outputs = model(**inputs)
             logits = outputs.logits
@@ -121,5 +109,8 @@ def calculate_accuracy(model, data_loader):
 
             correct_predictions += (predictions == labels).sum().item()
             total_predictions += labels.size(0)
+
+    if total_predictions == 0:
+        return 0.0
 
     return correct_predictions / total_predictions
