@@ -247,11 +247,13 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
         assert p.numel() == d_inner, f"Permutation length {p.numel()} mismatch with d_inner {d_inner}"
 
         with torch.no_grad():
-            # Use grad-safe helpers to reconstruct autograd graph
-            if layer.in_proj.bias is not None:
-                layer.in_proj.weight, layer.in_proj.bias = permute_in_proj_split(
+            # Use the dedicated helper for the split in_proj layer, handling bias correctly.
+            if hasattr(layer.in_proj, 'bias') and layer.in_proj.bias is not None:
+                new_in_proj_w, new_in_proj_b = permute_in_proj_split(
                     layer.in_proj.weight, p, layer.in_proj.bias
                 )
+                layer.in_proj.weight = new_in_proj_w
+                layer.in_proj.bias = new_in_proj_b
             else:
                 layer.in_proj.weight = permute_in_proj_split(layer.in_proj.weight, p)
 
