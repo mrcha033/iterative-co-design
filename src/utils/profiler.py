@@ -278,7 +278,12 @@ class LatencyProfiler:
                 ncu_path,
                 "--metrics", "lts__t_sector_hit_rate.pct",
                 "--csv",
+                "--page", "disabled",
+                "--launch-skip-before-match",
+                "--set", "fullcsv",
             ]
+            
+            # Conditionally add kernel filter only if it's explicitly provided
             if kernel_name_filter:
                 command.extend(["--kernel-name", kernel_name_filter])
             
