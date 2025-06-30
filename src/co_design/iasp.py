@@ -213,9 +213,11 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
         with torch.no_grad():
             # Use grad-safe helpers to reconstruct autograd graph
             if layer.in_proj.bias is not None:
-                layer.in_proj.bias = permute_in_proj_split(
+                layer.in_proj.weight, layer.in_proj.bias = permute_in_proj_split(
                     layer.in_proj.weight, p, layer.in_proj.bias
-                )[1]
+                )
+            else:
+                layer.in_proj.weight = permute_in_proj_split(layer.in_proj.weight, p)
 
             # Handle potential API drift in mamba-ssm (conv1d vs conv1d_proj)
             conv_layer = None

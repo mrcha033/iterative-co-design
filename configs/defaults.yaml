@@ -58,7 +58,6 @@ defaults:
   - _self_
   - model: bert_base
   - dataset: sst2
-  - method_configs: defaults
   - override hydra/launcher: joblib
 
 project_name: "iterative-co-design"
