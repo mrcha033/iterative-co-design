@@ -21,7 +21,12 @@ import fnmatch
 
 from numpy.linalg import LinAlgError
 from omegaconf import DictConfig
-from utils.permutation import permute_rows, permute_cols, permute_vector, permute_in_proj_split
+from utils.permutation import (
+    inplace_permute_rows,
+    inplace_permute_cols,
+    inplace_permute_vector,
+    inplace_permute_in_proj_split,
+)
 
 # --- Setup ---
 logger = logging.getLogger(__name__)
@@ -248,14 +253,9 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
 
         with torch.no_grad():
             # Use the dedicated helper for the split in_proj layer, handling bias correctly.
-            if hasattr(layer.in_proj, 'bias') and layer.in_proj.bias is not None:
-                new_in_proj_w, new_in_proj_b = permute_in_proj_split(
-                    layer.in_proj.weight, p, layer.in_proj.bias
-                )
-                layer.in_proj.weight = new_in_proj_w
-                layer.in_proj.bias = new_in_proj_b
-            else:
-                layer.in_proj.weight = permute_in_proj_split(layer.in_proj.weight, p)
+            inplace_permute_in_proj_split(
+                layer.in_proj.weight, p, getattr(layer.in_proj, 'bias', None)
+            )
 
             # Handle potential API drift in mamba-ssm (conv1d vs conv1d_proj)
             conv_layer = None
@@ -269,9 +269,11 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
                 # 'weight_v' and 'weight_g' parameters instead of the computed 'weight'.
                 if hasattr(conv_layer, 'weight_v') and hasattr(conv_layer, 'weight_g'):
                     logger.debug(f"Permuting weight-normalized conv1d layer in {layer.__class__.__name__}")
-                    # Re-wrap in nn.Parameter to preserve model parameter status
-                    conv_layer.weight_v = nn.Parameter(permute_rows(conv_layer.weight_v, p))
-                    conv_layer.weight_g = nn.Parameter(permute_vector(conv_layer.weight_g, p))
+                    inplace_permute_rows(conv_layer.weight_v, p)
+                    inplace_permute_vector(conv_layer.weight_g, p)
+                    # Also handle bias for weight-normalized conv layers
+                    if conv_layer.bias is not None:
+                        inplace_permute_vector(conv_layer.bias, p)
                 else:
                     w = conv_layer.weight
                     # Handle Mamba's double-width convolution for combined projections
@@ -279,35 +281,39 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
                         logger.debug(f"Permuting double-width conv1d layer in {layer.__class__.__name__}")
                         # Permute the two halves (for x and z) independently
                         w_x, w_z = w.chunk(2, dim=0)
-                        permuted_w_x = permute_rows(w_x, p)
-                        permuted_w_z = permute_rows(w_z, p)
-                        conv_layer.weight = nn.Parameter(torch.cat([permuted_w_x, permuted_w_z], dim=0))
+                        inplace_permute_rows(w_x, p)
+                        inplace_permute_rows(w_z, p)
                     elif w.shape[0] == d_inner:
-                        conv_layer.weight = nn.Parameter(permute_rows(w, p))
+                        inplace_permute_rows(w, p)
                     elif w.shape[1] == d_inner:
                         # This case is unusual but handled for completeness
-                        conv_layer.weight = nn.Parameter(permute_cols(w, p_inv))
+                        inplace_permute_cols(w, p_inv)
                 
                 if conv_layer.bias is not None and conv_layer.bias.numel() == d_inner:
-                    conv_layer.bias = nn.Parameter(permute_vector(conv_layer.bias, p))
+                    inplace_permute_vector(conv_layer.bias, p)
             
             if hasattr(layer, 'x_proj'):
                  # x_proj input is permuted state, so permute columns with inverse
-                 layer.x_proj.weight = nn.Parameter(permute_cols(layer.x_proj.weight, p_inv))
+                 inplace_permute_cols(layer.x_proj.weight, p_inv)
 
             if hasattr(layer, 'dt_proj'):
                  # dt_proj output creates state, so permute rows, but its input can also be permuted
                  W = layer.dt_proj.weight
                  if W.shape[0] == d_inner:
-                     layer.dt_proj.weight = nn.Parameter(permute_rows(W, p))
+                     inplace_permute_rows(W, p)
                  elif W.shape[1] == d_inner: # Input is permuted state
-                     layer.dt_proj.weight = nn.Parameter(permute_cols(W, p_inv))
+                     inplace_permute_cols(W, p_inv)
+                 # Handle potential bias in dt_proj
+                 if getattr(layer.dt_proj, 'bias', None) is not None:
+                    # Permutation direction depends on how the weight was permuted
+                    perm_dir = p if W.shape[0] == d_inner else p_inv
+                    inplace_permute_vector(layer.dt_proj.bias, perm_dir)
 
-            layer.A_log = nn.Parameter(permute_rows(layer.A_log, p))
-            layer.D = nn.Parameter(permute_vector(layer.D, p))
+            inplace_permute_rows(layer.A_log, p)
+            inplace_permute_vector(layer.D, p)
             
             # out_proj input is the permuted state, so we permute its weight columns with the inverse
-            layer.out_proj.weight = nn.Parameter(permute_cols(layer.out_proj.weight, p_inv))
+            inplace_permute_cols(layer.out_proj.weight, p_inv)
             # The bias term acts on the output dimension (d_model), which is not permuted.
             # Therefore, the bias should not be permuted.
             if layer.out_proj.bias is not None:
@@ -434,12 +440,16 @@ def _apply_permutation_to_bert_ffn(model: nn.Module, permutation: List[int], tar
                 pbar.set_postfix({"layer": layer_name})
 
                 with torch.no_grad():
-                    # Re-wrap in nn.Parameter to be gradient-safe
-                    up_proj.weight = nn.Parameter(up_proj.weight.data[p])
+                    # Permute the up-projection (output is permuted)
+                    inplace_permute_rows(up_proj.weight, p)
                     if up_proj.bias is not None:
-                        up_proj.bias = nn.Parameter(up_proj.bias.data[p])
+                        inplace_permute_rows(up_proj.bias, p)
 
-                    down_proj.weight = nn.Parameter(down_proj.weight.data[:, p])
+                    # Permute the down-projection (input is permuted)
+                    p_inv = torch.empty_like(p)
+                    p_inv[p] = torch.arange(p.numel(), device=dev)
+                    inplace_permute_cols(down_proj.weight, p_inv)
+                    # Down-projection bias is not permuted as it's added after the matmul
                 
                 # The LayerNorm after the FFN's residual connection acts on the un-permuted
                 # hidden state, so its parameters should NOT be permuted.
