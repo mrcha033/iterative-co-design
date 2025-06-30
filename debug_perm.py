@@ -54,6 +54,15 @@ class RandomTextDataset(Dataset):
 random_dataset = RandomTextDataset(tok, num_samples=64, seq_len=128)
 data_loader = DataLoader(random_dataset, batch_size=8)
 
+# Debug: Check the actual d_inner dimension in the model
+print(f"\n🔍 Analyzing model dimensions:")
+for name, mod in perm.named_modules():
+    if "MambaMixer" in mod.__class__.__name__:
+        print(f"  - {name}: in_proj.out_features = {mod.in_proj.out_features}")
+        print(f"    d_inner = {mod.in_proj.out_features // 2}")
+        print(f"    out_proj.in_features = {mod.out_proj.in_features}")
+        break
+
 # 2) IASP 실행  --------------------------------------------------------------
 #   이제 충분한 샘플로 correlation을 계산합니다.
 perm_tensor, _ = run_iasp_on_mamba(
@@ -67,6 +76,8 @@ perm_tensor, _ = run_iasp_on_mamba(
         "spectral_random_state": 42
     }),
 )
+
+print(f"\n📊 Permutation tensor length: {len(perm_tensor)}")
 
 # 3) hook 방식 대신 직접 Mixer 출력 비교 ------------------------------------
 def check_mixer_equivalence(original_backbone, permuted_backbone):
