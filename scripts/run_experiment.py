@@ -638,6 +638,11 @@ def check_gpu_headroom(required_gb: float = 4.0):
 
 @hydra.main(config_path=str(project_root / "configs"), config_name="config", version_base=None)
 def main(cfg: DictConfig):
+    # Set TOKENIZERS_PARALLELISM to false to avoid warnings when using multiple
+    # workers in a DataLoader. This is a common issue when a tokenizer is used
+    # in the main process before forking for data loading.
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    
     if cfg.get("dry_run", False):
         print_dry_run_plan(cfg)
         return
