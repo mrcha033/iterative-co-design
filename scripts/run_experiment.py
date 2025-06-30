@@ -55,9 +55,12 @@ from transformers import (
 )
 from datasets import load_dataset
 import hydra
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from utils.logging import initialize_wandb
 import wandb
+
+# Register the custom 'eval' resolver for Hydra/OmegaConf
+OmegaConf.register_new_resolver("eval", eval)
 
 from utils.evaluation import calculate_task_metric
 from utils.profiler import LatencyProfiler
