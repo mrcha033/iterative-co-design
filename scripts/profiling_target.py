@@ -10,55 +10,68 @@ This approach avoids the complexities and inaccuracies of generating temporary
 scripts or profiling simplified/mock models.
 
 Usage:
-    ncu --metrics <metrics> --csv python scripts/profiling_target.py <model_path> <input_path> <model_name_or_path> <task>
+    ncu --metrics <metrics> --csv python scripts/profiling_target.py <model_path> <input_path> <model_name_or_path> --task <task>
 """
 
 import torch
 import sys
 from pathlib import Path
 import traceback
-from transformers import AutoModelForCausalLM, AutoConfig, AutoModelForSequenceClassification
+import argparse
+from transformers import AutoConfig, AutoModel
 
-# Ensure the project's 'src' directory is in the path to allow model classes
-# to be unpickled correctly by torch.load.
+# Ensure the project's 'src' directory is in the path.
 project_root = Path(__file__).resolve().parents[1]
 src_path = project_root / "src"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
-def main():
-    if len(sys.argv) != 5:
-        print("Usage: python profiling_target.py <model_path> <input_path> <model_name_or_path> <task>")
-        sys.exit(1)
+def load_config_safely(name_or_path: str, model_path: str):
+    """Try loading config from local model directory first, then from Hub."""
+    local_dir = Path(model_path).parent
+    try:
+        # Prioritize local config to support offline use and custom models
+        return AutoConfig.from_pretrained(local_dir, local_files_only=True, trust_remote_code=True)
+    except Exception:
+        # Fallback to Hub if local config is not available
+        return AutoConfig.from_pretrained(name_or_path, local_files_only=False, trust_remote_code=True)
 
-    model_path = sys.argv[1]
-    input_path = sys.argv[2]
-    model_name_or_path = sys.argv[3]
-    task = sys.argv[4]
+def main():
+    parser = argparse.ArgumentParser(description="NCU Profiling Target")
+    parser.add_argument("model_path", type=str, help="Path to the model's state_dict.pt file")
+    parser.add_argument("input_path", type=str, help="Path to the dummy input .pt file")
+    parser.add_argument("name_or_path", type=str, help="Hugging Face model name or path for config loading")
+    parser.add_argument("--task", type=str, default="text-generation", help="Model task type")
+    args = parser.parse_args()
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    if device == "cpu":
+        print("__NCU_SKIPPED_CPU__", file=sys.stdout)
+        sys.exit(0)
+
     try:
-        # Robust model loading
-        config = AutoConfig.from_pretrained(model_name_or_path)
-        if task == "sequence-classification":
-            model = AutoModelForSequenceClassification.from_config(config)
-        else:
-            model = AutoModelForCausalLM.from_config(config)
+        config = load_config_safely(args.name_or_path, args.model_path)
+        # Use AutoModel for more robust architecture loading
+        model = AutoModel.from_config(config, trust_remote_code=True)
         
-        state_dict = torch.load(model_path, map_location="cpu")
-        model.load_state_dict(state_dict, strict=False)
+        state_dict = torch.load(args.model_path, map_location="cpu")
+        # Use strict=False to gracefully handle custom layers (e.g., LoRA, sparsity)
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        if unexpected:
+            print(f"[profiling_target.py] Warning: Unexpected keys in state_dict: {unexpected}", file=sys.stderr)
+        if missing:
+            print(f"[profiling_target.py] Warning: Missing keys in state_dict: {missing}", file=sys.stderr)
+
         model.to(device).eval()
         
-        dummy_input = torch.load(input_path, map_location="cpu")
+        dummy_input = torch.load(args.input_path, map_location="cpu")
 
-        # Robust input handling
-        if isinstance(dummy_input, torch.Tensor):
-            dummy_input = {"input_ids": dummy_input.to(device)}
-        elif isinstance(dummy_input, list):
-            dummy_input = {"input_ids": torch.tensor(dummy_input, device=device)}
-        else:
-            dummy_input = {k: v.to(device) for k, v in dummy_input.items()}
+        # Automatically add attention_mask if it's missing for BERT-like models
+        if "bert" in config.model_type and "attention_mask" not in dummy_input:
+            dummy_input["attention_mask"] = (dummy_input["input_ids"] != config.pad_token_id).long()
+        
+        dummy_input = {k: v.to(device) for k, v in dummy_input.items()}
 
         # GPU Warm-up
         for _ in range(5):
@@ -66,19 +79,13 @@ def main():
                 _ = model(**dummy_input)
         torch.cuda.synchronize()
 
-        # Flush cache before the profiled run
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
-
         # Single profiled pass for NCU
         with torch.no_grad():
             _ = model(**dummy_input)
 
     except Exception:
-        # Log the full traceback for better debugging
-        print(f"Profiling target failed for model {model_name_or_path}:", file=sys.stderr)
+        print(f"Profiling target failed for model {args.name_or_path}:", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
-        # Marker to indicate failure to the parent process
         print("__NCU_ERROR__", file=sys.stdout)
         sys.exit(1)
 

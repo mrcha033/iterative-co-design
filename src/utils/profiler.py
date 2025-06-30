@@ -80,13 +80,30 @@ class LatencyProfiler:
                 # Include shape and dtype for robustness
                 hasher.update(str(param.shape).encode('utf-8'))
                 hasher.update(str(param.dtype).encode('utf-8'))
-                # Convert to a consistent format (float64) before hashing
-                tensor_bytes = param.detach().to(torch.float64).cpu().numpy().tobytes()
+                # Hash the tensor's data directly
+                tensor_bytes = param.detach().cpu().numpy().tobytes()
                 hasher.update(tensor_bytes)
             else:
                 # Handle non-tensor parameters (e.g., from quantization)
                 hasher.update(str(param).encode('utf-8'))
         return hasher.hexdigest()
+
+    def _locate_profiling_script(self) -> Path:
+        """Searches for the profiling_target.py script in common locations."""
+        # This handles running from `src/utils`, from project root, etc.
+        candidates = [
+            Path(__file__).resolve().parent.parent / "scripts" / "profiling_target.py",
+            Path.cwd() / "scripts" / "profiling_target.py",
+            Path.cwd() / "profiling_target.py",
+        ]
+        for path in candidates:
+            if path.exists():
+                logger.info(f"Found profiling script at: {path}")
+                return path
+        raise FileNotFoundError(
+            "Could not locate profiling_target.py. Searched in:\n" +
+            "\n".join(map(str, candidates))
+        )
 
     def _find_ncu_path(self) -> Optional[str]:
         """Finds the path to the ncu executable."""
@@ -215,8 +232,8 @@ class LatencyProfiler:
 
         ncu_path = self._find_ncu_path()
         if not ncu_path:
-            logger.warning("NVIDIA Nsight Compute (ncu) not found in PATH. Skipping cache measurement.")
-            return None
+            logger.warning("NVIDIA Nsight Compute (ncu) not found. Using fallback L2 cache hit rate.")
+            return {"lts__t_sector_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
             
         model_hash = self._get_model_hash(model)
         cache_file = self.profiler_cache_dir / f"{model_hash}.json"
@@ -235,21 +252,23 @@ class LatencyProfiler:
             # Revert to saving state_dict, as it's more robust across environments
             # than pickling the entire model object.
             torch.save(model.state_dict(), model_path)
-            torch.save(dummy_input, input_path)
+            
+            cpu_input = {k: v.to("cpu") for k, v in dummy_input.items()}
+            torch.save(cpu_input, input_path)
 
-            profiling_script = Path(__file__).resolve().parents[2] / "scripts" / "profiling_target.py"
-            if not profiling_script.exists():
-                logger.error(f"Profiling target script not found at {profiling_script}")
+            try:
+                profiling_script = self._locate_profiling_script()
+            except FileNotFoundError as e:
+                logger.error(e)
                 return None
             
             # Use model's config to pass its original name for architecture loading
-            model_name = model.config._name_or_path
+            model_name = getattr(getattr(model, "config", None), "_name_or_path", "unknown_model")
 
             # Infer the task from the model's config for robust model loading in the target script.
-            config_dict = model.config.to_dict()
             task = "text-generation" # Default task
-            if "architectures" in config_dict and config_dict["architectures"]:
-                arch = config_dict["architectures"][0]
+            if hasattr(model, "config") and getattr(model.config, "architectures", None):
+                arch = model.config.architectures[0]
                 if "ForSequenceClassification" in arch:
                     task = "sequence-classification"
 

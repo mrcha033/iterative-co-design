@@ -59,7 +59,7 @@ def calculate_perplexity(model, data_loader, fp16: bool = True):
     # Use the model's pad_token_id, or eos_token_id as a fallback
     pad_token_id = getattr(model.config, "pad_token_id", None) or getattr(model.config, "eos_token_id", None)
 
-    with torch.cuda.amp.autocast(enabled=(fp16 and device.type == 'cuda')), torch.no_grad():
+    with torch.amp.autocast(enabled=(fp16 and device.type == 'cuda')), torch.no_grad():
         for batch in tqdm(data_loader, desc="Calculating Perplexity"):
             batch = {k: v.to(device) for k, v in batch.items()}
             
