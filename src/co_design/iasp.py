@@ -196,11 +196,15 @@ def _apply_permutation_to_mamba(model: nn.Module, permutation: List[int]):
 
             with torch.no_grad():
                 # Permute output of in_proj (P @ W)
-                w_in, b_in = layer.in_proj.weight.data, layer.in_proj.bias.data
+                w_in = layer.in_proj.weight.data
+                b_in = layer.in_proj.bias  # Get tensor or None
+
                 layer.in_proj.weight.data.copy_(torch.cat((w_in[:d_inner][p], w_in[d_inner:][p])))
                 if b_in is not None:
-                    layer.in_proj.bias.data.copy_(torch.cat((b_in[:d_inner][p], b_in[d_inner:][p])))
-                
+                    # Access .data only after confirming the tensor exists
+                    b_in_data = b_in.data
+                    layer.in_proj.bias.data.copy_(torch.cat((b_in_data[:d_inner][p], b_in_data[d_inner:][p])))
+
                 # Permute inputs of subsequent layers (W @ P^T -> W[:, p])
                 layer.dt_proj.weight.data = layer.dt_proj.weight.data[:, p]
                 layer.out_proj.weight.data = layer.out_proj.weight.data[:, p]
