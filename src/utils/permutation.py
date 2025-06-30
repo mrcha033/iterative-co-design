@@ -64,4 +64,20 @@ def inplace_permute_in_proj_split(
             # Use a temporary tensor for the bias as well
             b_data_clone = bias.data.clone()
             bias.data[:d].copy_(b_data_clone[:d].index_select(0, idx))
-            bias.data[d:].copy_(b_data_clone[d:].index_select(0, idx)) 
+            bias.data[d:].copy_(b_data_clone[d:].index_select(0, idx))
+
+def alias_free_rows_slice(param: nn.Parameter, idx: torch.Tensor, start: int, end: int):
+    """
+    Performs an alias-free row permutation on a slice of a parameter tensor.
+    This is useful for layers with combined weights (e.g., Mamba's double-width conv).
+    """
+    _check(param)
+    with torch.no_grad():
+        # Clone the selected slice, permute it, and then copy it back.
+        # This ensures the source and destination do not alias.
+        device = param.device
+        idx = idx.to(device)
+        
+        original_slice = param.data[start:end]
+        permuted_slice = original_slice.index_select(0, idx).clone()
+        param.data[start:end].copy_(permuted_slice) 
