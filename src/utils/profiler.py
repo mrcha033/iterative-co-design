@@ -226,8 +226,9 @@ class LatencyProfiler:
             with open(cache_file, "r") as f:
                 return json.load(f)
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+        temp_dir = tempfile.TemporaryDirectory(prefix="prof_")
+        try:
+            temp_path = Path(temp_dir.name)
             model_path = temp_path / "model.pt"
             input_path = temp_path / "input.pt"
 
@@ -290,6 +291,9 @@ class LatencyProfiler:
             except Exception as e:
                 logger.error(f"An unexpected error occurred during cache measurement: {e}")
                 return None
+        finally:
+            # Ensure the temporary directory is cleaned up regardless of success or failure
+            temp_dir.cleanup()
 
     def profile_memory_usage(self, model: nn.Module, 
                            dummy_input: Dict[str, torch.Tensor]) -> Dict[str, float]:
