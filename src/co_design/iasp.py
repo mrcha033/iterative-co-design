@@ -43,6 +43,7 @@ from tqdm.auto import tqdm
 from .modularity import calculate_modularity
 from utils.permutation import (
     alias_free_rows_slice,
+    alias_free_vector_slice,
     inplace_permute_cols,
     inplace_permute_in_proj_split,
     inplace_permute_rows,
@@ -217,15 +218,11 @@ def _apply_perm_to_mixer(mixer: nn.Module, p_full: torch.Tensor):
     # --- in_proj ---
     # weight shape: [2*d_val, d_model], bias shape: [2*d_val]
     # First half of output channels is gate, second is value.
-    w_gate = mixer.in_proj.weight[:d_val]
-    w_val  = mixer.in_proj.weight[d_val:]
-    inplace_permute_rows(w_gate, p_gate)
-    inplace_permute_rows(w_val, p_val)
+    alias_free_rows_slice(mixer.in_proj.weight, p_gate, 0, d_val)
+    alias_free_rows_slice(mixer.in_proj.weight, p_val, d_val, 2 * d_val)
     if mixer.in_proj.bias is not None:
-        b_gate = mixer.in_proj.bias[:d_val]
-        b_val  = mixer.in_proj.bias[d_val:]
-        inplace_permute_vector(b_gate, p_gate)
-        inplace_permute_vector(b_val, p_val)
+        alias_free_vector_slice(mixer.in_proj.bias, p_gate, 0, d_val)
+        alias_free_vector_slice(mixer.in_proj.bias, p_val, d_val, 2 * d_val)
 
     # SSM / dt_proj
     if getattr(mixer, "A_log", None) is not None and mixer.A_log.size(0) == d_val:

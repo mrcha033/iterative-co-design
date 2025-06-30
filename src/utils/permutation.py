@@ -74,4 +74,21 @@ def alias_free_rows_slice(param: TensorOrParameter, idx: torch.Tensor, start: in
         
         original_slice = param.data[start:end]
         permuted_slice = original_slice.index_select(0, idx).clone()
+        param.data[start:end].copy_(permuted_slice)
+
+def alias_free_vector_slice(param: TensorOrParameter, idx: torch.Tensor, start: int, end: int):
+    """
+    Performs an alias-free permutation on a slice of a 1D parameter tensor.
+    """
+    with torch.no_grad():
+        if param.ndim != 1:
+            raise ValueError("Input must be a 1D vector.")
+        assert 0 <= start < end <= param.shape[0], \
+               f"Slice [{start}:{end}] out of range for param with shape {param.shape}"
+        
+        device = param.device
+        idx = idx.to(device)
+        
+        original_slice = param.data[start:end]
+        permuted_slice = original_slice.index_select(0, idx).clone()
         param.data[start:end].copy_(permuted_slice) 
