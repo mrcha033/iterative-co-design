@@ -16,6 +16,7 @@ from itertools import zip_longest
 from collections import OrderedDict
 from omegaconf import OmegaConf
 from dataclasses import is_dataclass
+from torch.utils.data import DataLoader, Dataset
 
 from co_design.iasp import run_iasp_on_mamba   # <- 당신 프로젝트 import 경로
 from utils.input import make_dummy_input      # <- 동일
@@ -33,13 +34,33 @@ perm.eval()
 tok = AutoTokenizer.from_pretrained(MODEL_ID)
 dummy_in = make_dummy_input(orig, tok, device)
 
+# --- Create a proper dataloader with diverse data for correlation analysis ---
+class RandomTextDataset(Dataset):
+    """Generates random token sequences to ensure activation variance."""
+    def __init__(self, tokenizer, num_samples=128, seq_len=128):
+        self.tokenizer = tokenizer
+        self.num_samples = num_samples
+        self.seq_len = seq_len
+        self.vocab_size = tokenizer.vocab_size
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        input_ids = torch.randint(0, self.vocab_size, (self.seq_len,), dtype=torch.long)
+        return {"input_ids": input_ids, "attention_mask": torch.ones_like(input_ids)}
+
+# Use a real dataloader to get varied activations
+random_dataset = RandomTextDataset(tok, num_samples=64, seq_len=128)
+data_loader = DataLoader(random_dataset, batch_size=8)
+
 # 2) IASP 실행  --------------------------------------------------------------
-#   최소 샘플만 써서 빨리 돌림 (정확하진 않아도 permutation 자체는 만들어짐)
+#   이제 충분한 샘플로 correlation을 계산합니다.
 perm_tensor, _ = run_iasp_on_mamba(
     perm,
-    dataloader=[dummy_in],                    # 리스트도 DataLoader 처럼 iterable
+    dataloader=data_loader,
     iasp_config=OmegaConf.create({
-        "max_samples": 2048,                  # Increase samples to avoid NaN
+        "max_samples": 4096,                  # Use enough samples for stable correlation
         "cluster_size_range": [16, 64],       # 빠른 실행용
         "knn_k": 64,
         "spectral_n_init": 10,
