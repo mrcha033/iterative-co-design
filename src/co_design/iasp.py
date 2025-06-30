@@ -132,19 +132,23 @@ def _find_optimal_permutation(
     dim = correlation_matrix.shape[0]
     best_modularity, best_permutation = -np.inf, list(range(dim))
 
-    # --- Preprocess affinity matrix for robustness ---
-    # 1. Ensure float type, and double-check for nan/inf values.
-    affinity_matrix = np.abs(correlation_matrix).astype(np.float64)
-    if np.any(np.isnan(affinity_matrix)) or np.any(np.isinf(affinity_matrix)):
-        logger.warning("NaN or Inf found in affinity matrix, cleaning up.")
-        affinity_matrix = np.nan_to_num(affinity_matrix)
+    # --- Robust Preprocessing Step ---
+    # 1. Ensure the correlation matrix is fully finite before proceeding.
+    #    Activations with zero variance can cause `torch.corrcoef` to produce NaNs or Infs.
+    if not np.all(np.isfinite(correlation_matrix)):
+        logger.warning("Correlation matrix contains non-finite values (NaN or Inf). Cleaning up...")
+        # Replace NaN with 0, and Inf/-Inf with the valid correlation bounds of 1/-1.
+        correlation_matrix = np.nan_to_num(correlation_matrix, nan=0.0, posinf=1.0, neginf=-1.0)
 
-    # 2. Enforce perfect symmetry to prevent sklearn warnings and errors.
+    # 2. Create the affinity matrix for clustering.
+    affinity_matrix = np.abs(correlation_matrix).astype(np.float64)
+
+    # 3. Enforce perfect symmetry to prevent sklearn warnings.
     affinity_matrix = (affinity_matrix + affinity_matrix.T) / 2
 
-    # 3. Set the diagonal to 0 to remove self-loops.
+    # 4. Set the diagonal to 0 to remove self-loops.
     np.fill_diagonal(affinity_matrix, 0)
-    # --- End of preprocessing ---
+    # --- End of Preprocessing ---
 
     n_init = iasp_config.get("spectral_n_init", 10)
     random_state = iasp_config.get("spectral_random_state", 0)
