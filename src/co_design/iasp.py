@@ -105,35 +105,47 @@ def _collect_layer_corr(
 
     def _hook(_, __, out):
         d_inner = out.size(-1) // 2
-        x = out[..., :d_inner]
+        # Use .half() for faster collection, then upcast for precision later
+        x = out[..., :d_inner].half()
         if x.ndim == 3:
+            # Flatten (batch, seq, dim) to (batch*seq, dim)
             x = x.reshape(-1, d_inner)
-        acts.append(x.detach().to(torch.float32))  # keep fp32 on device
+        acts.append(x)  # Keep on device
 
     h = model.get_submodule(layer).register_forward_hook(_hook)
 
     collected = 0
-    for i, batch in enumerate(dataloader):
-        if collected >= max_samples:
-            break
-        if i % stride:
-            continue
-        inp = {k: v.to(device) for k, v in batch.items() if torch.is_tensor(v)}
-        with torch.no_grad():
+    with torch.no_grad():
+        for i, batch in enumerate(dataloader):
+            if collected >= max_samples:
+                break
+            if i % stride:
+                continue
+            inp = {k: v.to(device) for k, v in batch.items() if torch.is_tensor(v)}
             model(**inp)
-        collected += inp["input_ids"].numel()
+            # Use .shape[0] on the flattened tensor for accurate sample counting
+            collected += acts[-1].shape[0]
 
     h.remove()
     if not acts:
         raise RuntimeError(f"no activations captured for {layer}")
 
+    # Move correlation calculation entirely to GPU
     X = torch.cat(acts, 0)[:max_samples]
+    # Upcast to float32 for stable correlation calculation
+    X = X.to(torch.float32)
+
     std = X.std(0)
     mask = std > 1e-6
-    X = X[:, mask]
-    corr = torch.corrcoef(X.T).cpu().numpy()
-    np.fill_diagonal(corr, 1.0)
-    return corr, mask
+    X_masked = X[:, mask]
+
+    # Use torch.corrcoef for GPU-accelerated computation
+    corr = torch.corrcoef(X_masked.T)
+    # Ensure diagonal is exactly 1.0 after potential floating point inaccuracies
+    corr.fill_diagonal_(1.0)
+    
+    # Return numpy array for compatibility with scikit-learn
+    return corr.cpu().numpy(), mask
 
 
 def _spectral_perm(corr: np.ndarray, cfg: DictConfig) -> Tuple[List[int], float]:
