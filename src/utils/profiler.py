@@ -281,7 +281,6 @@ class LatencyProfiler:
                 ncu_path,
                 "--metrics", "lts__t_sector_hit_rate.pct",
                 "--csv",
-                "--page", "disabled",
                 "--target-processes", "all",
                 "--set", "launch",
                 "-c", "2",
