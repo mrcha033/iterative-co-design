@@ -257,6 +257,13 @@ def _permute_params_in_module(module: nn.Module, p: torch.Tensor, p_inv: torch.T
     for name, param in module.named_parameters(recurse=False):
         # This function handles generic parameters. Special modules like in_proj
         # or weight_normed conv1d are handled separately.
+        if name.endswith("out_proj.weight"): # Special handling for out_proj
+            if param.shape[1] == d_inner:
+                inplace_permute_cols(param, p_inv)
+            elif param.shape[0] == d_inner: # Handle transposed layout
+                inplace_permute_rows(param, p)
+            continue
+
         if param.ndim == 1 and param.numel() == d_inner:
             inplace_permute_vector(param, p)
         elif param.ndim == 2:
@@ -335,15 +342,15 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
                 else: # Plain convolution (can be 2D or 3D)
                     # Handle double-width conv as a special case first due to its unique bias logic
                     if conv_layer.weight.shape[0] == 2 * d_inner:
-                         logger.debug(f"Permuting special case: double-width {conv_name}")
+                         logger.debug(f"Permuting ONLY VALUE part of double-width {conv_name}")
+                         # --- VALUE PART PERMUTED ---
                          alias_free_rows_slice(conv_layer.weight, p, 0, d_inner)
-                         alias_free_rows_slice(conv_layer.weight, p, d_inner, 2 * d_inner)
+                         # --- GATE PART UNTOUCHED ---
+                         
                          if hasattr(conv_layer, 'bias') and conv_layer.bias is not None:
                             if conv_layer.bias.numel() == 2 * d_inner:
-                                logger.debug("Permuting first half of double-width conv bias using view")
-                                # Ensure view is contiguous for safe in-place operations
+                                logger.debug("Permuting ONLY VALUE part of double-width conv bias")
                                 bias_view = conv_layer.bias.view(2, d_inner).contiguous()
-                                # Permute the first half (x-bias), leave the second (gate-bias)
                                 inplace_permute_vector(bias_view[0], p)
                             elif conv_layer.bias.numel() == d_inner:
                                 inplace_permute_vector(conv_layer.bias, p)
