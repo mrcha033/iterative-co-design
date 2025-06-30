@@ -249,112 +249,89 @@ def _find_optimal_permutation(
     return best_permutation, best_modularity
 
 
+def _permute_params_in_module(module: nn.Module, p: torch.Tensor, p_inv: torch.Tensor):
+    """
+    Permutes parameters within a given module based on their shape, skipping known special cases.
+    """
+    d_inner = p.numel()
+    for name, param in module.named_parameters(recurse=False):
+        # This function handles generic parameters. Special modules like in_proj
+        # or weight_normed conv1d are handled separately.
+        if param.ndim == 1 and param.numel() == d_inner:
+            inplace_permute_vector(param, p)
+        elif param.ndim == 2:
+            if param.shape[0] == d_inner:
+                inplace_permute_rows(param, p)
+            elif param.shape[1] == d_inner:
+                inplace_permute_cols(param, p_inv)
+        elif param.ndim == 3 and param.shape[0] == d_inner:
+             # Handle 3D tensors like non-weight-normed Conv1d
+             logger.debug(f"Auto-permuting 3D rows of '{name}' in {module.__class__.__name__}")
+             flat_param = param.data.view(d_inner, -1)
+             new_flat_data = flat_param.index_select(0, p).clone()
+             param.data.copy_(new_flat_data.view_as(param))
+
+
 def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List[int]):
     """Applies a permutation to a list of Mamba mixer blocks consistently."""
     if not mamba_mixers:
         return
 
-    # Create permutation tensor and its inverse on the correct device.
     dev = mamba_mixers[0].in_proj.weight.device
     p = torch.tensor(permutation, dtype=torch.long, device=dev)
-    
-    # The inverse permutation is required for layers where the permuted dimension
-    # is on the input side (column permutation of the weight matrix).
     p_inv = torch.empty_like(p)
     p_inv[p] = torch.arange(p.numel(), device=dev)
-
+    d_inner = p.numel()
+    
     pbar = tqdm(mamba_mixers, desc="3/3: Applying Permutation to Mamba Mixers", leave=False)
     for layer in pbar:
-        d_inner = layer.out_proj.in_features
-        assert p.numel() == d_inner, f"Permutation length {p.numel()} mismatch with d_inner {d_inner}"
+        seen_modules = set() # Track handled modules to prevent double permutation
 
-        with torch.no_grad():
-            # Use the dedicated helper for the split in_proj layer, handling bias correctly.
-            inplace_permute_in_proj_split(
-                layer.in_proj.weight, p, getattr(layer.in_proj, 'bias', None)
-            )
+        # --- Step 1: Handle Special Cases First ---
+        
+        # 1a. Handle the split in_proj layer
+        if hasattr(layer, 'in_proj'):
+            inplace_permute_in_proj_split(layer.in_proj.weight, p, getattr(layer.in_proj, 'bias', None))
+            seen_modules.add('in_proj')
 
-            # Handle potential API drift in mamba-ssm (conv1d vs conv1d_proj)
-            conv_layer = None
-            if hasattr(layer, "conv1d_proj"):
-                conv_layer = layer.conv1d_proj
-            elif hasattr(layer, "conv1d"):
-                conv_layer = layer.conv1d
-
-            if conv_layer:
-                # IMPORTANT: Check for weight normalization. If used, we must permute the underlying
-                # 'weight_v' and 'weight_g' parameters instead of the computed 'weight'.
-                try:
-                    if hasattr(conv_layer, 'weight_v') and hasattr(conv_layer, 'weight_g'):
-                        logger.debug(f"Permuting weight-normalized conv1d layer in {layer.__class__.__name__}")
-                        inplace_permute_rows(conv_layer.weight_v, p)
-                        inplace_permute_vector(conv_layer.weight_g, p)
+        # 1b. Handle all conv variants (conv1d, conv1d_proj)
+        for conv_name in ('conv1d', 'conv1d_proj'):
+            if hasattr(layer, conv_name):
+                conv_layer = getattr(layer, conv_name)
+                if hasattr(conv_layer, 'weight_v') and hasattr(conv_layer, 'weight_g'):
+                    logger.debug(f"Permuting special case: weight-normalized {conv_name}")
+                    inplace_permute_rows(conv_layer.weight_v, p)
+                    inplace_permute_vector(conv_layer.weight_g, p)
+                    if hasattr(conv_layer, 'bias') and conv_layer.bias is not None:
+                        inplace_permute_vector(conv_layer.bias, p)
+                else: # Plain convolution (can be 2D or 3D)
+                    # Handle double-width conv as a special case first due to its unique bias logic
+                    if conv_layer.weight.shape[0] == 2 * d_inner:
+                         logger.debug(f"Permuting special case: double-width {conv_name}")
+                         alias_free_rows_slice(conv_layer.weight, p, 0, d_inner)
+                         alias_free_rows_slice(conv_layer.weight, p, d_inner, 2 * d_inner)
+                         if hasattr(conv_layer, 'bias') and conv_layer.bias is not None:
+                            if conv_layer.bias.numel() == 2 * d_inner:
+                                logger.debug("Permuting first half of double-width conv bias using view")
+                                bias_view = conv_layer.bias.view(2, d_inner)
+                                # Permute the first half (x-bias), leave the second (gate-bias)
+                                inplace_permute_vector(bias_view[0], p)
+                            elif conv_layer.bias.numel() == d_inner:
+                                inplace_permute_vector(conv_layer.bias, p)
                     else:
-                        w = conv_layer.weight
-                        # Handle Mamba's double-width convolution for combined projections
-                        if w.shape[0] == 2 * d_inner:
-                            logger.debug(f"Permuting double-width conv1d layer in {layer.__class__.__name__}")
-                            # Use the alias-free helper for slicing to avoid view/copy errors
-                            alias_free_rows_slice(conv_layer.weight, p, 0, d_inner)
-                            alias_free_rows_slice(conv_layer.weight, p, d_inner, 2 * d_inner)
-                        elif w.shape[0] == d_inner:
-                            inplace_permute_rows(w, p)
-                        elif w.shape[1] == d_inner:
-                            # This case is unusual but handled for completeness
-                            inplace_permute_cols(w, p_inv)
-                except AttributeError:
-                     logger.warning(f"Could not apply permutation to weight-normalized layer {conv_layer}. "
-                                  "Attributes 'weight_v' or 'weight_g' might be missing. Skipping.")
+                        # Handle all other generic conv layers via the blanket function
+                        _permute_params_in_module(conv_layer, p, p_inv)
+                seen_modules.add(conv_name)
 
-                # This check now correctly handles both weight-normed and standard conv biases
-                if hasattr(conv_layer, 'bias') and hasattr(conv_layer.bias, 'numel') and conv_layer.bias.numel() == d_inner:
-                    inplace_permute_vector(conv_layer.bias, p)
+        # --- Step 2: Handle all other direct child parameters automatically ---
+        for name, child_module in layer.named_children():
+            # Skip special modules that were already handled
+            if name in seen_modules:
+                continue
+            _permute_params_in_module(child_module, p, p_inv)
             
-            # --- Permute x_proj (handles SSM projections) ---
-            if hasattr(layer, 'x_proj'):
-                W = layer.x_proj.weight
-                # Automatically detect permutation axis based on shape
-                if W.shape[0] == p.numel(): # d_inner is on rows
-                    inplace_permute_rows(W, p)
-                    if hasattr(layer.x_proj, 'bias') and layer.x_proj.bias is not None:
-                        inplace_permute_vector(layer.x_proj.bias, p)
-                elif W.shape[1] == p.numel(): # d_inner is on columns
-                    inplace_permute_cols(W, p_inv)
-                    # Bias is on the output dim, which is not permuted, so no-op for bias.
-                else:
-                    logger.warning(f"x_proj layer {layer.__class__.__name__} has unexpected shape {W.shape}, skipping permutation.")
-
-            # --- Permute dt_proj (handles SSM projections) ---
-            if hasattr(layer, 'dt_proj'):
-                 W_dt = layer.dt_proj.weight
-                 perm_dir = None
-                 # Automatically detect permutation axis based on shape
-                 if W_dt.shape[0] == p.numel():
-                     inplace_permute_rows(W_dt, p)
-                     perm_dir = p
-                 elif W_dt.shape[1] == p.numel(): 
-                     inplace_permute_cols(W_dt, p_inv)
-                     perm_dir = p_inv # Bias would be on output dim, so it's not permuted with p_inv
-                 else:
-                    logger.warning(f"dt_proj layer {layer.__class__.__name__} has unexpected shape {W_dt.shape}, skipping permutation.")
-
-                 # Handle potential bias in dt_proj, using the correct permutation direction (only for row perm)
-                 if perm_dir is p and hasattr(layer.dt_proj, 'bias') and layer.dt_proj.bias is not None:
-                    inplace_permute_vector(layer.dt_proj.bias, perm_dir)
-
-            inplace_permute_rows(layer.A_log, p)
-            inplace_permute_vector(layer.D, p)
-            
-            # out_proj input is the permuted state, so we permute its weight columns with the inverse
-            inplace_permute_cols(layer.out_proj.weight, p_inv)
-            
-            # The bias term, IF it exists and has d_inner size, must also be permuted with p_inv
-            if hasattr(layer.out_proj, 'bias') and layer.out_proj.bias is not None:
-                if layer.out_proj.bias.numel() == d_inner:
-                    logger.debug(f"Permuting out_proj.bias for {layer.__class__.__name__}")
-                    inplace_permute_vector(layer.out_proj.bias, p_inv)
-                else:
-                    logger.debug(f"out_proj.bias for {layer.__class__.__name__} has size {layer.out_proj.bias.numel()} (not d_inner), so it is not permuted.")
+        # --- Step 3: Handle parameters that are direct attributes of the layer ---
+        _permute_params_in_module(layer, p, p_inv)
 
 
 # --- Main Public Function ---
@@ -457,16 +434,21 @@ def run_iasp_on_mamba(
 
     # Step 3: Map the permutation of valid channels back to the full dimension
     d_inner_full = valid_indices.numel()
-    # Ensure `valid_indices` is a boolean tensor for correct indexing
-    if valid_indices.dtype != torch.bool:
-        # This case shouldn't happen with our current logic, but as a safeguard:
-        valid_indices = torch.zeros(d_inner_full, dtype=torch.bool).scatter_(0, valid_indices, 1)
+    valid_indices_dev = valid_indices.to(device)
 
-    original_indices = torch.arange(d_inner_full, device=device)[valid_indices.to(device)]
+    original_indices = torch.arange(d_inner_full, device=device)[valid_indices_dev]
     permuted_original_indices = original_indices[torch.tensor(perm_valid, device=device)]
     
     full_permutation = torch.arange(d_inner_full, device=device)
-    full_permutation[original_indices] = permuted_original_indices
+    
+    # Get the indices of zero-variance channels that were dropped
+    dropped_indices = torch.where(~valid_indices_dev)[0]
+    
+    # Apply permutation to valid channels and keep dropped channels in their original places
+    full_permutation[valid_indices_dev] = permuted_original_indices
+    # Ensure dropped channels map to themselves
+    if dropped_indices.numel() > 0:
+        full_permutation[dropped_indices] = dropped_indices
 
     # Final sanity check to ensure the permutation has the correct full dimension
     assert full_permutation.numel() == d_inner_full, "Full permutation length mismatch!"
@@ -595,15 +577,18 @@ def run_iasp_on_bert(
 
     # Step 3: Map the permutation of valid channels back to the full dimension
     d_ffn_full = valid_indices.numel()
-    # Ensure `valid_indices` is a boolean tensor for correct indexing
-    if valid_indices.dtype != torch.bool:
-        valid_indices = torch.zeros(d_ffn_full, dtype=torch.bool).scatter_(0, valid_indices, 1)
+    valid_indices_dev = valid_indices.to(device)
 
-    original_indices = torch.arange(d_ffn_full, device=device)[valid_indices.to(device)]
+    original_indices = torch.arange(d_ffn_full, device=device)[valid_indices_dev]
     permuted_original_indices = original_indices[torch.tensor(perm_valid, device=device)]
     
     full_permutation = torch.arange(d_ffn_full, device=device)
-    full_permutation[original_indices] = permuted_original_indices
+    
+    # Handle dropped indices for BERT as well
+    dropped_indices = torch.where(~valid_indices_dev)[0]
+    full_permutation[valid_indices_dev] = permuted_original_indices
+    if dropped_indices.numel() > 0:
+        full_permutation[dropped_indices] = dropped_indices
     
     # Final sanity check for BERT as well
     assert full_permutation.numel() == d_ffn_full, "Full permutation length mismatch for BERT!"
