@@ -323,7 +323,8 @@ def run_dense(cfg: DictConfig):
 
 
 def run_sparsity_only(cfg: DictConfig):
-    """Runs the sparsity-only experiment."""
+    """Runs only the HDS sparsity algorithm."""
+    print("--- Running Sparsity-Only Experiment ---")
     set_random_seeds(cfg.seed)
     model, tokenizer, data_loader, eval_dataset = get_model_and_data(cfg)
 
@@ -341,6 +342,7 @@ def run_sparsity_only(cfg: DictConfig):
     metrics = _measure_and_collect_metrics(
         wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, modularity=0.0
     )
+    wrapped_model.log_sparsity()
     save_results(cfg, "sparsity_only", metrics)
 
 
@@ -362,12 +364,11 @@ def detect_family(model: nn.Module) -> str:
 def _run_iasp(model, data_loader, cfg) -> tuple[list[int], float]:
     """Helper function to run the correct IASP function and return permutation and modularity."""
     model_type = detect_family(model)
-    iasp_config = cfg.model.iasp
+    iasp_config = cfg.method.iasp
 
     iasp_runner = IASP_DISPATCH.get(model_type)
     if iasp_runner:
         logger.info(f"Running IASP for auto-detected '{model_type}' model...")
-        # Pass the entire model-specific IASP config
         return iasp_runner(model, data_loader, iasp_config)
     else:
         raise NotImplementedError(f"IASP is not implemented for model type: {model_type}")
@@ -375,6 +376,7 @@ def _run_iasp(model, data_loader, cfg) -> tuple[list[int], float]:
 
 def run_permute_only(cfg: DictConfig):
     """Runs the permutation-only experiment."""
+    print("--- Running Permutation-Only Experiment ---")
     set_random_seeds(cfg.seed)
     model, tokenizer, data_loader, eval_dataset = get_model_and_data(cfg)
     

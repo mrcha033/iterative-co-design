@@ -339,3 +339,104 @@ def run_iasp_on_mamba(
         last_perm, last_q = p_full.tolist(), float(q)
 
     return last_perm, last_q
+
+
+def _apply_perm_to_bert_ffn(
+    model: nn.Module,
+    perm: list[int],
+    layer_names: list[str]
+):
+    """Apply permutation to all FFN layers in a BERT-style model."""
+    dev = next(model.parameters()).device
+    p = torch.tensor(perm, dtype=torch.long, device=dev)
+    p_inv = torch.argsort(p)
+    d_ffn = len(perm)
+
+    for name in layer_names:
+        parent_name = ".".join(name.split(".")[:-2])
+        parent_mod = model.get_submodule(parent_name)
+
+        up_proj = parent_mod.intermediate.dense
+        down_proj = parent_mod.output.dense
+
+        if up_proj.out_features != d_ffn or down_proj.in_features != d_ffn:
+            logger.warning("Skipping FFN layer %s due to shape mismatch", name)
+            continue
+        
+        # up-projection: permute output rows and bias
+        inplace_permute_rows(up_proj.weight, p)
+        if up_proj.bias is not None:
+            inplace_permute_vector(up_proj.bias, p)
+
+        # down-projection: permute input columns
+        inplace_permute_cols(down_proj.weight, p_inv)
+
+
+def run_iasp_on_bert(
+    model: nn.Module,
+    dataloader: DataLoader,
+    cfg: DictConfig,
+) -> Tuple[List[int], float]:
+    """Run IASP on BERT, returning final permutation and modularity."""
+    cfg = DictConfig({**DEFAULTS.__dict__, **cfg})
+    device = next(model.parameters()).device
+
+    # 1. Find all target FFN layers
+    layers = _expand_wildcard(model, cfg.get("target_layer_names")) or [
+        n for n, m in model.named_modules() if n.endswith("intermediate.dense")
+    ]
+    if not layers:
+        raise RuntimeError("No BERT FFN layers found (*.intermediate.dense)")
+
+    # 2. Collect activations from ALL target layers to build ONE correlation matrix
+    all_acts = []
+    handles = []
+
+    def _hook(_, __, out):
+        # out is (B, T, C)
+        all_acts.append(out.reshape(-1, out.size(-1)).detach().to(torch.float32))
+
+    for name in layers:
+        handles.append(model.get_submodule(name).register_forward_hook(_hook))
+    
+    collected = 0
+    pbar = tqdm(dataloader, desc="IASP: BERT activations", ncols=95)
+    for i, batch in pbar:
+        if collected >= cfg.max_samples:
+            break
+        if i % cfg.sample_stride:
+            continue
+        inp = {k: v.to(device) for k, v in batch.items() if torch.is_tensor(v)}
+        with torch.no_grad():
+            model(**inp)
+        collected += inp["input_ids"].numel()
+        pbar.set_postfix({"tokens": f"{collected}/{cfg.max_samples}"})
+
+    for h in handles:
+        h.remove()
+    
+    if not all_acts:
+        raise RuntimeError("No activations captured for BERT FFN layers")
+
+    # 3. Compute global correlation
+    X = torch.cat(all_acts, 0)[:cfg.max_samples]
+    std = X.std(0)
+    mask = std > 1e-6
+    X = X[:, mask]
+    corr = torch.corrcoef(X.T).cpu().numpy()
+    np.fill_diagonal(corr, 1.0)
+    
+    # 4. Find optimal permutation on the valid subspace
+    sub_perm, q = _spectral_perm(corr, cfg)
+
+    # 5. Map permutation back to full dimension
+    d_ffn = mask.size(0)
+    p_full = torch.arange(d_ffn, device=device)
+    valid_indices = torch.where(mask)[0]
+    p_full[valid_indices] = valid_indices[torch.tensor(sub_perm, device=device)]
+
+    # 6. Apply permutation to all layers
+    _apply_perm_to_bert_ffn(model, p_full.tolist(), layers)
+    
+    logger.info("IASP for BERT done – modularity %.4f", q)
+    return p_full.tolist(), q
