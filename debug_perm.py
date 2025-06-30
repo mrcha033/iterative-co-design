@@ -14,6 +14,7 @@ if str(src_path) not in sys.path:
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from itertools import zip_longest
 from collections import OrderedDict
+from omegaconf import OmegaConf
 
 from co_design.iasp import run_iasp_on_mamba   # <- 당신 프로젝트 import 경로
 from utils.input import make_dummy_input      # <- 동일
@@ -36,11 +37,13 @@ dummy_in = make_dummy_input(orig, tok, device)
 perm_tensor, _ = run_iasp_on_mamba(
     perm,
     dataloader=[dummy_in],                    # 리스트도 DataLoader 처럼 iterable
-    iasp_config={
+    iasp_config=OmegaConf.create({
         "max_samples": 512,
         "cluster_size_range": [16, 64],       # 빠른 실행용
         "knn_k": 64,
-    },
+        "spectral_n_init": 10,
+        "spectral_random_state": 42
+    }),
 )
 
 # 3) hook 으로 층별 출력 비교 -----------------------------------------------
