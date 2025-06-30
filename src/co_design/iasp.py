@@ -83,8 +83,9 @@ def _get_activation_correlation(
 
             if act.ndim == 3:
                 act = act.reshape(-1, act.shape[-1])
-            # Asynchronous copy to CPU with fp16 for memory efficiency
-            activations[layer_name].append(act.to("cpu", dtype=torch.float16, non_blocking=True))
+            # Keep activations on GPU in fp16 for fast correlation calculation.
+            # The non_blocking copy to CPU was moved to the GPU for the heavy lifting.
+            activations[layer_name].append(act.detach().to(torch.float16))
         return hook_fn
 
     for name in target_layer_names:
