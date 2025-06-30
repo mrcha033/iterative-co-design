@@ -361,7 +361,18 @@ def detect_family(model: nn.Module) -> str:
 def _run_iasp(model, data_loader, cfg) -> tuple[list[int], float]:
     """Helper function to run the correct IASP function and return permutation and modularity."""
     model_type = detect_family(model)
-    iasp_config = cfg.method.iasp
+    
+    # Robustly find IASP config, supporting different method structures
+    if hasattr(cfg, "method") and hasattr(cfg.method, "iasp"):
+        iasp_config = cfg.method.iasp
+    elif hasattr(cfg, "iasp"):
+        iasp_config = cfg.iasp
+    else:
+        raise ValueError("Could not find IASP configuration in `cfg.method.iasp` or `cfg.iasp`")
+
+    # Expand wildcards in target_layers
+    if "target_layers" in iasp_config:
+        iasp_config.target_layers = _expand_target_layers(model, iasp_config.target_layers)
 
     iasp_runner = IASP_DISPATCH.get(model_type)
     if iasp_runner:
