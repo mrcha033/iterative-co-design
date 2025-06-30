@@ -183,12 +183,17 @@ def _find_optimal_permutation(
 def _apply_permutation_to_mamba(model: nn.Module, permutation: List[int]):
     """Applies a permutation to Mamba weights while preserving mathematical equivalence."""
     p = torch.tensor(permutation, dtype=torch.long)
-    pbar = tqdm(model.named_modules(), desc="3/3: Applying Permutation", leave=False)
+    pbar = tqdm(list(model.named_modules()), desc="3/3: Applying Permutation", leave=False)
     for name, layer in pbar:
-        if all(hasattr(layer, attr) for attr in ["in_proj", "out_proj", "dt_proj", "A_log", "D"]):
+        # More robustly identify the Mamba mixer block by checking the class name
+        # in addition to the attributes. This prevents accidental permutation of other layers.
+        is_mamba_mixer = "MambaMixer" in layer.__class__.__name__
+
+        if is_mamba_mixer and all(hasattr(layer, attr) for attr in ["in_proj", "out_proj", "dt_proj", "A_log", "D"]):
             pbar.set_postfix({"layer": name})
             d_inner = layer.out_proj.in_features
             if p.numel() != d_inner:
+                logger.warning(f"Skipping {name} due to permutation size mismatch.")
                 continue
 
             dev = layer.in_proj.weight.device
