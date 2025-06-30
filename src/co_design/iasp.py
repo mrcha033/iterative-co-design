@@ -284,31 +284,35 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
             if conv_layer:
                 # IMPORTANT: Check for weight normalization. If used, we must permute the underlying
                 # 'weight_v' and 'weight_g' parameters instead of the computed 'weight'.
-                if hasattr(conv_layer, 'weight_v') and hasattr(conv_layer, 'weight_g'):
-                    logger.debug(f"Permuting weight-normalized conv1d layer in {layer.__class__.__name__}")
-                    inplace_permute_rows(conv_layer.weight_v, p)
-                    inplace_permute_vector(conv_layer.weight_g, p)
-                else:
-                    w = conv_layer.weight
-                    # Handle Mamba's double-width convolution for combined projections
-                    if w.shape[0] == 2 * d_inner:
-                        logger.debug(f"Permuting double-width conv1d layer in {layer.__class__.__name__}")
-                        # Use the alias-free helper for slicing
-                        alias_free_rows_slice(conv_layer.weight, p, 0, d_inner)
-                        alias_free_rows_slice(conv_layer.weight, p, d_inner, 2 * d_inner)
-                    elif w.shape[0] == d_inner:
-                        inplace_permute_rows(w, p)
-                    elif w.shape[1] == d_inner:
-                        # This case is unusual but handled for completeness
-                        inplace_permute_cols(w, p_inv)
-                
+                try:
+                    if hasattr(conv_layer, 'weight_v') and hasattr(conv_layer, 'weight_g'):
+                        logger.debug(f"Permuting weight-normalized conv1d layer in {layer.__class__.__name__}")
+                        inplace_permute_rows(conv_layer.weight_v, p)
+                        inplace_permute_vector(conv_layer.weight_g, p)
+                    else:
+                        w = conv_layer.weight
+                        # Handle Mamba's double-width convolution for combined projections
+                        if w.shape[0] == 2 * d_inner:
+                            logger.debug(f"Permuting double-width conv1d layer in {layer.__class__.__name__}")
+                            # Use the alias-free helper for slicing to avoid view/copy errors
+                            alias_free_rows_slice(conv_layer.weight, p, 0, d_inner)
+                            alias_free_rows_slice(conv_layer.weight, p, d_inner, 2 * d_inner)
+                        elif w.shape[0] == d_inner:
+                            inplace_permute_rows(w, p)
+                        elif w.shape[1] == d_inner:
+                            # This case is unusual but handled for completeness
+                            inplace_permute_cols(w, p_inv)
+                except AttributeError:
+                     logger.warning(f"Could not apply permutation to weight-normalized layer {conv_layer}. "
+                                  "Attributes 'weight_v' or 'weight_g' might be missing. Skipping.")
+
                 # This check now correctly handles both weight-normed and standard conv biases
-                if hasattr(conv_layer, 'bias') and conv_layer.bias is not None and conv_layer.bias.numel() == d_inner:
+                if hasattr(conv_layer, 'bias') and hasattr(conv_layer.bias, 'numel') and conv_layer.bias.numel() == d_inner:
                     inplace_permute_vector(conv_layer.bias, p)
             
             if hasattr(layer, 'x_proj'):
-                 # x_proj input is permuted state, so permute columns with inverse
-                 inplace_permute_cols(layer.x_proj.weight, p_inv)
+                 # x_proj input is permuted state. According to user feedback, permute with p.
+                 inplace_permute_cols(layer.x_proj.weight, p)
 
             if hasattr(layer, 'dt_proj'):
                  # dt_proj output creates state, so permute rows, but its input can also be permuted
@@ -463,19 +467,19 @@ def _apply_permutation_to_bert_ffn(model: nn.Module, permutation: List[int], tar
                 
                 # Verify that the dimensions match our permutation
                 if up_proj.out_features != d_ffn or down_proj.in_features != d_ffn:
+                    logger.warning(f"Skipping FFN layer {layer_name} due to dimension mismatch.")
                     continue
 
                 pbar.set_postfix({"layer": layer_name})
 
-                with torch.no_grad():
-                    # Permute the up-projection (output is permuted)
-                    inplace_permute_rows(up_proj.weight, p)
-                    if up_proj.bias is not None:
-                        inplace_permute_vector(up_proj.bias, p) # Use vector for clarity
+                # Permute the up-projection (output is permuted)
+                inplace_permute_rows(up_proj.weight, p)
+                if up_proj.bias is not None:
+                    inplace_permute_vector(up_proj.bias, p)
 
-                    # Permute the down-projection (input is permuted)
-                    inplace_permute_cols(down_proj.weight, p_inv)
-                    # Down-projection bias is not permuted as it's added after the matmul
+                # Permute the down-projection (input is permuted)
+                inplace_permute_cols(down_proj.weight, p_inv)
+                # Down-projection bias is not permuted as it's added after the matmul
                 
                 # The LayerNorm after the FFN's residual connection acts on the un-permuted
                 # hidden state, so its parameters should NOT be permuted.
