@@ -265,42 +265,39 @@ def _expand_target_layers(model, target_spec):
 def _measure_and_collect_metrics(
     wrapped_model, tokenizer, data_loader, eval_dataset, profiler, cfg, modularity: float = 0.0
 ):
-    """Helper function to measure and collect all relevant metrics."""
+    """A helper function to run evaluation and profiling and collect all metrics."""
+    model = wrapped_model.model
+    model.eval()
+
     logger.info("Calculating evaluation metric...")
-    
-    # Use the correct metric for the task
-    if cfg.model.task == "sequence_classification":
-        metric_to_calc = "accuracy"
-    else:
-        metric_to_calc = "perplexity"
-
     task_metric = calculate_task_metric(
-        wrapped_model.model, data_loader, metric_to_calc
+        model, data_loader, metric=cfg.dataset.metric_type
     )
+    logger.info(f"{cfg.dataset.metric_type.capitalize()}: {list(task_metric.values())[0]:.4f}")
 
-    metric_name, metric_value = list(task_metric.items())[0]
-    logger.info(f"{metric_name.title()}: {metric_value:.4f}")
-
-    logger.info("Measuring latency...")
-    device = next(wrapped_model.model.parameters()).device
-    dummy_input = make_dummy_input(wrapped_model.model, tokenizer, device)
-    latency = profiler.measure_latency(wrapped_model.model, dummy_input)
-    logger.info(f"Latency: {latency:.2f} ms")
-
-    logger.info("Measuring L2 cache hit rate...")
-    # Move dummy_input to CPU for cache measurement if it's on CUDA
-    cache_dummy_input = {k: v.cpu() for k, v in dummy_input.items()}
-    cache_result = profiler.measure_cache_hits(wrapped_model.model, cache_dummy_input)
-    cache_hits = cache_result.get("lts__t_sector_hit_rate.pct", 0.0) if cache_result else 0.0
+    logger.info("Measuring latency and hardware performance...")
+    dummy_input = make_dummy_input(tokenizer, cfg.model.task)
+    hw_metrics = profiler.profile_all_metrics(model, dummy_input)
     
-    logger.info(f"Modularity: {modularity:.4f}")
+    # Log all collected hardware metrics
+    if hw_metrics:
+        logger.info("--- Hardware Performance Metrics ---")
+        for k, v in hw_metrics.items():
+            if isinstance(v, float):
+                logger.info(f"- {k}: {v:.4f}")
+            else:
+                logger.info(f"- {k}: {v}")
+        logger.info("------------------------------------")
 
-    return {
-        metric_name: metric_value,
-        "latency_ms": latency,
-        "l2_cache_hit_rate_pct": cache_hits,
+    metrics = {
+        **task_metric,
         "modularity": modularity,
     }
+    # Add hardware metrics to the final dictionary, handling the case where profiling might fail
+    if hw_metrics:
+        metrics.update(hw_metrics)
+
+    return metrics
 
 
 def run_dense(cfg: DictConfig):
