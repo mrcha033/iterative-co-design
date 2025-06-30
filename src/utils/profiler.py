@@ -121,6 +121,9 @@ class LatencyProfiler:
 
     def _parse_ncu_csv_output(self, csv_output: str) -> Optional[Dict[str, float]]:
         """Parses the CSV output from Nsight Compute (ncu) using pandas for robustness."""
+        if "No kernels were profiled" in csv_output:
+            logger.warning("NCU captured 0 kernels. This may be due to an incorrect kernel_name_filter or an issue in the model's execution path.")
+            return None
         try:
             # Clean the output: Find where the actual CSV data starts.
             # NCU output can have informational text and multiple headers.
@@ -230,7 +233,7 @@ class LatencyProfiler:
         self,
         model: nn.Module,
         dummy_input: Dict[str, torch.Tensor],
-        kernel_name_filter: str = "selective_scan",
+        kernel_name_filter: Optional[str] = None,
         force_sudo: bool = False,
     ) -> Optional[Dict[str, float]]:
         """
@@ -278,7 +281,7 @@ class LatencyProfiler:
                 ncu_path,
                 "--metrics", "lts__t_sector_hit_rate.pct",
                 "--csv",
-                "--page", "disabled",
+                "--page=disabled",
                 "--launch-skip-before-match",
                 "--set", "fullcsv",
             ]
