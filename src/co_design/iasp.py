@@ -64,6 +64,7 @@ def _get_activation_correlation(
     target_layer_names: List[str],
     is_mamba_in_proj: bool,
     max_samples: int = DEFAULT_MAX_SAMPLES,
+    sample_stride: int = 1,
     device: Optional[str] = None,
 ) -> np.ndarray:
     """Computes activation correlation, with special handling for Mamba's in_proj."""
@@ -82,7 +83,8 @@ def _get_activation_correlation(
 
             if act.ndim == 3:
                 act = act.reshape(-1, act.shape[-1])
-            activations[layer_name].append(act.detach().cpu())
+            # Asynchronous copy to CPU with fp16 for memory efficiency
+            activations[layer_name].append(act.to("cpu", dtype=torch.float16, non_blocking=True))
         return hook_fn
 
     for name in target_layer_names:
@@ -95,15 +97,27 @@ def _get_activation_correlation(
             raise ValueError(f"Layer '{name}' not found.")
 
     collected_tokens = 0
-    pbar = tqdm(dataloader, desc="1/3: Collecting Activations", leave=False)
-    for batch in pbar:
+    pbar = tqdm(dataloader, desc="1/3: Collecting Activations", miniters=1, ncols=100, leave=True)
+    for i, batch in enumerate(pbar):
         if collected_tokens >= max_samples:
             break
+        # Apply sample stride
+        if i % sample_stride != 0:
+            continue
+
         inputs = {k: v.to(device) for k, v in batch.items() if torch.is_tensor(v)}
         with torch.no_grad():
             _ = model(**inputs)
-        collected_tokens += next(iter(inputs.values())).shape[0] * next(iter(inputs.values())).shape[1]
+        
+        # More accurate token counting from input_ids
+        num_new_tokens = inputs['input_ids'].numel()
+        collected_tokens += num_new_tokens
         pbar.set_postfix({"tokens": f"{collected_tokens}/{max_samples}"})
+
+        # Enhanced logging every 10 steps
+        if (pbar.n + 1) % 10 == 0:
+            logger.debug(f"Step {pbar.n+1}: Collected {collected_tokens} tokens so far.")
+
     for h in hooks:
         h.remove()
 
@@ -322,7 +336,8 @@ def run_iasp_on_mamba(
     # Step 1: Get activation correlation for the d_inner dimension
     correlation_matrix = _get_activation_correlation(
         model, dataloader, target_layer_names, is_mamba_in_proj=True, device=device,
-        max_samples=iasp_config.get("max_samples", DEFAULT_MAX_SAMPLES)
+        max_samples=iasp_config.get("max_samples", DEFAULT_MAX_SAMPLES),
+        sample_stride=iasp_config.get("sample_stride", 1)
     )
 
     # Step 2: Find the optimal permutation
@@ -431,7 +446,8 @@ def run_iasp_on_bert(
     # Step 1: Get activation correlation for the FFN intermediate dimension
     correlation_matrix = _get_activation_correlation(
         model, dataloader, target_layer_names, is_mamba_in_proj=False, device=device,
-        max_samples=iasp_config.get("max_samples", DEFAULT_MAX_SAMPLES)
+        max_samples=iasp_config.get("max_samples", DEFAULT_MAX_SAMPLES),
+        sample_stride=iasp_config.get("sample_stride", 1)
     )
 
     # Step 2: Find the optimal permutation

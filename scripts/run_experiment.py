@@ -95,6 +95,33 @@ def set_random_seeds(seed: int):
         torch.backends.cudnn.benchmark = False
 
 
+class SlidingWindowDataset(torch.utils.data.Dataset):
+    """Dataset for creating sliding windows over a single token sequence."""
+    def __init__(self, token_ids, seq_len, stride):
+        self.token_ids = token_ids
+        self.seq_len = seq_len
+        self.stride = stride
+
+    def __len__(self):
+        # Calculate the number of windows
+        return (self.token_ids.size(0) - self.seq_len) // self.stride + 1
+
+    def __getitem__(self, idx):
+        start_idx = idx * self.stride
+        end_idx = start_idx + self.seq_len
+        
+        input_ids = self.token_ids[start_idx:end_idx]
+        labels = input_ids.clone()
+
+        # For overlapping strides, mask out the loss for the overlapping tokens
+        # in all but the first window. This prevents re-calculating loss on the
+        # same tokens and follows standard perplexity evaluation practice.
+        if idx > 0:
+            labels[:self.seq_len - self.stride] = -100
+
+        return {"input_ids": input_ids, "labels": labels}
+
+
 def get_model_and_data(cfg: DictConfig):
     """Loads model, tokenizer, and dataset based on the config."""
     print(f"Loading model: {cfg.model.name}")
@@ -112,8 +139,65 @@ def get_model_and_data(cfg: DictConfig):
         tokenizer.add_special_tokens({'pad_token': tokenizer.eos_token})
         # The model's embedding matrix needs to be resized to reflect the new token.
         model.resize_token_embeddings(len(tokenizer))
+        # Ensure the model config uses the correct pad_token_id for loss calculation
+        model.config.pad_token_id = tokenizer.pad_token_id
 
     print(f"Loading dataset: {cfg.dataset.name}")
+
+    if cfg.model.task == "language_modeling":
+        # --- Pre-tokenization and Caching for LM tasks ---
+        seq_len = cfg.dataset.get("seq_len", 512)
+        stride = cfg.dataset.get("stride", seq_len // 2)
+        
+        # Robust cache key with tokenizer class and vocab size for reproducibility
+        tokenizer_ver_tag = f"{tokenizer.__class__.__name__}-{tokenizer.vocab_size}"
+        cache_dir = Path(f"cache/{cfg.dataset.name}-{tokenizer_ver_tag}")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        eval_split = "validation"
+        try:
+            # Attempt to load from disk first
+            dataset = load_dataset(cfg.dataset.path, cfg.dataset.get("subset"))
+            if eval_split not in dataset:
+                eval_split = "test"
+        except Exception:
+            logger.warning(f"Could not find dataset at path '{cfg.dataset.path}'. Attempting to download from Hub...")
+            dataset = load_dataset(cfg.dataset.name, cfg.dataset.get("subset"))
+            if eval_split not in dataset:
+                eval_split = "test"
+        
+        tokenized_cache_file = cache_dir / f"{eval_split}_tokenized.pt"
+
+        if tokenized_cache_file.exists():
+            logger.info(f"Loading tokenized data from cache: {tokenized_cache_file}")
+            encodings = torch.load(tokenized_cache_file)
+        else:
+            logger.info("Tokenizing and caching dataset...")
+            
+            raw_eval_dataset = dataset[eval_split]
+            # Preserve paragraph boundaries by joining with newlines
+            full_text = "\n\n".join(raw_eval_dataset["text"])
+            encodings = tokenizer(full_text, return_tensors="pt", truncation=False).input_ids.squeeze()
+            torch.save(encodings, tokenized_cache_file)
+            logger.info(f"Saved tokenized data to cache: {tokenized_cache_file}")
+
+        eval_dataset_text_only = dataset[eval_split] # for compatibility with return value
+        tokenized_dataset = SlidingWindowDataset(encodings, seq_len=seq_len, stride=stride)
+
+        # DataLoader tuning
+        num_cpu = max(1, os.cpu_count() // 2)
+        data_loader = DataLoader(
+            tokenized_dataset,
+            batch_size=cfg.dataset.batch_size,
+            collate_fn=default_data_collator,
+            num_workers=num_cpu,
+            pin_memory=True,
+            persistent_workers=True if num_cpu > 0 else False,
+            prefetch_factor=4 if num_cpu > 0 else 2,
+        )
+        return model, tokenizer, data_loader, eval_dataset_text_only
+
+    # --- Original path for non-LM tasks (e.g., sequence classification) ---
     try:
         dataset = load_dataset(cfg.dataset.path, cfg.dataset.get("subset"))
     except Exception:
@@ -138,7 +222,17 @@ def get_model_and_data(cfg: DictConfig):
     tokenized_dataset = eval_dataset.map(tokenize_function, batched=True, remove_columns=eval_dataset.column_names)
     tokenized_dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
     
-    data_loader = DataLoader(tokenized_dataset, batch_size=cfg.dataset.batch_size, collate_fn=default_data_collator)
+    # DataLoader tuning
+    num_cpu = max(1, os.cpu_count() // 2)
+    data_loader = DataLoader(
+        tokenized_dataset, 
+        batch_size=cfg.dataset.batch_size, 
+        collate_fn=default_data_collator,
+        num_workers=num_cpu,
+        pin_memory=True,
+        persistent_workers=True if num_cpu > 0 else False,
+        prefetch_factor=4 if num_cpu > 0 else 2,
+    )
 
     return model, tokenizer, data_loader, eval_dataset
 
@@ -527,12 +621,30 @@ def print_dry_run_plan(cfg: DictConfig):
     run_cleanup_if_configured(cfg, dry_run=True)
     print("="*50)
 
+def check_gpu_headroom(required_gb: float = 4.0):
+    """Checks if there is enough free GPU memory to proceed."""
+    if not torch.cuda.is_available():
+        return True # Continue if on CPU
+    
+    free_bytes, total_bytes = torch.cuda.mem_get_info()
+    free_gb = free_bytes / (1024**3)
+    
+    logger.info(f"Available GPU Memory: {free_gb:.2f} GB")
+    if free_gb < required_gb:
+        logger.error(f"GPU memory headroom is below the required {required_gb} GB. Aborting to prevent OOM.")
+        # Exit gracefully to prevent crashing the whole run
+        sys.exit(1)
+    return True
 
 @hydra.main(config_path=str(project_root / "configs"), config_name="config", version_base=None)
 def main(cfg: DictConfig):
     if cfg.get("dry_run", False):
         print_dry_run_plan(cfg)
         return
+
+    # --- Pre-run checks ---
+    # Add a headroom check to prevent OOM errors during long runs
+    check_gpu_headroom(required_gb=cfg.get("min_gpu_headroom_gb", 4.0))
 
     # Disable W&B if not explicitly enabled
     if not cfg.wandb.log:

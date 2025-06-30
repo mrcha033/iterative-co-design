@@ -13,9 +13,10 @@ iasp:
   # out_proj: (1024, 2048) - operates on full hidden dim  
   target_layer_names: "backbone.layers.*.mixer.in_proj"
   cluster_size_range: [64, 256]
-  max_samples: ${eval:'min(4096, 2*${model.d_inner})'}
+  max_samples: 65536
+  sample_stride: 4
   spectral_n_init: 10
-  spectral_random_state: 0
+  spectral_random_state: 42
 
 hds:
   target_layers:
