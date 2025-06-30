@@ -305,10 +305,33 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
                 conv_layer = getattr(layer, conv_name)
                 if hasattr(conv_layer, 'weight_v') and hasattr(conv_layer, 'weight_g'):
                     logger.debug(f"Permuting special case: weight-normalized {conv_name}")
-                    inplace_permute_rows(conv_layer.weight_v, p)
-                    inplace_permute_vector(conv_layer.weight_g, p)
+                    out_ch = conv_layer.weight_v.shape[0]
+                    if out_ch == d_inner: # Value-only path
+                        inplace_permute_rows(conv_layer.weight_v, p)
+                        inplace_permute_vector(conv_layer.weight_g, p)
+                    elif out_ch == 2 * d_inner: # Value and gate path
+                        logger.debug(f"Permuting only the first half of weight-normalized {conv_name}")
+                        # Permute only the value part (first d_inner), leave the gate part untouched
+                        alias_free_rows_slice(conv_layer.weight_v, p, 0, d_inner)
+                        # The gate part (second d_inner) is not permuted.
+                        
+                        # We assume weight_g corresponds to the value part only in this case.
+                        # This might need adjustment if a model uses a different convention.
+                        if conv_layer.weight_g.numel() == d_inner:
+                             inplace_permute_vector(conv_layer.weight_g, p)
+                        elif conv_layer.weight_g.numel() == 2* d_inner:
+                             #Also permute only the first half of the g vector
+                             inplace_permute_vector(conv_layer.weight_g[:d_inner], p)
+                    
                     if hasattr(conv_layer, 'bias') and conv_layer.bias is not None:
-                        inplace_permute_vector(conv_layer.bias, p)
+                        # Bias handling for weight-normed conv needs similar logic
+                        if conv_layer.bias.numel() == d_inner:
+                            inplace_permute_vector(conv_layer.bias, p)
+                        elif conv_layer.bias.numel() == 2 * d_inner:
+                            logger.debug("Permuting only the first half of double-width bias for weight-normed conv")
+                            bias_view = conv_layer.bias.view(2, d_inner).contiguous()
+                            inplace_permute_vector(bias_view[0], p)
+
                 else: # Plain convolution (can be 2D or 3D)
                     # Handle double-width conv as a special case first due to its unique bias logic
                     if conv_layer.weight.shape[0] == 2 * d_inner:
