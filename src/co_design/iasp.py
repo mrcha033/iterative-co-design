@@ -324,14 +324,33 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
                         _permute_params_in_module(conv_layer, p, p_inv)
                 seen_modules.add(conv_name)
 
-        # --- Step 2: Handle all other direct child parameters automatically ---
+        # --- Step 2: Handle final norm inside the mixer ---
+        if hasattr(layer, "norm_f") and "norm_f" not in seen_modules:
+            nf = layer.norm_f
+            gamma = getattr(nf, "weight", None)
+            beta = getattr(nf, "bias", None)
+
+            # Permute only if the normalization dimension matches d_inner
+            if gamma is not None and gamma.numel() == d_inner:
+                logger.debug(f"Permuting special case: norm_f in {layer.__class__.__name__}")
+                inplace_permute_vector(gamma, p)
+                if beta is not None and beta.numel() == d_inner:
+                    inplace_permute_vector(beta, p)
+                seen_modules.add("norm_f")
+            else:
+                logger.warning(
+                    f"norm_f in {layer.__class__.__name__} has parameter size "
+                    f"{gamma.numel() if gamma is not None else 'N/A'}, which doesn't match d_inner ({d_inner}). Skipping."
+                )
+
+        # --- Step 3: Handle all other direct child parameters automatically ---
         for name, child_module in layer.named_children():
             # Skip special modules that were already handled
             if name in seen_modules:
                 continue
             _permute_params_in_module(child_module, p, p_inv)
             
-        # --- Step 3: Handle parameters that are direct attributes of the layer ---
+        # --- Step 4: Handle parameters that are direct attributes of the layer ---
         _permute_params_in_module(layer, p, p_inv)
 
 
