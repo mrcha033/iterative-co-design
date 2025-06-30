@@ -15,6 +15,7 @@ iasp:
   cluster_size_range: [64, 256]
   max_samples: 65536
   sample_stride: 4
+  knn_k: 128
   spectral_n_init: 10
   spectral_random_state: 42
 

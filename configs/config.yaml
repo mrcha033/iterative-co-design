@@ -9,9 +9,16 @@ defaults:
 # Global settings  
 project_name: "iterative-co-design"  # Unified with wandb.project
 seed: 42
-num_iterations: 2  # For the iterative method
 method: "dense"  # Default method, can be overridden
 dry_run: false  # Default dry_run setting
+min_gpu_headroom_gb: 4.0 # Abort if free GPU memory is less than this
+
+# Configurations for specific methods
+method_configs:
+  iterative:
+    iterations: 2
+  bidirectional_iterative:
+    iterations: 2
 
 # Hydra configuration
 hydra:

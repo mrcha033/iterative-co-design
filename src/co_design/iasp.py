@@ -165,10 +165,27 @@ def _find_optimal_permutation(
         correlation_matrix = np.where(np.isnan(correlation_matrix), 0.0, correlation_matrix)
         correlation_matrix = np.clip(correlation_matrix, -1.0, 1.0) # Clamp infs
 
-    # 2. Create a positive-only affinity matrix to group co-activated neurons.
-    affinity_matrix = np.clip(correlation_matrix, 0, None).astype(np.float64)
+    # 2. Create a k-NN graph to ensure connectivity and focus on strong connections.
+    #    This is more robust than simple thresholding.
+    affinity_matrix = (correlation_matrix + 1) / 2
+    
+    # Get k for k-NN from config, with a reasonable default.
+    k = iasp_config.get("knn_k", 128)
+    if not (0 < k < affinity_matrix.shape[0]):
+        logger.warning(f"k={k} for k-NN is out of valid range, defaulting to 128.")
+        k = 128
+        
+    knn_graph = np.zeros_like(affinity_matrix)
+    for i in range(affinity_matrix.shape[0]):
+        # Get the indices of the top k neighbors for node i
+        top_k_indices = np.argpartition(affinity_matrix[i, :], -k)[-k:]
+        # Keep only the edges to these top k neighbors
+        knn_graph[i, top_k_indices] = affinity_matrix[i, top_k_indices]
+        
+    # Symmetrize the graph to ensure undirected edges for spectral clustering
+    affinity_matrix = np.maximum(knn_graph, knn_graph.T)
 
-    # 3. Enforce perfect symmetry to prevent sklearn warnings.
+    # 3. Enforce perfect symmetry to prevent sklearn warnings (final check).
     affinity_matrix = (affinity_matrix + affinity_matrix.T) / 2
 
     # 4. Set the diagonal to 0 to remove self-loops.
@@ -216,9 +233,14 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
     if not mamba_mixers:
         return
 
-    # Create permutation tensor once on the correct device for robustness.
+    # Create permutation tensor and its inverse on the correct device.
     dev = mamba_mixers[0].in_proj.weight.device
     p = torch.tensor(permutation, dtype=torch.long, device=dev)
+    
+    # The inverse permutation is required for layers where the permuted dimension
+    # is on the input side (column permutation of the weight matrix).
+    p_inv = torch.empty_like(p)
+    p_inv[p] = torch.arange(p.numel(), device=dev)
 
     pbar = tqdm(mamba_mixers, desc="3/3: Applying Permutation to Mamba Mixers", leave=False)
     for layer in pbar:
@@ -242,19 +264,31 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
                 conv_layer = layer.conv1d
 
             if conv_layer:
-                w = conv_layer.weight
-                if w.shape[0] == d_inner:
-                    conv_layer.weight = permute_rows(w, p)
-                elif w.shape[1] == d_inner:
-                    conv_layer.weight = permute_cols(w, p)
+                # IMPORTANT: Check for weight normalization. If used, we must permute the underlying
+                # 'weight_v' and 'weight_g' parameters instead of the computed 'weight'.
+                if hasattr(conv_layer, 'weight_v') and hasattr(conv_layer, 'weight_g'):
+                    logger.debug(f"Permuting weight-normalized conv1d layer in {layer.__class__.__name__}")
+                    # weight_v has shape (d_inner, 1, kernel_size), permute its rows (dim 0)
+                    conv_layer.weight_v = permute_rows(conv_layer.weight_v, p)
+                    # weight_g has shape (d_inner), permute as a simple vector
+                    conv_layer.weight_g = permute_vector(conv_layer.weight_g, p)
+                else:
+                    # Handle standard convolution if no weight normalization is detected
+                    w = conv_layer.weight
+                    if w.shape[0] == d_inner:
+                        conv_layer.weight = permute_rows(w, p)
+                    elif w.shape[1] == d_inner:
+                        conv_layer.weight = permute_cols(w, p) # Note: unusual case
                 
                 if conv_layer.bias is not None and conv_layer.bias.numel() == d_inner:
                     conv_layer.bias = permute_vector(conv_layer.bias, p)
             
             if hasattr(layer, 'x_proj'):
-                 layer.x_proj.weight = permute_cols(layer.x_proj.weight, p)
+                 # x_proj input is permuted state, so permute columns with inverse
+                 layer.x_proj.weight = permute_cols(layer.x_proj.weight, p_inv)
 
             if hasattr(layer, 'dt_proj'):
+                 # dt_proj output creates state, so permute rows
                  W = layer.dt_proj.weight
                  if W.shape[0] == d_inner:
                      layer.dt_proj.weight = permute_rows(W, p)
@@ -263,7 +297,13 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
 
             layer.A_log = permute_rows(layer.A_log, p)
             layer.D = permute_vector(layer.D, p)
-            layer.out_proj.weight = permute_cols(layer.out_proj.weight, p)
+            
+            # out_proj input is the permuted state, so we permute its weight columns with the inverse
+            layer.out_proj.weight = permute_cols(layer.out_proj.weight, p_inv)
+            # The bias term acts on the output dimension (d_model), which is not permuted.
+            # Therefore, the bias should not be permuted.
+            if layer.out_proj.bias is not None:
+                logger.debug(f"out_proj bias found in {layer.__class__.__name__} and is correctly not permuted.")
 
 
 # --- Main Public Function ---
