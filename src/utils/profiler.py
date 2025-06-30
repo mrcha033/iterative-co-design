@@ -229,7 +229,8 @@ class LatencyProfiler:
         self,
         model: nn.Module,
         dummy_input: Dict[str, torch.Tensor],
-        kernel_name_filter: Optional[str] = None
+        kernel_name_filter: Optional[str] = None,
+        force_sudo: bool = False,
     ) -> Optional[Dict[str, float]]:
         """
         Measures the L2 cache hit rate of a model using NVIDIA's Nsight Compute (ncu).
@@ -288,21 +289,28 @@ class LatencyProfiler:
                 model_name,
             ])
 
-            # Prepend `sudo -E -n` only if it's available and we are not already root
-            if shutil.which("sudo") and hasattr(os, 'geteuid') and os.geteuid() != 0:
-                logger.info("`sudo` found. Prepending 'sudo -E -n' to NCU command for profiling permissions.")
+            # Prepend `sudo -E -n` only if forced, available, and we are not already root
+            if force_sudo and shutil.which("sudo") and hasattr(os, 'geteuid') and os.geteuid() != 0:
+                logger.info("`sudo` is forced. Prepending 'sudo -E -n' to NCU command for profiling permissions.")
                 command.insert(0, "-n")
                 command.insert(0, "-E")
                 command.insert(0, "sudo")
+            
+            # Set environment variable and input to auto-accept EULA for robustness
+            proc_env = os.environ.copy()
+            proc_env["NSIGHT_COMPUTE_OPT_IN_EULA"] = "1"
+            eula_input = "accept\n"
 
             try:
                 result = subprocess.run(
                     command,
+                    input=eula_input,
                     capture_output=True,
                     text=True,
                     check=True,
                     encoding="utf-8",
                     timeout=NCU_TIMEOUT_SECONDS,
+                    env=proc_env,
                 )
                 
                 cache_metrics = self._parse_ncu_csv_output(result.stdout)
