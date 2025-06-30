@@ -26,3 +26,9 @@ pre-commit>=3.3.3
 mkdocs>=1.5.2
 mkdocs-material>=9.1.18
 mkdocstrings[python]>=0.22.0
+
+# Added from the code block
+accelerate
+evaluate
+sacrebleu
+filelock

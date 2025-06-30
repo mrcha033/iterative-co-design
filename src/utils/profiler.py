@@ -20,6 +20,7 @@ from pathlib import Path
 import shutil
 import numpy as np
 import sys
+import os
 from typing import Dict, Optional, Any
 import torch.nn as nn
 import hashlib
@@ -27,6 +28,7 @@ import json
 import logging
 from io import StringIO
 import pandas as pd
+import filelock
 
 logger = logging.getLogger(__name__)
 
@@ -68,23 +70,27 @@ class LatencyProfiler:
         self.profiler_cache_dir = Path(cache_dir)
         self.profiler_cache_dir.mkdir(parents=True, exist_ok=True)
 
+    def _tensor_digest(self, t: torch.Tensor, max_bytes=1_000_000):
+        """Creates a digest of a tensor by sampling its start and end bytes."""
+        arr = t.detach().cpu().numpy().tobytes()
+        if len(arr) > max_bytes:
+            # Sample the start and end of the tensor for a faster hash
+            arr = arr[:max_bytes//2] + arr[-max_bytes//2:]
+        return hashlib.sha256(arr).digest()
+
     def _get_model_hash(self, model: nn.Module) -> str:
         """Generates a deterministic hash for the model's state dictionary."""
         hasher = hashlib.sha256()
-        # Use an ordered dictionary to ensure consistent key order
         model_state_dict = model.state_dict()
         for key in sorted(model_state_dict.keys()):
             param = model_state_dict[key]
             hasher.update(key.encode('utf-8'))
             if isinstance(param, torch.Tensor):
-                # Include shape and dtype for robustness
                 hasher.update(str(param.shape).encode('utf-8'))
                 hasher.update(str(param.dtype).encode('utf-8'))
-                # Hash the tensor's data directly
-                tensor_bytes = param.detach().cpu().numpy().tobytes()
-                hasher.update(tensor_bytes)
+                # Use the faster tensor digest method
+                hasher.update(self._tensor_digest(param))
             else:
-                # Handle non-tensor parameters (e.g., from quantization)
                 hasher.update(str(param).encode('utf-8'))
         return hasher.hexdigest()
 
@@ -142,12 +148,10 @@ class LatencyProfiler:
             hit_rate_row = df[df['Metric Name'] == 'lts__t_sector_hit_rate.pct']
             
             if not hit_rate_row.empty:
-                # In case of multiple kernels, we can average, max, or sum.
-                # Here, we take the mean value across all profiled kernels.
                 hit_rate = hit_rate_row['Metric Value'].mean()
                 return {'lts__t_sector_hit_rate.pct': float(hit_rate)}
             else:
-                logger.warning("L2 cache hit rate metric not found in NCU output.")
+                logger.warning("L2 cache hit rate metric not found in NCU output. This can happen if the specified kernel name does not exist in the model's execution.")
                 return None
         except Exception as e:
             logger.error(f"Failed to parse NCU CSV with pandas: {e}\nNCU output:\n{csv_output}")
@@ -222,13 +226,13 @@ class LatencyProfiler:
         return (end_time - start_time) * 1000 / num_runs
 
     def measure_cache_hits(
-        self, model: nn.Module, dummy_input: Dict[str, torch.Tensor]
+        self,
+        model: nn.Module,
+        dummy_input: Dict[str, torch.Tensor],
+        kernel_name_filter: Optional[str] = None
     ) -> Optional[Dict[str, float]]:
         """
         Measures the L2 cache hit rate of a model using NVIDIA's Nsight Compute (ncu).
-
-        This method now saves the model and input to temporary files and calls a
-        dedicated, stable profiling script, which is a much more robust approach.
         """
         if not torch.cuda.is_available():
             logger.warning("Cache measurement requires CUDA, skipping.")
@@ -236,16 +240,18 @@ class LatencyProfiler:
 
         ncu_path = self._find_ncu_path()
         if not ncu_path:
-            logger.warning("NVIDIA Nsight Compute (ncu) not found. Using fallback L2 cache hit rate.")
-            return {"lts__t_sector_hit_rate.pct": FALLBACK_L2_CACHE_HIT_RATE}
+            logger.warning("NVIDIA Nsight Compute (ncu) not found, cannot measure cache hit rate.")
+            return None
             
         model_hash = self._get_model_hash(model)
         cache_file = self.profiler_cache_dir / f"{model_hash}.json"
+        lock_file = self.profiler_cache_dir / f"{model_hash}.json.lock"
 
-        if cache_file.exists():
-            logger.info(f"Using cached profiling results from {cache_file}")
-            with open(cache_file, "r") as f:
-                return json.load(f)
+        with filelock.FileLock(lock_file):
+            if cache_file.exists():
+                logger.info(f"Using cached profiling results from {cache_file}")
+                with open(cache_file, "r") as f:
+                    return json.load(f)
 
         temp_dir = tempfile.TemporaryDirectory(prefix="prof_")
         try:
@@ -253,8 +259,6 @@ class LatencyProfiler:
             model_path = temp_path / "model.pt"
             input_path = temp_path / "input.pt"
 
-            # Revert to saving state_dict, as it's more robust across environments
-            # than pickling the entire model object.
             torch.save(model.state_dict(), model_path)
             
             cpu_input = {k: v.to("cpu") for k, v in dummy_input.items()}
@@ -266,26 +270,26 @@ class LatencyProfiler:
                 logger.error(e)
                 return None
             
-            # Use model's config to pass its original name for architecture loading
             model_name = getattr(getattr(model, "config", None), "_name_or_path", "unknown_model")
 
             command = [
                 ncu_path,
                 "--metrics", "lts__t_sector_hit_rate.pct",
                 "--csv",
-                "--mode=launch",
-                "--kernel-name", "mamba_selective_scan_fn",
+            ]
+            if kernel_name_filter:
+                command.extend(["--kernel-name", kernel_name_filter])
+            
+            command.extend([
                 sys.executable,
                 str(profiling_script),
                 str(model_path),
                 str(input_path),
                 model_name,
-            ]
+            ])
 
-            # If sudo is available, prepend it to run NCU with elevated permissions.
-            # The `-n` flag makes it non-interactive, preventing it from hanging on a password prompt.
-            # The `-E` flag preserves the user's environment variables (like PYTHONPATH).
-            if shutil.which("sudo"):
+            # Prepend `sudo -E -n` only if it's available and we are not already root
+            if shutil.which("sudo") and hasattr(os, 'geteuid') and os.geteuid() != 0:
                 logger.info("`sudo` found. Prepending 'sudo -E -n' to NCU command for profiling permissions.")
                 command.insert(0, "-n")
                 command.insert(0, "-E")
@@ -303,14 +307,24 @@ class LatencyProfiler:
                 
                 cache_metrics = self._parse_ncu_csv_output(result.stdout)
                 
-                if cache_metrics:
-                    logger.info(f"Saving new profiling results to {cache_file}")
-                    with open(cache_file, "w") as f:
-                        json.dump(cache_metrics, f)
+                with filelock.FileLock(lock_file):
+                    if cache_metrics:
+                        logger.info(f"Saving new profiling results to {cache_file}")
+                        with open(cache_file, "w") as f:
+                            json.dump(cache_metrics, f)
                 
                 return cache_metrics
 
             except subprocess.CalledProcessError as e:
+                # Check for the specific permission error from NCU
+                if "ERR_NVGPUCTRPERM" in e.stdout or "ERR_NVGPUCTRPERM" in e.stderr:
+                    logger.warning(
+                        "NVIDIA GPU performance counter permissions are not set. "
+                        "Cannot measure cache hit rate. Returning None. "
+                        "See https://developer.nvidia.com/ERR_NVGPUCTRPERM for details on how to grant permissions."
+                    )
+                    return None
+
                 logger.error(f"Nsight Compute execution failed with return code {e.returncode}.")
                 logger.error(f"Command: {' '.join(command)}")
                 logger.error(f"Stdout: {e.stdout}")
@@ -320,7 +334,6 @@ class LatencyProfiler:
                 logger.error(f"An unexpected error occurred during cache measurement: {e}")
                 return None
         finally:
-            # Ensure the temporary directory is cleaned up regardless of success or failure
             temp_dir.cleanup()
 
     def profile_memory_usage(self, model: nn.Module, 
@@ -367,14 +380,18 @@ class LatencyProfiler:
             torch.cuda.reset_peak_memory_stats()
         else:
             # For CPU, we can only provide basic info
-            import psutil
-            process = psutil.Process()
-            memory_info = process.memory_info()
-            
-            memory_stats = {
-                "memory_rss_mb": memory_info.rss / 1024 / 1024,
-                "memory_vms_mb": memory_info.vms / 1024 / 1024,
-            }
+            try:
+                import psutil
+                process = psutil.Process()
+                memory_info = process.memory_info()
+                
+                memory_stats = {
+                    "memory_rss_mb": memory_info.rss / 1024 / 1024,
+                    "memory_vms_mb": memory_info.vms / 1024 / 1024,
+                }
+            except ImportError:
+                logger.warning("`psutil` not found. Cannot profile CPU memory usage.")
+                memory_stats = {}
         
         return memory_stats
     
