@@ -17,6 +17,7 @@ from typing import List, Optional, Tuple
 import torch.nn as nn
 from torch.utils.data import DataLoader
 import logging
+import fnmatch
 
 from numpy.linalg import LinAlgError
 from omegaconf import DictConfig
@@ -32,6 +33,29 @@ DIAGONAL_CORRELATION_VALUE = 1.0
 
 
 # --- Internal Helper Functions ---
+
+def _expand_wildcard_layer_names(model: nn.Module, target_spec) -> List[str]:
+    """Expands a wildcard target layer specification into a list of layer names."""
+    if not target_spec:
+        return []
+
+    all_layers = [name for name, _ in model.named_modules()]
+    expanded_layers = []
+
+    spec_list = target_spec if isinstance(target_spec, list) else [target_spec]
+
+    for pattern in spec_list:
+        if "*" in pattern:
+            matched_layers = fnmatch.filter(all_layers, pattern)
+            if not matched_layers:
+                logger.warning(f"Wildcard '{pattern}' did not match any layers.")
+            expanded_layers.extend(matched_layers)
+        else:
+            # If no wildcard, add it as a direct layer name
+            expanded_layers.append(pattern)
+
+    return expanded_layers
+
 
 def _get_activation_correlation(
     model: nn.Module,
@@ -201,16 +225,20 @@ def run_iasp_on_mamba(
     """
     logger.info("🚀 Starting IASP optimization pipeline for Mamba model...")
 
-    target_layer_names = iasp_config.get("target_layer_names")
-    if target_layer_names is None:
+    target_layer_spec = iasp_config.get("target_layer_names")
+    if target_layer_spec:
+        logger.info(f"Expanding target layer spec: {target_layer_spec}")
+        target_layer_names = _expand_wildcard_layer_names(model, target_layer_spec)
+    else:
         logger.info("Auto-detecting Mamba 'in_proj' layers...")
         target_layer_names = [
             name for name, mod in model.named_modules()
             if name.endswith("in_proj") and isinstance(mod, nn.Linear)
         ]
-        if not target_layer_names:
-            raise ValueError("Could not auto-detect 'in_proj' layers. Please specify them manually.")
-        logger.info(f"Found {len(target_layer_names)} target layers.")
+    
+    if not target_layer_names:
+        raise ValueError("Could not find any target layers. Please check `target_layer_names` in your config.")
+    logger.info(f"Found {len(target_layer_names)} target layers.")
 
     # Step 1: Get activation correlation for the d_inner dimension
     correlation_matrix = _get_activation_correlation(
@@ -295,16 +323,20 @@ def run_iasp_on_bert(
     """
     logger.info("🚀 Starting IASP optimization pipeline for BERT model...")
 
-    target_layer_names = iasp_config.get("target_layer_names")
-    if target_layer_names is None:
+    target_layer_spec = iasp_config.get("target_layer_names")
+    if target_layer_spec:
+        logger.info(f"Expanding target layer spec: {target_layer_spec}")
+        target_layer_names = _expand_wildcard_layer_names(model, target_layer_spec)
+    else:
         logger.info("Auto-detecting BERT FFN 'up-projection' layers...")
         target_layer_names = [
             name for name, mod in model.named_modules()
             if name.endswith("intermediate.dense") and isinstance(mod, nn.Linear)
         ]
-        if not target_layer_names:
-            raise ValueError("Could not auto-detect FFN layers ('*.intermediate.dense'). Please specify them manually.")
-        logger.info(f"Found {len(target_layer_names)} target layers.")
+
+    if not target_layer_names:
+        raise ValueError("Could not find any target layers ('*.intermediate.dense'). Please specify them manually.")
+    logger.info(f"Found {len(target_layer_names)} target layers.")
 
     # Step 1: Get activation correlation for the FFN intermediate dimension
     correlation_matrix = _get_activation_correlation(
