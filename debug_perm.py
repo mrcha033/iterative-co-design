@@ -1,5 +1,16 @@
 # debug_perm.py
 import torch, copy
+import sys
+from pathlib import Path
+
+# --- Add project src to python path ---
+# This allows the script to find local modules like 'utils' and 'co_design'
+project_root = Path(__file__).resolve().parent
+src_path = project_root / "src"
+if str(src_path) not in sys.path:
+    sys.path.insert(0, str(src_path))
+# ---
+
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from itertools import zip_longest
 from collections import OrderedDict
