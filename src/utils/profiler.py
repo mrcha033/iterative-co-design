@@ -229,7 +229,7 @@ class LatencyProfiler:
         self,
         model: nn.Module,
         dummy_input: Dict[str, torch.Tensor],
-        kernel_name_filter: Optional[str] = None,
+        kernel_name_filter: str = "selective_scan",
         force_sudo: bool = False,
     ) -> Optional[Dict[str, float]]:
         """
