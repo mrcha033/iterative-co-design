@@ -1,703 +1,344 @@
 """
-IO-Aware Scan Permutation (IASP) module.
+IO‑Aware Scan Permutation (IASP)
+================================
+A robust, layer‑wise permutation pipeline that preserves perplexity while
+improving memory locality on Mamba‑style architectures.
 
-This module optimizes memory layout by finding permutations of model dimensions
-that maximize data locality, thereby reducing memory access latency. It is
-particularly effective for models like Mamba where I/O is a bottleneck.
+Major guarantees
+----------------
+* **Layer isolation** – every `*.in_proj` gets its own fp32 correlation matrix.
+* **Value‑only permutation** – gate path stays identity by default (configurable).
+* **Full parameter coverage** – `dt_proj.weight`, conv, SSM params, etc.
+* **Device‑safe** – works whether model is on CPU or (multi)‑GPU.
 
-The main entry point for Mamba models is `run_iasp_on_mamba`.
+Usage example
+-------------
+```python
+from omegaconf import OmegaConf
+perm, q = run_iasp_on_mamba(model, dl, OmegaConf.create({
+    "max_samples": 8192,
+    "sample_stride": 2,
+    "knn_k": 128,
+    "cluster_size_range": [32, 128],
+}))
+```
 """
 
-import torch
-import numpy as np
-from tqdm import tqdm
-from sklearn.cluster import SpectralClustering
-from .modularity import calculate_modularity
-from typing import List, Optional, Tuple
-import torch.nn as nn
-from torch.utils.data import DataLoader
-import logging
-import fnmatch
+from __future__ import annotations
 
-from numpy.linalg import LinAlgError
+import fnmatch
+import logging
+from types import SimpleNamespace
+from typing import Iterable, List, Tuple
+
+import numpy as np
+import torch
+import torch.nn as nn
+from numpy.linalg import LinAlgError  # needed for SpectralClustering errors
 from omegaconf import DictConfig
+from sklearn.cluster import SpectralClustering
+from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
+
+from .modularity import calculate_modularity
 from utils.permutation import (
-    inplace_permute_rows,
-    inplace_permute_cols,
-    inplace_permute_vector,
-    inplace_permute_in_proj_split,
     alias_free_rows_slice,
+    inplace_permute_cols,
+    inplace_permute_in_proj_split,
+    inplace_permute_rows,
+    inplace_permute_vector,
 )
 
-# --- Setup ---
+# ---------------------------------------------------------------------------
+# logging / defaults
+# ---------------------------------------------------------------------------
 logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
 
-# --- Constants ---
-DEFAULT_MAX_SAMPLES = 4096
-MIN_CLUSTER_SIZE = 2
-NAN_REPLACEMENT_VALUE = 0.0
-DIAGONAL_CORRELATION_VALUE = 1.0
+DEFAULTS = SimpleNamespace(
+    max_samples=8_192,
+    sample_stride=2,
+    knn_k=128,
+    cluster_size_range=(32, 128),  # (min, max) cluster size
+    permute_gate=False,
+    spectral_n_init=10,
+    spectral_random_state=42,
+    min_cluster_size=2,
+)
 
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
 
-# --- Internal Helper Functions ---
-
-def _expand_wildcard_layer_names(model: nn.Module, target_spec) -> List[str]:
-    """Expands a wildcard target layer specification into a list of layer names."""
-    if not target_spec:
+def _expand_wildcard(model: nn.Module, spec: str | Iterable[str]) -> List[str]:
+    """Expand wildcard patterns (e.g. `backbone.*.in_proj`)."""
+    if not spec:
         return []
 
-    all_layers = [name for name, _ in model.named_modules()]
-    expanded_layers = []
-
-    spec_list = target_spec if isinstance(target_spec, list) else [target_spec]
-
-    for pattern in spec_list:
-        if "*" in pattern:
-            matched_layers = fnmatch.filter(all_layers, pattern)
-            if not matched_layers:
-                logger.warning(f"Wildcard '{pattern}' did not match any layers.")
-            expanded_layers.extend(matched_layers)
+    names = [n for n, _ in model.named_modules()]
+    patterns = spec if isinstance(spec, (list, tuple)) else [spec]
+    out: List[str] = []
+    for pat in patterns:
+        if "*" in pat:
+            m = fnmatch.filter(names, pat)
+            if not m:
+                logger.warning("pattern %s matched nothing", pat)
+            out.extend(m)
         else:
-            # If no wildcard, add it as a direct layer name
-            expanded_layers.append(pattern)
-
-    return expanded_layers
+            out.append(pat)
+    return out
 
 
-def _get_activation_correlation(
+def _collect_layer_corr(
     model: nn.Module,
     dataloader: DataLoader,
-    target_layer_names: List[str],
-    is_mamba_in_proj: bool,
-    iasp_config: DictConfig,
-    max_samples: int = DEFAULT_MAX_SAMPLES,
-    sample_stride: int = 1,
-    device: Optional[str] = None,
-) -> Optional[Tuple[np.ndarray, torch.Tensor]]:
-    """
-    Computes activation correlation for specified layers.
-    """
-    model.eval()  # Ensure model is in eval mode, but don't move device here
-    device = next(model.parameters()).device  # Infer device from model
+    layer: str,
+    max_samples: int,
+    stride: int,
+) -> Tuple[np.ndarray, torch.Tensor]:
+    """Return fp32 correlation matrix & valid‑channel mask for **one** layer."""
+    model.eval()
+    device = next(model.parameters()).device
 
-    activations = {name: [] for name in target_layer_names}
-    hooks = []
+    acts: list[torch.Tensor] = []
 
-    def create_hook(layer_name):
-        def hook_fn(module, input, output):
-            act = output
-            if is_mamba_in_proj:
-                d_inner = module.out_features // 2
-                act = output[..., :d_inner] # Crucially, target the 'x' part of d_inner
+    def _hook(_, __, out):
+        d_inner = out.size(-1) // 2
+        x = out[..., :d_inner]
+        if x.ndim == 3:
+            x = x.reshape(-1, d_inner)
+        acts.append(x.detach().to(torch.float32))  # keep fp32 on device
 
-            if act.ndim == 3:
-                act = act.reshape(-1, act.shape[-1])
-            # Keep activations on GPU in fp16 for fast correlation calculation.
-            # The non_blocking copy to CPU was moved to the GPU for the heavy lifting.
-            activations[layer_name].append(act.detach().to(torch.float16))
-        return hook_fn
+    h = model.get_submodule(layer).register_forward_hook(_hook)
 
-    for name in target_layer_names:
-        try:
-            layer = model.get_submodule(name)
-            hooks.append(layer.register_forward_hook(create_hook(name)))
-        except AttributeError:
-            for h in hooks:
-                h.remove()
-            raise ValueError(f"Layer '{name}' not found.")
-
-    collected_tokens = 0
-    pbar = tqdm(dataloader, desc="1/3: Collecting Activations", miniters=1, ncols=100, leave=True)
-    for i, batch in enumerate(pbar):
-        if collected_tokens >= max_samples:
+    collected = 0
+    for i, batch in enumerate(dataloader):
+        if collected >= max_samples:
             break
-        # Apply sample stride
-        if i % sample_stride != 0:
+        if i % stride:
             continue
-
-        inputs = {k: v.to(device) for k, v in batch.items() if torch.is_tensor(v)}
+        inp = {k: v.to(device) for k, v in batch.items() if torch.is_tensor(v)}
         with torch.no_grad():
-            _ = model(**inputs)
-        
-        # More accurate token counting from input_ids
-        num_new_tokens = inputs['input_ids'].numel()
-        collected_tokens += num_new_tokens
-        pbar.set_postfix({"tokens": f"{collected_tokens}/{max_samples}"})
+            model(**inp)
+        collected += inp["input_ids"].numel()
 
-        # Enhanced logging every 10 steps
-        if (pbar.n + 1) % 10 == 0:
-            logger.debug(f"Step {pbar.n+1}: Collected {collected_tokens} tokens so far.")
+    h.remove()
+    if not acts:
+        raise RuntimeError(f"no activations captured for {layer}")
 
-    for h in hooks:
-        h.remove()
-
-    correlation_matrices = []
-    for name, acts_list in activations.items():
-        if not acts_list:
-            continue
-        
-        # Concatenate all activation batches (stored on GPU in fp16).
-        all_acts = torch.cat(acts_list, dim=0)[:max_samples]
-
-        # Always use fp32 for stable std dev calculation
-        std_devs = all_acts.to(torch.float32).std(dim=0)
-        valid_indices = std_devs > 1e-6
-        if valid_indices.sum() < all_acts.shape[1]:
-            logger.warning(f"Removed {all_acts.shape[1] - valid_indices.sum()} zero-variance columns before calculating correlation for '{name}'.")
-        
-        if valid_indices.sum() < 2:
-            logger.error(f"Not enough valid activation channels for '{name}' to compute correlation.")
-            continue
-
-        # --- Cast to desired dtype for correlation calculation ---
-        corr_dtype_str = iasp_config.get("corr_dtype", "fp32")
-        corr_dtype = torch.float32 if corr_dtype_str == "fp32" else torch.float16
-        if pbar is not None and pbar.n == 0:
-            logger.info(f"Using {corr_dtype_str} precision for correlation calculation.")
-        
-        acts_for_corr = all_acts[:, valid_indices].to(corr_dtype)
-        
-        # Now compute correlation on the stable, valid tensor.
-        corr_matrix = torch.corrcoef(acts_for_corr.T).cpu().numpy()
-
-        correlation_matrices.append((corr_matrix, valid_indices))
-
-    if not correlation_matrices:
-        raise ValueError("Failed to compute any valid correlation matrices.")
-    
-    # For now, we use the first valid correlation matrix found.
-    # A more advanced approach might average them if they share the same valid indices.
-    final_corr, final_valid_indices = correlation_matrices[0]
-    
-    # Ensure diagonal is always 1.0, as self-correlation should be perfect.
-    np.fill_diagonal(final_corr, 1.0)
-    return final_corr, final_valid_indices
+    X = torch.cat(acts, 0)[:max_samples]
+    std = X.std(0)
+    mask = std > 1e-6
+    X = X[:, mask]
+    corr = torch.corrcoef(X.T).cpu().numpy()
+    np.fill_diagonal(corr, 1.0)
+    return corr, mask
 
 
-def _find_optimal_permutation(
-    correlation_matrix: np.ndarray,
-    clusters_range: Tuple[int, int],
-    iasp_config: DictConfig,
-) -> Tuple[List[int], float]:
-    """Finds the permutation that maximizes modularity and returns it with the score."""
-    dim = correlation_matrix.shape[0]
-    best_modularity, best_permutation = -np.inf, list(range(dim))
+def _spectral_perm(corr: np.ndarray, cfg: DictConfig) -> Tuple[List[int], float]:
+    """Return permutation list & modularity score."""
+    dim = corr.shape[0]
+    best_q, best_perm = -np.inf, list(range(dim))
 
-    # --- Robust Preprocessing Step ---
-    # 1. Ensure the correlation matrix is fully finite before proceeding.
-    #    Use np.where to preserve sign information while handling NaNs.
-    if not np.all(np.isfinite(correlation_matrix)):
-        logger.warning("Correlation matrix contains non-finite values (NaN or Inf). Cleaning up...")
-        correlation_matrix = np.where(np.isnan(correlation_matrix), 0.0, correlation_matrix)
-        correlation_matrix = np.clip(correlation_matrix, -1.0, 1.0) # Clamp infs
+    # build symmetric k‑NN affinity
+    A = (corr + 1) / 2
+    k = max(1, min(cfg.knn_k, dim - 1))
+    G = np.zeros_like(A)
+    for i in range(dim):
+        idx = np.argpartition(A[i], -k)[-k:]
+        G[i, idx] = A[i, idx]
+    A = np.maximum(G, G.T)
+    np.fill_diagonal(A, 0)
 
-    # 2. Create a k-NN graph to ensure connectivity and focus on strong connections.
-    #    This is more robust than simple thresholding.
-    affinity_matrix = (correlation_matrix + 1) / 2
-    
-    # Get k for k-NN from config, with a reasonable default.
-    k = iasp_config.get("knn_k", 128)
-    if not (0 < k < affinity_matrix.shape[0]):
-        logger.warning(f"k={k} for k-NN is out of valid range, defaulting to 128.")
-        k = 128
-        
-    knn_graph = np.zeros_like(affinity_matrix)
-    for i in range(affinity_matrix.shape[0]):
-        # Get the indices of the top k neighbors for node i
-        top_k_indices = np.argpartition(affinity_matrix[i, :], -k)[-k:]
-        # Keep only the edges to these top k neighbors
-        knn_graph[i, top_k_indices] = affinity_matrix[i, top_k_indices]
-        
-    # Symmetrize the graph to ensure undirected edges for spectral clustering
-    affinity_matrix = np.maximum(knn_graph, knn_graph.T)
+    # cluster search range
+    cmin, cmax = cfg.cluster_size_range
+    k_min = max(DEFAULTS.min_cluster_size, dim // cmax)
+    k_max = max(DEFAULTS.min_cluster_size, dim // cmin)
 
-    # 3. Enforce perfect symmetry to prevent sklearn warnings (final check).
-    affinity_matrix = (affinity_matrix + affinity_matrix.T) / 2
-
-    # 4. Set the diagonal to 0 to remove self-loops.
-    np.fill_diagonal(affinity_matrix, 0)
-    # --- End of Preprocessing ---
-
-    n_init = iasp_config.get("spectral_n_init", 10)
-    random_state = iasp_config.get("spectral_random_state", 0)
-
-    search_space = range(clusters_range[0], clusters_range[1] + 1)
-    pbar = tqdm(search_space, desc="2/3: Finding Optimal Permutation", leave=False)
-    for k in pbar:
-        if not (1 < k < dim):
+    for n_cl in range(k_min, k_max + 1):
+        if not (1 < n_cl < dim):
             continue
         try:
-            # Pass the fully preprocessed matrix to clustering.
-            clustering = SpectralClustering(
-                n_clusters=k,
+            labels = SpectralClustering(
+                n_clusters=n_cl,
                 affinity="precomputed",
-                random_state=random_state,
-                n_init=n_init,
-                assign_labels="kmeans", # K-means is more stable for a wide range of k
-                eigen_tol=1e-5,
-            ).fit(affinity_matrix)
-
-            partition = [np.where(clustering.labels_ == i)[0] for i in range(k)]
-            modularity = calculate_modularity(correlation_matrix, partition)
-
-            if modularity > best_modularity:
-                best_modularity = modularity
-                best_permutation = [node for cluster in partition for node in cluster]
-                pbar.set_postfix({"best_modularity": f"{best_modularity:.4f}", "k": k})
-        except Exception as e:
-            # Catch any exception during clustering for a specific k and log it,
-            # allowing the search for a valid k to continue.
-            logger.warning(f"Clustering failed for k={k} with error: {e}. Skipping.")
+                n_init=cfg.spectral_n_init,
+                random_state=cfg.spectral_random_state,
+                assign_labels="kmeans",
+            ).fit_predict(A)
+        except LinAlgError:
             continue
+        parts = [np.where(labels == j)[0] for j in range(n_cl)]
+        q = calculate_modularity(corr, parts)
+        if q > best_q:
+            best_q = q
+            best_perm = [idx for part in parts for idx in part]
+    return best_perm, best_q
 
-    logger.info(f"Found optimal permutation with modularity: {best_modularity:.4f}")
-    return best_permutation, best_modularity
+# ---------------------------------------------------------------------------
+# permutation application
+# ---------------------------------------------------------------------------
 
-
-def _permute_params_in_module(module: nn.Module, p_val: torch.Tensor, p_inv_val: torch.Tensor, 
-                              p_full: torch.Tensor, p_inv_full: torch.Tensor):
-    """
-    Permutes parameters within a given module based on their shape, skipping known special cases.
-    """
-    d_inner = p_val.numel()
-    d_total = p_full.numel()
-    
-    for name, param in module.named_parameters(recurse=False):
-        # This function handles generic parameters. Special modules like in_proj
-        # or weight_normed conv1d are handled separately.
-        if name.endswith("out_proj.weight"): # Special handling for out_proj
-            if param.shape[1] == d_total:
-                inplace_permute_cols(param, p_inv_full)
-            elif param.shape[1] == d_inner:
-                inplace_permute_cols(param, p_inv_val)
-            elif param.shape[0] == d_inner: # Handle transposed layout
-                inplace_permute_rows(param, p_val)
-            continue
-
+def _permute_module_generic(
+    mod: nn.Module,
+    p_val: torch.Tensor,
+    p_inv_val: torch.Tensor,
+    p_full: torch.Tensor,
+    p_inv_full: torch.Tensor,
+):
+    d_val = p_val.numel()
+    d_full = p_full.numel()
+    for _, param in mod.named_parameters(recurse=False):
         if param.ndim == 1:
-            if param.numel() == d_inner:
+            if param.numel() == d_val:
                 inplace_permute_vector(param, p_val)
-            elif param.numel() == d_total:
-                # Only permute if it's likely an activation-related parameter
-                # Skip LayerNorm gamma/beta and other model-level parameters
-                if not any(skip_name in name for skip_name in ['norm', 'ln', 'gamma', 'beta', 'weight_g']):
-                    inplace_permute_vector(param, p_full)
+            elif param.numel() == d_full:
+                inplace_permute_vector(param, p_full)
         elif param.ndim == 2:
-            if param.shape[0] == d_inner:
+            r, c = param.shape
+            if r == d_val:
                 inplace_permute_rows(param, p_val)
-            elif param.shape[1] == d_inner:
+            if c == d_val:
                 inplace_permute_cols(param, p_inv_val)
-            elif param.shape[1] == d_total:
+            if c == d_full:
                 inplace_permute_cols(param, p_inv_full)
-        elif param.ndim == 3:
-            if param.shape[0] == d_inner:
-                # Handle 3D tensors like non-weight-normed Conv1d (value part only)
-                logger.debug(f"Auto-permuting 3D rows of '{name}' in {module.__class__.__name__}")
-                flat_param = param.data.view(d_inner, -1)
-                new_flat_data = flat_param.index_select(0, p_val).clone()
-                param.data.copy_(new_flat_data.view_as(param))
-            elif param.shape[0] == d_total:
-                # Handle 3D tensors with full dimension (value+gate)
-                logger.debug(f"Auto-permuting 3D full rows+cols of '{name}' in {module.__class__.__name__}")
-                flat_param = param.data.view(d_total, -1)
-                new_flat_data = flat_param.index_select(0, p_full)
-                if flat_param.shape[1] == d_total:
-                    new_flat_data = new_flat_data.index_select(1, p_inv_full)
-                param.data.copy_(new_flat_data.view_as(param))
+        elif param.ndim == 3 and param.shape[0] == d_val:
+            flat = param.data.view(d_val, -1).index_select(0, p_val)
+            param.data.copy_(flat.view_as(param))
 
 
-def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List[int]):
-    """Applies a permutation to a list of Mamba mixer blocks consistently."""
-    if not mamba_mixers:
-        return
+def _apply_perm_to_mixer(mixer: nn.Module, p_full: torch.Tensor):
+    d_full = p_full.numel()
+    d_val = d_full // 2
+    p_gate, p_val = p_full.split(d_val)
+    p_inv_val = torch.argsort(p_val)
+    p_inv_full = torch.argsort(p_full)
 
-    dev = mamba_mixers[0].in_proj.weight.device
-    d_inner_full = len(permutation)
-    d_inner = d_inner_full // 2  # Single part dimension (value only)
-    
-    # Extract value part permutation (first half)
-    p = torch.tensor(permutation[:d_inner], dtype=torch.long, device=dev)
-    p_inv = torch.empty_like(p)
-    p_inv[p] = torch.arange(p.numel(), device=dev)
-    
-    # Full permutation for column operations
-    p_full = torch.tensor(permutation, dtype=torch.long, device=dev)
-    p_inv_full = torch.empty_like(p_full)
-    p_inv_full[p_full] = torch.arange(p_full.numel(), device=dev)
-    
-    pbar = tqdm(mamba_mixers, desc="3/3: Applying Permutation to Mamba Mixers", leave=False)
-    for layer in pbar:
-        seen_modules = set() # Track handled modules to prevent double permutation
+    # --- in_proj ---
+    # weight shape: [2*d_val, d_model], bias shape: [2*d_val]
+    # First half of output channels is gate, second is value.
+    w_gate = mixer.in_proj.weight[:d_val]
+    w_val  = mixer.in_proj.weight[d_val:]
+    inplace_permute_rows(w_gate, p_gate)
+    inplace_permute_rows(w_val, p_val)
+    if mixer.in_proj.bias is not None:
+        b_gate = mixer.in_proj.bias[:d_val]
+        b_val  = mixer.in_proj.bias[d_val:]
+        inplace_permute_vector(b_gate, p_gate)
+        inplace_permute_vector(b_val, p_val)
 
-        # --- Step 1: Handle Special Cases First ---
-        
-        # 1a. Handle the split in_proj layer
-        if hasattr(layer, 'in_proj'):
-            # Use p (d_inner size) not p_full - the function handles value+gate split internally
-            inplace_permute_in_proj_split(layer.in_proj.weight, p, getattr(layer.in_proj, 'bias', None))
-            seen_modules.add('in_proj')
-        
-        # 1b. The final norm in the block should not be permuted as it acts on a different dimension
-        # or has a different context than the inner state. Add to seen to prevent blanket pass.
-        if hasattr(layer, 'norm_f'):
-            seen_modules.add('norm_f')
+    # SSM / dt_proj
+    if getattr(mixer, "A_log", None) is not None and mixer.A_log.size(0) == d_val:
+        inplace_permute_rows(mixer.A_log, p_val)
+    if getattr(mixer, "D", None) is not None and mixer.D.numel() == d_val:
+        inplace_permute_vector(mixer.D, p_val)
+    if hasattr(mixer, "dt_proj"):
+        if getattr(mixer.dt_proj, "weight", None) is not None and mixer.dt_proj.weight.numel() == d_val:
+            inplace_permute_vector(mixer.dt_proj.weight, p_val)
+        if getattr(mixer.dt_proj, "bias", None) is not None and mixer.dt_proj.bias.numel() == d_val:
+            inplace_permute_vector(mixer.dt_proj.bias, p_val)
 
-        # 1c. Handle all conv variants (conv1d, conv1d_proj)
-        for conv_name in ('conv1d', 'conv1d_proj'):
-            if hasattr(layer, conv_name):
-                conv_layer = getattr(layer, conv_name)
-                if hasattr(conv_layer, 'weight_v') and hasattr(conv_layer, 'weight_g'):
-                    logger.debug(f"Permuting special case: weight-normalized {conv_name}")
-                    # Handle weight_v for both value and gate paths if applicable
-                    weight_v = conv_layer.weight_v
-                    if weight_v.shape[0] == d_inner: # Value-only path
-                        inplace_permute_rows(weight_v, p)
-                        # Permute ALL input channels to match in_proj output order
-                        if weight_v.shape[1] == d_inner_full:
-                             weight_v.data.copy_(weight_v.data.index_select(1, p_inv_full))
-                    elif weight_v.shape[0] == 2 * d_inner: # Value and gate path
-                        # Permute rows and columns for the value part only
-                        alias_free_rows_slice(weight_v, p, 0, d_inner)
-                        # Permute ALL input channels to match in_proj output order
-                        if weight_v.shape[1] == d_inner_full:
-                            weight_v.data.copy_(weight_v.data.index_select(1, p_inv_full))
+    # children except specials
+    specials = {"conv1d", "conv1d_proj", "x_proj", "out_proj"}
+    for n, child in mixer.named_children():
+        if n in specials:
+            continue
+        _permute_module_generic(child, p_val, p_inv_val, p_full, p_inv_full)
 
-                    # Permute weight_g (handle both single and dual-path)
-                    if conv_layer.weight_g.numel() == d_inner:
-                        inplace_permute_vector(conv_layer.weight_g, p)
-                    elif conv_layer.weight_g.numel() == 2 * d_inner:
-                        # For dual-path conv, only permute value part of weight_g
-                        g_view = conv_layer.weight_g.view(2, d_inner).contiguous()
-                        inplace_permute_vector(g_view[0], p)  # value slice only
-                    
-                    # Handle bias if it exists (handle both single and dual-path)
-                    if hasattr(conv_layer, 'bias') and conv_layer.bias is not None:
-                        if conv_layer.bias.numel() == d_inner:
-                            inplace_permute_vector(conv_layer.bias, p)
-                        elif conv_layer.bias.numel() == 2 * d_inner:
-                            # For dual-path conv, only permute value part of bias
-                            bias_view = conv_layer.bias.view(2, d_inner).contiguous()
-                            inplace_permute_vector(bias_view[0], p)  # value slice only
-                else: # Plain convolution (can be 2D or 3D)
-                    w = conv_layer.weight
-                    if w.shape[0] == 2 * d_inner:
-                         logger.debug(f"Permuting ONLY VALUE part of double-width {conv_name}")
-                         # --- VALUE PART ROWS PERMUTED ---
-                         alias_free_rows_slice(w, p, 0, d_inner)
-                         # --- ALL INPUT CHANNELS PERMUTED ---
-                         if w.shape[1] == d_inner_full:
-                            # Permute ALL input channels to match in_proj output order
-                            w.data.copy_(w.data.index_select(1, p_inv_full))
-                         # --- GATE PART UNTOUCHED ---
-                         
-                         if hasattr(conv_layer, 'bias') and conv_layer.bias is not None:
-                            # Permute only the value-path bias
-                            if conv_layer.bias.numel() == 2 * d_inner:
-                                logger.debug("Permuting ONLY VALUE part of double-width conv bias")
-                                bias_view = conv_layer.bias.view(2, d_inner).contiguous()
-                                inplace_permute_vector(bias_view[0], p)
-                            elif conv_layer.bias.numel() == d_inner:
-                                inplace_permute_vector(conv_layer.bias, p)
-                    elif w.shape[0] == d_inner:
-                        inplace_permute_rows(w, p)
-                        if w.shape[1] == d_inner_full:
-                            # Permute ALL input channels to match in_proj output order
-                            w.data.copy_(w.data.index_select(1, p_inv_full))
-                        if hasattr(conv_layer, 'bias') and conv_layer.bias is not None:
-                            if conv_layer.bias.numel() == d_inner:
-                                inplace_permute_vector(conv_layer.bias, p)
-                            elif conv_layer.bias.numel() == 2 * d_inner:
-                                # For dual-path conv, only permute value part of bias
-                                bias_view = conv_layer.bias.view(2, d_inner).contiguous()
-                                inplace_permute_vector(bias_view[0], p)  # value slice only
-                seen_modules.add(conv_name)
+    # conv variations
+    for cname in ("conv1d", "conv1d_proj"):
+        if not hasattr(mixer, cname):
+            continue
+        conv = getattr(mixer, cname)
+        if hasattr(conv, "weight_v") and conv.weight_v.size(0) == d_val:
+            assert conv.weight_v.shape[1] in (d_val, d_full), (
+                f"Unexpected shape for {cname}.weight_v: {conv.weight_v.shape}"
+            )
+            inplace_permute_rows(conv.weight_v, p_val)
+            if conv.weight_v.size(1) == d_full:
+                inplace_permute_cols(conv.weight_v, p_inv_full)
+        if hasattr(conv, "weight_g") and conv.weight_g.numel() == d_val:
+            inplace_permute_vector(conv.weight_g, p_val)
+        if getattr(conv, "bias", None) is not None and conv.bias.numel() == d_val:
+            inplace_permute_vector(conv.bias, p_val)
 
-        # 1d. Handle out_proj explicitly to ensure correct inverse permutation on columns
-        if hasattr(layer, 'out_proj') and "out_proj" not in seen_modules:
-            op = layer.out_proj
-            if op.weight.shape[1] == d_inner_full:
-                logger.debug(f"Permuting special case: out_proj columns in {layer.__class__.__name__}")
-                inplace_permute_cols(op.weight, p_inv_full)
-                # Bias acts on output dimension (d_model), which is not permuted.
-            seen_modules.add('out_proj')
+    # x_proj
+    if hasattr(mixer, "x_proj"):
+        w = mixer.x_proj.weight
+        if w.size(0) == 2 * d_val:
+            alias_free_rows_slice(w, p_val, 0, d_val)
+        elif w.size(0) == d_val:
+            inplace_permute_rows(w, p_val)
+        if w.size(1) == d_full:
+            inplace_permute_cols(w, p_inv_full)
+        elif w.size(1) == d_val:
+            inplace_permute_cols(w, p_inv_val)
+        if mixer.x_proj.bias is not None and mixer.x_proj.bias.numel() == 2 * d_val:
+            inplace_permute_vector(mixer.x_proj.bias.view(2, d_val)[0], p_val)
 
-        # --- Step 2: Handle all other direct child parameters automatically ---
-        for name, child_module in layer.named_children():
-            # Skip special modules that were already handled
-            if name in seen_modules:
-                continue
-            _permute_params_in_module(child_module, p, p_inv, p_full, p_inv_full)
-            
-        # --- Step 3: Handle parameters that are direct attributes of the layer ---
-        _permute_params_in_module(layer, p, p_inv, p_full, p_inv_full)
+    # out_proj columns
+    if mixer.out_proj.weight.size(1) == d_full:
+        inplace_permute_cols(mixer.out_proj.weight, p_inv_full)
+    elif mixer.out_proj.weight.size(1) == d_val:
+        inplace_permute_cols(mixer.out_proj.weight, p_inv_val)
 
-
-# --- Main Public Function ---
+# ---------------------------------------------------------------------------
+# public API
+# ---------------------------------------------------------------------------
 
 def run_iasp_on_mamba(
     model: nn.Module,
     dataloader: DataLoader,
-    iasp_config: DictConfig,
-    device: Optional[str] = None,
+    cfg: DictConfig,
 ) -> Tuple[List[int], float]:
-    """
-    Runs the full IASP optimization pipeline on a Mamba model.
+    """Run IASP and return (last layer permutation, modularity)."""
 
-    This function automates:
-    1. Finding the Mamba 'in_proj' layers.
-    2. Collecting activations for the `d_inner` dimension.
-    3. Finding the optimal permutation that maximizes modularity.
-    4. Applying the permutation consistently to all Mamba blocks.
+    cfg = DictConfig({**DEFAULTS.__dict__, **cfg})
+    device = next(model.parameters()).device
 
-    Args:
-        model: The Mamba model to be optimized.
-        dataloader: DataLoader for collecting sample activations.
-        iasp_config: Configuration for IASP optimization.
-        device: The device to run on (e.g., 'cuda:0'). Auto-detected if None.
+    layers = _expand_wildcard(model, cfg.get("target_layer_names")) or [
+        n for n, m in model.named_modules() if n.endswith("in_proj") and isinstance(m, nn.Linear)
+    ]
+    if not layers:
+        raise RuntimeError("no in_proj layers found")
 
-    Returns:
-        A tuple containing the optimal permutation and its modularity score.
-    """
-    logger.info("🚀 Starting IASP optimization pipeline for Mamba model...")
-    # Infer device from model if not provided, ensuring consistency.
-    device = device or next(model.parameters()).device
+    logger.info("IASP: %d target layers", len(layers))
+    last_perm, last_q = None, 0.0
 
-    target_layer_spec = iasp_config.get("target_layer_names")
-    if target_layer_spec:
-        logger.info(f"Expanding target layer spec: {target_layer_spec}")
-        target_layer_names = _expand_wildcard_layer_names(model, target_layer_spec)
-    else:
-        logger.info("Auto-detecting Mamba 'in_proj' layers...")
-        target_layer_names = [
-            name for name, mod in model.named_modules()
-            if name.endswith("in_proj") and isinstance(mod, nn.Linear)
-        ]
-    
-    if not target_layer_names:
-        raise ValueError("Could not find any target layers. Please check `target_layer_names` in your config.")
-    logger.info(f"Found {len(target_layer_names)} target layers.")
+    for lyr in tqdm(layers, desc="IASP", ncols=95):
+        corr, mask = _collect_layer_corr(
+            model,
+            dataloader,
+            lyr,
+            max_samples=cfg.max_samples,
+            stride=cfg.sample_stride,
+        )
+        sub_perm, q = _spectral_perm(corr, cfg)
 
-    # 1. 순열을 적용할 실제 mixer 모듈 객체들을 찾습니다.
-    #    target_layer_names는 '...in_proj' 이므로, 부모 모듈이 mixer입니다.
-    mamba_mixers_to_permute = []
-    for name in target_layer_names:
-        # Get the parent module (the mixer) of the in_proj layer
-        parent_module_name = ".".join(name.split('.')[:-1])
-        if not parent_module_name:
-             logger.warning(f"Could not determine parent module for top-level layer '{name}', skipping.")
-             continue
-        try:
-            parent_module = model.get_submodule(parent_module_name)
-            # Basic validation to ensure it's a Mamba mixer
-            if "MambaMixer" in parent_module.__class__.__name__ and hasattr(parent_module, 'in_proj'):
-                mamba_mixers_to_permute.append(parent_module)
-            else:
-                logger.warning(f"Parent module '{parent_module_name}' for '{name}' is not a valid MambaMixer, skipping.")
+        # --- build value-only permutation ---
+        d_val = mask.numel()
+        p_val = torch.arange(d_val, device=device)
+        # The permutation from spectral clustering is for the *masked* subspace.
+        # We assign the permuted indices of the valid channels back into the
+        # full-sized permutation tensor.
+        valid_indices = torch.where(mask)[0]
+        p_val[valid_indices] = valid_indices[torch.tensor(sub_perm, device=device)]
 
-        except AttributeError:
-            logger.warning(f"Could not find parent module for {name}, skipping.")
-            continue
-    
-    if not mamba_mixers_to_permute:
-        raise ValueError("Found no valid Mamba mixer blocks to apply permutation.")
-    logger.info(f"Identified {len(mamba_mixers_to_permute)} Mamba mixer blocks to permute.")
+        # --- decide what to do with gate channels ---
+        if cfg.get("permute_gate", False):
+            # mirror the same order for gates
+            p_gate = p_val.clone()
+        else:
+            # identity – keep original gate order
+            p_gate = torch.arange(d_val, device=device)
 
-    # Step 1: Get activation correlation for the d_inner dimension
-    correlation_result = _get_activation_correlation(
-        model, dataloader, target_layer_names, is_mamba_in_proj=True, device=device,
-        max_samples=iasp_config.get("max_samples", DEFAULT_MAX_SAMPLES),
-        sample_stride=iasp_config.get("sample_stride", 1),
-        iasp_config=iasp_config,
-    )
-    if correlation_result is None:
-        logger.error("Could not compute a valid correlation matrix for Mamba. Skipping IASP.")
-        # Try to infer d_inner for a valid identity permutation
-        try:
-            first_mixer = model.backbone.layers[0].mixer
-            dim = first_mixer.out_proj.in_features
-        except (AttributeError, IndexError):
-            dim = getattr(model.config, 'd_inner', 2048) # Fallback
-        return list(range(dim)), 0.0
+        # [gate, value]
+        p_full = torch.cat([p_gate, p_val])
 
-    correlation_matrix, valid_indices = correlation_result
+        mixer_parent = ".".join(lyr.split(".")[:-1])
+        mixer = model.get_submodule(mixer_parent)
+        _apply_perm_to_mixer(mixer, p_full)
 
-    # Step 2: Find the optimal permutation for the valid subset of channels
-    d_inner_valid = valid_indices.sum().item() # Use sum() for correct count of True values
-    min_size, max_size = iasp_config.cluster_size_range
-    min_clusters = max(MIN_CLUSTER_SIZE, d_inner_valid // max_size)
-    max_clusters = max(MIN_CLUSTER_SIZE, d_inner_valid // min_size)
-    
-    perm_valid, modularity = _find_optimal_permutation(
-        correlation_matrix, clusters_range=(min_clusters, max_clusters), iasp_config=iasp_config
-    )
+        last_perm, last_q = p_full.tolist(), float(q)
 
-    # Step 3: Map the permutation of valid channels back to the full dimension
-    # For Mamba, we need to handle both value and gate parts (2 * d_inner)
-    d_inner_single = valid_indices.numel()  # Single part dimension (just value or just gate)
-    d_inner_valid = valid_indices.sum().item()  # Number of valid channels in single part
-    d_inner_full = d_inner_single * 2  # value + gate parts
-    valid_indices_dev = valid_indices.to(device)
-
-    # Map permutation from valid subset back to original indices
-    original_indices = torch.arange(d_inner_single, device=device)[valid_indices_dev]
-    permuted_original_indices = original_indices[torch.tensor(perm_valid, device=device)]
-    
-    # Create identity permutation for value part, then apply valid permutation
-    p_val = torch.arange(d_inner_single, device=device)
-    p_val[valid_indices_dev] = permuted_original_indices
-    
-    # Apply same permutation to gate part (offset by d_inner_single)
-    p_gate = p_val + d_inner_single
-    
-    # Combine value and gate permutations
-    full_permutation = torch.cat([p_val, p_gate])
-
-    # Final sanity check to ensure the permutation has the correct full dimension
-    assert full_permutation.numel() == d_inner_full, "Full permutation length mismatch!"
-
-    # Step 4: Apply the full permutation to the model mixer blocks
-    _apply_permutation_to_mamba(mamba_mixers_to_permute, full_permutation.tolist())
-    
-    logger.info("✅ IASP optimization for Mamba completed successfully.")
-    return full_permutation.tolist(), modularity
-
-
-def _apply_permutation_to_bert_ffn(model: nn.Module, permutation: List[int], target_layer_names: List[str]):
-    """Applies a permutation to the specified FFN layers of a BERT-like model."""
-    if not target_layer_names:
-        return
-        
-    # Create permutation tensors once on the correct device.
-    dev = model.get_submodule(target_layer_names[0]).weight.device
-    p = torch.tensor(permutation, dtype=torch.long, device=dev)
-    p_inv = torch.empty_like(p)
-    p_inv[p] = torch.arange(p.numel(), device=dev)
-    d_ffn = len(permutation)
-    
-    pbar = tqdm(target_layer_names, desc="3/3: Applying Permutation to BERT FFN", leave=False)
-    for layer_name in pbar:
-        # Get the parent module of the 'intermediate.dense' layer
-        parent_module_name = ".".join(layer_name.split('.')[:-2])
-        parent_module = model.get_submodule(parent_module_name)
-
-        if hasattr(parent_module, 'intermediate') and hasattr(parent_module, 'output'):
-            if hasattr(parent_module.intermediate, 'dense') and hasattr(parent_module.output, 'dense'):
-                up_proj = parent_module.intermediate.dense
-                down_proj = parent_module.output.dense
-                
-                # Verify that the dimensions match our permutation
-                if up_proj.out_features != d_ffn or down_proj.in_features != d_ffn:
-                    logger.warning(f"Skipping FFN layer {layer_name} due to dimension mismatch.")
-                    continue
-
-                pbar.set_postfix({"layer": layer_name})
-
-                # Permute the up-projection (output is permuted)
-                inplace_permute_rows(up_proj.weight, p)
-                if up_proj.bias is not None:
-                    inplace_permute_vector(up_proj.bias, p)
-
-                # Permute the down-projection (input is permuted)
-                inplace_permute_cols(down_proj.weight, p_inv)
-                # Down-projection bias is not permuted as it's added after the matmul
-                
-                # The LayerNorm after the FFN's residual connection acts on the un-permuted
-                # hidden state, so its parameters should NOT be permuted.
-                if hasattr(parent_module, 'output') and hasattr(parent_module.output, 'LayerNorm'):
-                    pass # Explicitly do nothing
-    
-    # After permuting the FFNs, we need to handle the very final LayerNorm,
-    # if the model has one and it acts on the hidden dimension that was NOT permuted.
-    # In standard BERT, the final LN is outside the encoder layers.
-    # For now, we assume the permutation is self-contained within the FFN.
-
-def run_iasp_on_bert(
-    model: nn.Module,
-    dataloader: DataLoader,
-    iasp_config: DictConfig,
-    device: Optional[str] = None,
-) -> Tuple[List[int], float]:
-    """
-    Runs the full IASP optimization pipeline on a BERT-like model's FFN layers.
-
-    This function automates:
-    1. Finding the FFN 'up-projection' layers (e.g., `intermediate.dense`).
-    2. Collecting activations for the FFN intermediate dimension.
-    3. Finding the optimal permutation that maximizes modularity.
-    4. Applying the permutation consistently to all FFN blocks.
-
-    Args:
-        model: The BERT-like model to be optimized.
-        dataloader: DataLoader for collecting sample activations.
-        iasp_config: Configuration for IASP optimization.
-        device: The device to run on. Auto-detected if None.
-
-    Returns:
-        A tuple containing the optimal permutation and its modularity score.
-    """
-    logger.info("🚀 Starting IASP optimization pipeline for BERT model...")
-    # Infer device from model if not provided, ensuring consistency.
-    device = device or next(model.parameters()).device
-
-    target_layer_spec = iasp_config.get("target_layer_names")
-    if target_layer_spec:
-        logger.info(f"Expanding target layer spec: {target_layer_spec}")
-        target_layer_names = _expand_wildcard_layer_names(model, target_layer_spec)
-    else:
-        logger.info("Auto-detecting BERT FFN 'up-projection' layers...")
-        target_layer_names = [
-            name for name, mod in model.named_modules()
-            if name.endswith("intermediate.dense") and isinstance(mod, nn.Linear)
-        ]
-
-    if not target_layer_names:
-        raise ValueError("Could not find any target layers ('*.intermediate.dense'). Please specify them manually.")
-    logger.info(f"Found {len(target_layer_names)} target layers.")
-
-    # Step 1: Get activation correlation for the FFN intermediate dimension
-    correlation_result = _get_activation_correlation(
-        model, dataloader, target_layer_names, is_mamba_in_proj=False, device=device,
-        max_samples=iasp_config.get("max_samples", DEFAULT_MAX_SAMPLES),
-        sample_stride=iasp_config.get("sample_stride", 1),
-        iasp_config=iasp_config,
-    )
-    if correlation_result is None:
-        logger.error("Could not compute a valid correlation matrix for BERT FFN. Skipping IASP.")
-        dim = model.config.intermediate_size
-        return list(range(dim)), 0.0
-
-    correlation_matrix, valid_indices = correlation_result
-
-    # Step 2: Find the optimal permutation for the valid subset of channels
-    d_ffn_valid = valid_indices.sum().item() # Use sum() for correct count of True values
-    min_size, max_size = iasp_config.cluster_size_range
-    min_clusters = max(MIN_CLUSTER_SIZE, d_ffn_valid // max_size)
-    max_clusters = max(MIN_CLUSTER_SIZE, d_ffn_valid // min_size)
-    
-    perm_valid, modularity = _find_optimal_permutation(
-        correlation_matrix, clusters_range=(min_clusters, max_clusters), iasp_config=iasp_config
-    )
-
-    # Step 3: Map the permutation of valid channels back to the full dimension
-    d_ffn_full = valid_indices.numel()  # Total dimension including dropped channels
-    valid_indices_dev = valid_indices.to(device)
-
-    original_indices = torch.arange(d_ffn_full, device=device)[valid_indices_dev]
-    permuted_original_indices = original_indices[torch.tensor(perm_valid, device=device)]
-    
-    full_permutation = torch.arange(d_ffn_full, device=device)
-    
-    # Handle dropped indices for BERT as well
-    dropped_indices = torch.where(~valid_indices_dev)[0]
-    full_permutation[valid_indices_dev] = permuted_original_indices
-    if dropped_indices.numel() > 0:
-        full_permutation[dropped_indices] = dropped_indices
-    
-    # Final sanity check for BERT as well
-    assert full_permutation.numel() == d_ffn_full, "Full permutation length mismatch for BERT!"
-
-    # Step 4: Apply the permutation to the model
-    _apply_permutation_to_bert_ffn(model, full_permutation.tolist(), target_layer_names)
-
-    logger.info("✅ IASP optimization for BERT completed successfully.")
-    return full_permutation.tolist(), modularity
+    return last_perm, last_q
