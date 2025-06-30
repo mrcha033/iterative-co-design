@@ -301,6 +301,7 @@ class LatencyProfiler:
             except subprocess.CalledProcessError as e:
                 logger.error(f"Nsight Compute execution failed with return code {e.returncode}.")
                 logger.error(f"Command: {' '.join(command)}")
+                logger.error(f"Stdout: {e.stdout}")
                 logger.error(f"Stderr: {e.stderr}")
                 return None
             except Exception as e:
