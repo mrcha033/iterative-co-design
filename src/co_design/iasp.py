@@ -131,7 +131,20 @@ def _find_optimal_permutation(
     """Finds the permutation that maximizes modularity and returns it with the score."""
     dim = correlation_matrix.shape[0]
     best_modularity, best_permutation = -np.inf, list(range(dim))
-    affinity_matrix = np.abs(correlation_matrix)
+
+    # --- Preprocess affinity matrix for robustness ---
+    # 1. Ensure float type, and double-check for nan/inf values.
+    affinity_matrix = np.abs(correlation_matrix).astype(np.float64)
+    if np.any(np.isnan(affinity_matrix)) or np.any(np.isinf(affinity_matrix)):
+        logger.warning("NaN or Inf found in affinity matrix, cleaning up.")
+        affinity_matrix = np.nan_to_num(affinity_matrix)
+
+    # 2. Enforce perfect symmetry to prevent sklearn warnings and errors.
+    affinity_matrix = (affinity_matrix + affinity_matrix.T) / 2
+
+    # 3. Set the diagonal to 0 to remove self-loops.
+    np.fill_diagonal(affinity_matrix, 0)
+    # --- End of preprocessing ---
 
     n_init = iasp_config.get("spectral_n_init", 10)
     random_state = iasp_config.get("spectral_random_state", 0)
