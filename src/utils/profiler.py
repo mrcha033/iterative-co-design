@@ -234,7 +234,7 @@ class LatencyProfiler:
             torch.save(model.state_dict(), model_path)
             torch.save(dummy_input, input_path)
 
-            profiling_script = Path(__file__).resolve().parents[1] / "scripts" / "profiling_target.py"
+            profiling_script = Path(__file__).resolve().parents[2] / "scripts" / "profiling_target.py"
             if not profiling_script.exists():
                 logger.error(f"Profiling target script not found at {profiling_script}")
                 return None

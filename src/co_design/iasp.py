@@ -159,13 +159,12 @@ def _find_optimal_permutation(
         if not (1 < k < dim):
             continue
         try:
+            # Pass the fully preprocessed matrix to clustering.
             clustering = SpectralClustering(
                 n_clusters=k,
                 affinity="precomputed",
                 random_state=random_state,
                 n_init=n_init,
-                # Use the more numerically stable 'discretize' method for label assignment
-                # to avoid edge case errors within the default 'kmeans' method.
                 assign_labels='discretize'
             ).fit(affinity_matrix)
 
@@ -176,15 +175,10 @@ def _find_optimal_permutation(
                 best_modularity = modularity
                 best_permutation = [node for cluster in partition for node in cluster]
                 pbar.set_postfix({"best_modularity": f"{best_modularity:.4f}", "k": k})
-        except LinAlgError:
-            logger.warning(f"Spectral clustering failed for k={k} due to a linear algebra error (e.g., matrix not positive definite). Skipping.")
-            continue
-        except ValueError as e:
-            # Catch specific ValueErrors (like from np.where) without ambiguity
-            logger.error(f"A ValueError occurred during spectral clustering for k={k}: {e}. Skipping.")
-            continue
         except Exception as e:
-            logger.error(f"An unexpected error occurred during spectral clustering for k={k}: {e}")
+            # Catch any exception during clustering for a specific k and log it,
+            # allowing the search for a valid k to continue.
+            logger.warning(f"Clustering failed for k={k} with error: {e}. Skipping.")
             continue
 
     logger.info(f"Found optimal permutation with modularity: {best_modularity:.4f}")
