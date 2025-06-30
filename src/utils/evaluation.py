@@ -52,6 +52,18 @@ def calculate_perplexity(model, data_loader):
 
     with torch.no_grad():
         for batch in tqdm(data_loader, desc="Calculating Perplexity"):
+            # --- Pre-computation validation ---
+            # Check for out-of-bounds indices which cause CUDA asserts
+            input_ids = batch["input_ids"]
+            vocab_size = model.config.vocab_size
+            if torch.any(input_ids >= vocab_size) or torch.any(input_ids < 0):
+                problematic_indices = input_ids[(input_ids >= vocab_size) | (input_ids < 0)]
+                logger.error(f"FATAL: Invalid input_ids found before sending to model.")
+                logger.error(f"  - Vocab size: {vocab_size}")
+                logger.error(f"  - Problematic indices: {problematic_indices}")
+                raise ValueError("Input IDs are out of range for the model's vocabulary. This might be caused by model state corruption.")
+            # --- End of validation ---
+            
             if torch.cuda.is_available():
                 batch = {k: v.cuda() for k, v in batch.items()}
 

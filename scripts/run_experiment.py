@@ -258,7 +258,22 @@ def run_permute_only(cfg: DictConfig):
     profiler = LatencyProfiler()
     
     logger.info("--- Applying IASP Permutation ---")
+
+    # --- Pre-IASP weight integrity check ---
+    lm_head_weight_before = None
+    if hasattr(wrapped_model.model, "lm_head") and wrapped_model.model.lm_head is not None:
+        lm_head_weight_before = wrapped_model.model.lm_head.weight.detach().clone()
+        logger.info("Saved lm_head weights for integrity check.")
+
     permutation, modularity_score = _run_iasp(wrapped_model.model, data_loader, cfg)
+
+    # --- Post-IASP weight integrity check ---
+    if lm_head_weight_before is not None:
+        lm_head_weight_after = wrapped_model.model.lm_head.weight.detach()
+        if not torch.equal(lm_head_weight_before, lm_head_weight_after):
+            logger.critical("CRITICAL WARNING: The 'lm_head' weights were modified by the IASP process. This is unintended and likely the cause of downstream errors.")
+        else:
+            logger.info("Integrity check passed: lm_head weights were not modified.")
     
     logger.info("--- Measuring Performance for Permutation-Only ---")
     metrics = _measure_and_collect_metrics(
