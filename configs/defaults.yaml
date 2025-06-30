@@ -52,23 +52,3 @@ iasp:
   # Spectral clustering parameters
   spectral_n_init: 10
   spectral_random_state: 0
-
-# @package _group_
-defaults:
-  - _self_
-  - model: bert_base
-  - dataset: sst2
-  - override hydra/launcher: joblib
-
-project_name: "iterative-co-design"
-experiment_name: "${model.name}-${dataset.name}-${method}"
-seed: 42
-dry_run: false
-cleanup_old_outputs: true
-
-hydra:
-  run:
-    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
-  sweep:
-    dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
-    subdir: ${hydra.job.num}
