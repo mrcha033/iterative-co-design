@@ -68,91 +68,63 @@ perm_tensor, _ = run_iasp_on_mamba(
     }),
 )
 
-# 3) hook 으로 층별 출력 비교 (효율적인 방식) ---------------------------------
-EPS = 1e-3  # Relaxed epsilon for numerical stability with fp16/fp32 conversions
-mismatch = OrderedDict()
-
-def extract_tensor(output):
-    """Recursively extracts a tensor from various model output types."""
-    if torch.is_tensor(output):
-        return output
-    if is_dataclass(output):
-        # Prefer 'last_hidden_state', fallback to the last item in 'hidden_states'
-        if hasattr(output, "last_hidden_state") and output.last_hidden_state is not None:
-            return output.last_hidden_state
-        if hasattr(output, "hidden_states") and output.hidden_states:
-            return output.hidden_states[-1]
-    if isinstance(output, (list, tuple)) and output:
-        return extract_tensor(output[0])
-    if isinstance(output, dict):
-        # Common keys in HF model outputs
-        for key in ["last_hidden_state", "logits", "hidden_states"]:
-            if key in output:
-                return extract_tensor(output[key])
-    raise TypeError(f"Unsupported or empty output type: {type(output)}")
-
-def collect_all_outputs(model, model_inputs):
+# 3) hook 방식 대신 직접 Mixer 출력 비교 ------------------------------------
+def check_mixer_equivalence(original_backbone, permuted_backbone):
     """
-    Attaches hooks to all submodules, runs a single forward pass,
-    and collects all intermediate outputs in a dictionary.
+    Compares the output of each MambaMixer block directly to find the
+    first point of divergence with high precision.
     """
-    outputs = {}
-    hooks = []
-
-    def make_hook(name):
-        def _hook(mod, inp, out):
-            try:
-                outputs[name] = extract_tensor(out).detach()
-            except (TypeError, AttributeError) as e:
-                print(f"[⚠️] Hook error at {name} with output type {type(out)}: {e}")
-                outputs[name] = None
-        return _hook
-
-    for name, module in model.named_modules():
-        hooks.append(module.register_forward_hook(make_hook(name)))
-
-    with torch.no_grad():
-        _ = model(**model_inputs)
-
-    for h in hooks:
-        h.remove()
+    device = next(original_backbone.parameters()).device
     
-    return outputs
+    orig_mixers = {name: mod for name, mod in original_backbone.named_modules() if "MambaMixer" in mod.__class__.__name__}
+    perm_mixers = {name: mod for name, mod in permuted_backbone.named_modules() if "MambaMixer" in mod.__class__.__name__}
 
-print("\nCollecting outputs from original model...")
-orig_outputs = collect_all_outputs(orig, dummy_in)
-
-print("Collecting outputs from permuted model...")
-perm_outputs = collect_all_outputs(perm, dummy_in)
-
-print("\nComparing outputs...")
-# Use sorted keys to ensure consistent comparison order and parent-first traversal
-sorted_keys = sorted(orig_outputs.keys(), key=lambda x: (x.count('.'), x))
-
-for name in sorted_keys:
-    o_out = orig_outputs.get(name)
-    p_out = perm_outputs.get(name)
-
-    if o_out is None or p_out is None:
-        # A hook error was already printed, so just skip.
-        continue
+    print("\n🔍 Verifying output of each Mixer block...")
+    
+    mismatch_found = False
+    for name, orig_mixer in orig_mixers.items():
+        if mismatch_found: break
         
-    if o_out.shape != p_out.shape:
-        print(f"[❌] Mismatch @ {name:60s}  SHAPE DIFFERENCE! orig: {o_out.shape}, perm: {p_out.shape}")
-        mismatch[name] = float('inf')
-        break
+        perm_mixer = perm_mixers[name]
+        
+        # Create a random input matching the mixer's input dimension (d_model)
+        try:
+            # Most reliable way to get d_model is from a layer that maps from it
+            d_model = orig_mixer.in_proj.in_features
+        except AttributeError:
+             print(f"[⚠️] Could not determine d_model for {name}, skipping.")
+             continue
 
-    diff = (o_out - p_out).abs().max().item()
-    if diff > EPS:
-        mismatch[name] = diff
-        print(f"[❌] Mismatch @ {name:60s}  diff={diff:.6f}")
-        # Break after finding the first divergence to pinpoint the root cause.
-        break
-    elif name.count('.') < 2: # Print success only for major blocks to reduce noise
-        print(f"[✅] {name:60s}  (diff: {diff:.6f})")
+        x = torch.randn(2, 16, d_model, device=device) # (B, L, D)
 
-if mismatch:
-    k, v = next(iter(mismatch.items()))
-    print(f"\n➡️  FIRST layer causing divergence: {k} | max diff = {v}")
+        with torch.no_grad():
+            y_orig = orig_mixer(x.clone())
+            y_perm = perm_mixer(x.clone())
+        
+        # MambaMixer output can be a tensor or a tuple, handle both
+        if isinstance(y_orig, tuple): y_orig = y_orig[0]
+        if isinstance(y_perm, tuple): y_perm = y_perm[0]
+            
+        diff = (y_orig - y_perm).abs().max().item()
+        
+        if diff > 1e-4:
+            print(f"[❌] Mismatch @ {name:40s} | max_diff = {diff:.6f}")
+            mismatch_found = True
+        else:
+            print(f"[✅] {name:40s} | max_diff = {diff:.6f}")
+
+# 4) 최종 모델 전체 출력 비교 (Sanity check) -------------------------------
+with torch.no_grad():
+    orig_logits = orig(**dummy_in).logits
+    perm_logits = perm(**dummy_in).logits
+    final_diff = (orig_logits - perm_logits).abs().max().item()
+
+print("\n" + "="*50)
+check_mixer_equivalence(orig.backbone, perm.backbone)
+print("="*50)
+
+print(f"\nFINAL LOGITS MAX DIFF: {final_diff:.6f}")
+if final_diff < 1e-4:
+    print("\n✅  SUCCESS: Models are functionally equivalent.")
 else:
-    print(f"\n✅  All layers are functionally equivalent (diff <= {EPS}).")
+    print("\n❌  FAILURE: Models are NOT functionally equivalent.")

@@ -462,27 +462,6 @@ def run_iasp_on_mamba(
     # Step 4: Apply the full permutation to the model mixer blocks
     _apply_permutation_to_mamba(mamba_mixers_to_permute, full_permutation.tolist())
     
-    # Step 5: Permute the final normalization layer's weights
-    # The final norm_f layer receives the permuted output from the last block.
-    # Its weights must also be permuted to maintain model equivalence.
-    logger.info("Permuting the final 'norm_f' layer weights...")
-    try:
-        # Mamba 모델의 표준 구조에 따라 backbone에서 norm_f 레이어를 찾습니다.
-        final_norm_layer = model.backbone.norm_f
-        # Check if the norm layer's dimension matches the permutation dimension
-        if final_norm_layer.weight.numel() == d_inner_full:
-            p = torch.tensor(full_permutation.tolist(), dtype=torch.long, device=final_norm_layer.weight.device)
-            
-            # norm_f 레이어의 가중치(1D 벡터)를 permutation에 맞춰 재정렬합니다.
-            inplace_permute_vector(final_norm_layer.weight, p)
-            logger.info("Successfully permuted 'norm_f.weight'.")
-        else:
-            logger.warning(f"'norm_f' weight size ({final_norm_layer.weight.numel()}) does not match permutation "
-                           f"dimension ({d_inner_full}). Skipping permutation.")
-
-    except AttributeError:
-        logger.warning("'model.backbone.norm_f' not found. Skipping final normalization layer permutation.")
-
     logger.info("✅ IASP optimization for Mamba completed successfully.")
     return full_permutation.tolist(), modularity
 
