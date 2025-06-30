@@ -89,20 +89,24 @@ class LatencyProfiler:
         return hasher.hexdigest()
 
     def _locate_profiling_script(self) -> Path:
-        """Searches for the profiling_target.py script in common locations."""
-        # This handles running from `src/utils`, from project root, etc.
-        candidates = [
-            Path(__file__).resolve().parent.parent / "scripts" / "profiling_target.py",
-            Path.cwd() / "scripts" / "profiling_target.py",
-            Path.cwd() / "profiling_target.py",
-        ]
-        for path in candidates:
-            if path.exists():
-                logger.info(f"Found profiling script at: {path}")
-                return path
+        """Finds the profiling_target.py script, assuming execution from project root."""
+        # The script is expected to be run from the project root directory
+        # where the `scripts` folder is located.
+        script_path = Path("scripts/profiling_target.py").resolve()
+
+        if script_path.exists():
+            logger.info(f"Found profiling script at: {script_path}")
+            return script_path
+        
+        # As a fallback, try to locate it relative to this file's location
+        fallback_path = Path(__file__).resolve().parent.parent.parent / "scripts" / "profiling_target.py"
+        if fallback_path.exists():
+            logger.info(f"Found profiling script at fallback path: {fallback_path}")
+            return fallback_path
+            
         raise FileNotFoundError(
-            "Could not locate profiling_target.py. Searched in:\n" +
-            "\n".join(map(str, candidates))
+            "Could not locate profiling_target.py. "
+            f"Attempted default: {script_path} and fallback: {fallback_path}"
         )
 
     def _find_ncu_path(self) -> Optional[str]:
