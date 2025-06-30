@@ -180,43 +180,37 @@ def _find_optimal_permutation(
     return best_permutation, best_modularity
 
 
-def _apply_permutation_to_mamba(model: nn.Module, permutation: List[int]):
-    """Applies a permutation to Mamba weights while preserving mathematical equivalence."""
+def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List[int]):
+    """Applies a permutation to a list of Mamba mixer blocks consistently."""
     p = torch.tensor(permutation, dtype=torch.long)
-    pbar = tqdm(list(model.named_modules()), desc="3/3: Applying Permutation", leave=False)
-    for name, layer in pbar:
-        # More robustly identify the Mamba mixer block by checking the class name
-        # in addition to the attributes. This prevents accidental permutation of other layers.
-        is_mamba_mixer = "MambaMixer" in layer.__class__.__name__
+    pbar = tqdm(mamba_mixers, desc="3/3: Applying Permutation to Mamba Mixers", leave=False)
+    for layer in pbar:
+        d_inner = layer.out_proj.in_features
+        if p.numel() != d_inner:
+            logger.warning(f"Skipping layer due to permutation size mismatch (expected {d_inner}, got {p.numel()}).")
+            continue
 
-        if is_mamba_mixer and all(hasattr(layer, attr) for attr in ["in_proj", "out_proj", "dt_proj", "A_log", "D"]):
-            pbar.set_postfix({"layer": name})
-            d_inner = layer.out_proj.in_features
-            if p.numel() != d_inner:
-                logger.warning(f"Skipping {name} due to permutation size mismatch.")
-                continue
+        dev = layer.in_proj.weight.device
+        p = p.to(dev)
 
-            dev = layer.in_proj.weight.device
-            p = p.to(dev)
+        with torch.no_grad():
+            # Permute output of in_proj (P @ W)
+            w_in = layer.in_proj.weight.data
+            b_in = layer.in_proj.bias  # Get tensor or None
 
-            with torch.no_grad():
-                # Permute output of in_proj (P @ W)
-                w_in = layer.in_proj.weight.data
-                b_in = layer.in_proj.bias  # Get tensor or None
+            layer.in_proj.weight.data.copy_(torch.cat((w_in[:d_inner][p], w_in[d_inner:][p])))
+            if b_in is not None:
+                # Access .data only after confirming the tensor exists
+                b_in_data = b_in.data
+                layer.in_proj.bias.data.copy_(torch.cat((b_in_data[:d_inner][p], b_in_data[d_inner:][p])))
 
-                layer.in_proj.weight.data.copy_(torch.cat((w_in[:d_inner][p], w_in[d_inner:][p])))
-                if b_in is not None:
-                    # Access .data only after confirming the tensor exists
-                    b_in_data = b_in.data
-                    layer.in_proj.bias.data.copy_(torch.cat((b_in_data[:d_inner][p], b_in_data[d_inner:][p])))
-
-                # Permute inputs of subsequent layers (W @ P^T -> W[:, p])
-                layer.dt_proj.weight.data = layer.dt_proj.weight.data[:, p]
-                layer.out_proj.weight.data = layer.out_proj.weight.data[:, p]
-                
-                # Permute parameters aligned with d_inner
-                layer.A_log.data = layer.A_log.data[:, p]
-                layer.D.data = layer.D.data[p]
+            # Permute inputs of subsequent layers (W @ P^T -> W[:, p])
+            layer.dt_proj.weight.data = layer.dt_proj.weight.data[:, p]
+            layer.out_proj.weight.data = layer.out_proj.weight.data[:, p]
+            
+            # Permute parameters aligned with d_inner
+            layer.A_log.data = layer.A_log.data[:, p]
+            layer.D.data = layer.D.data[p]
 
 
 # --- Main Public Function ---
@@ -262,6 +256,31 @@ def run_iasp_on_mamba(
         raise ValueError("Could not find any target layers. Please check `target_layer_names` in your config.")
     logger.info(f"Found {len(target_layer_names)} target layers.")
 
+    # 1. 순열을 적용할 실제 mixer 모듈 객체들을 찾습니다.
+    #    target_layer_names는 '...in_proj' 이므로, 부모 모듈이 mixer입니다.
+    mamba_mixers_to_permute = []
+    for name in target_layer_names:
+        # Get the parent module (the mixer) of the in_proj layer
+        parent_module_name = ".".join(name.split('.')[:-1])
+        if not parent_module_name:
+             logger.warning(f"Could not determine parent module for top-level layer '{name}', skipping.")
+             continue
+        try:
+            parent_module = model.get_submodule(parent_module_name)
+            # Basic validation to ensure it's a Mamba mixer
+            if "MambaMixer" in parent_module.__class__.__name__ and hasattr(parent_module, 'in_proj'):
+                mamba_mixers_to_permute.append(parent_module)
+            else:
+                logger.warning(f"Parent module '{parent_module_name}' for '{name}' is not a valid MambaMixer, skipping.")
+
+        except AttributeError:
+            logger.warning(f"Could not find parent module for {name}, skipping.")
+            continue
+    
+    if not mamba_mixers_to_permute:
+        raise ValueError("Found no valid Mamba mixer blocks to apply permutation.")
+    logger.info(f"Identified {len(mamba_mixers_to_permute)} Mamba mixer blocks to permute.")
+
     # Step 1: Get activation correlation for the d_inner dimension
     correlation_matrix = _get_activation_correlation(
         model, dataloader, target_layer_names, is_mamba_in_proj=True, device=device,
@@ -279,7 +298,7 @@ def run_iasp_on_mamba(
     )
 
     # Step 3: Apply the permutation to the model
-    _apply_permutation_to_mamba(model, permutation)
+    _apply_permutation_to_mamba(mamba_mixers_to_permute, permutation)
 
     logger.info("✅ IASP optimization for Mamba completed successfully.")
     return permutation, modularity
