@@ -230,10 +230,10 @@ class LatencyProfiler:
             temp_path = Path(temp_dir)
             model_path = temp_path / "model.pt"
             input_path = temp_path / "input.pt"
-            
-            # Save the entire model object for robustness, not just the state_dict.
-            # This ensures the architecture and weights are always consistent.
-            torch.save(model, model_path)
+
+            # Revert to saving state_dict, as it's more robust across environments
+            # than pickling the entire model object.
+            torch.save(model.state_dict(), model_path)
             torch.save(dummy_input, input_path)
 
             profiling_script = Path(__file__).resolve().parents[2] / "scripts" / "profiling_target.py"
@@ -241,8 +241,17 @@ class LatencyProfiler:
                 logger.error(f"Profiling target script not found at {profiling_script}")
                 return None
             
-            # The model name and task are no longer needed since we save the whole model,
-            # but we pass dummy values to avoid changing the target script's signature.
+            # Use model's config to pass its original name for architecture loading
+            model_name = model.config._name_or_path
+
+            # Infer the task from the model's config for robust model loading in the target script.
+            config_dict = model.config.to_dict()
+            task = "text-generation" # Default task
+            if "architectures" in config_dict and config_dict["architectures"]:
+                arch = config_dict["architectures"][0]
+                if "ForSequenceClassification" in arch:
+                    task = "sequence-classification"
+
             command = [
                 ncu_path,
                 "--metrics", "lts__t_sector_hit_rate.pct",
@@ -251,8 +260,8 @@ class LatencyProfiler:
                 str(profiling_script),
                 str(model_path),
                 str(input_path),
-                "dummy_model",
-                "dummy_task",
+                model_name,
+                task,
             ]
 
             try:

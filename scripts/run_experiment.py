@@ -61,11 +61,13 @@ import wandb
 from utils.evaluation import calculate_task_metric
 from utils.profiler import LatencyProfiler
 from utils.cleanup import cleanup_old_runs
+from utils.input import make_dummy_input
 from co_design.iasp import run_iasp_on_mamba, run_iasp_on_bert
 from models.wrapper import ModelWrapper
 from co_design.hds import apply_hds
 from co_design.layout_aware import apply_layout_aware_hds_finetuning
 import logging
+from inspect import getmro
 
 logger = logging.getLogger(__name__)
 
@@ -156,15 +158,24 @@ def _measure_and_collect_metrics(
 ):
     """Helper function to measure and collect all relevant metrics."""
     logger.info("Calculating evaluation metric...")
-    task_metric = calculate_task_metric(
-        wrapped_model.model, data_loader, cfg.model.task
-    )
+    
+    # Use the correct metric for the task
+    if cfg.model.task == "sequence_classification":
+        # Note: This requires an accuracy function in utils.evaluation
+        task_metric = calculate_task_metric(
+            wrapped_model.model, data_loader, "accuracy"
+        )
+    else:
+        task_metric = calculate_task_metric(
+            wrapped_model.model, data_loader, "perplexity"
+        )
+
     metric_name, metric_value = list(task_metric.items())[0]
     logger.info(f"{metric_name.title()}: {metric_value:.4f}")
 
     logger.info("Measuring latency...")
     device = next(wrapped_model.model.parameters()).device
-    dummy_input = {"input_ids": torch.randint(0, cfg.model.vocab_size, (1, 512), device=device)}
+    dummy_input = make_dummy_input(wrapped_model.model, tokenizer, device)
     latency = profiler.measure_latency(wrapped_model.model, dummy_input)
     logger.info(f"Latency: {latency:.2f} ms")
 
@@ -226,17 +237,20 @@ IASP_DISPATCH = {
     "bert": run_iasp_on_bert,
 }
 
+def detect_family(model: nn.Module) -> str:
+    """Robustly detects model family by inspecting class hierarchy."""
+    for cls in getmro(model.__class__):
+        name = cls.__name__.lower()
+        if "mamba" in name:
+            return "mamba"
+        if "bert" in name:
+            return "bert"
+    return "unknown"
+
 def _run_iasp(model, data_loader, cfg) -> tuple[list[int], float]:
     """Helper function to run the correct IASP function and return permutation and modularity."""
-    # Auto-detect model type from class name instead of relying on config
-    model_name_lower = model.__class__.__name__.lower()
-    model_type = "unknown"
-    if 'mamba' in model_name_lower:
-        model_type = "mamba"
-    elif 'bert' in model_name_lower:
-        model_type = "bert"
-
-    iasp_config = cfg.model.iasp  # Get the IASP config sub-section
+    model_type = detect_family(model)
+    iasp_config = cfg.model.iasp
 
     iasp_runner = IASP_DISPATCH.get(model_type)
     if iasp_runner:
@@ -244,7 +258,7 @@ def _run_iasp(model, data_loader, cfg) -> tuple[list[int], float]:
         # Pass the entire model-specific IASP config
         return iasp_runner(model, data_loader, iasp_config)
     else:
-        raise NotImplementedError(f"IASP is not implemented for model type: {model_name_lower}")
+        raise NotImplementedError(f"IASP is not implemented for model type: {model_type}")
 
 
 def run_permute_only(cfg: DictConfig):
@@ -347,7 +361,7 @@ def run_bidirectional_iterative(cfg: DictConfig):
     num_iterations = cfg.method_configs.iterative.iterations
     
     # Determine the actual dimension being permuted by IASP
-    model_type = cfg.model.get("type", "bert")
+    model_type = detect_family(model)
     target_dim = 0
     if 'mamba' in model_type:
         try:
@@ -375,8 +389,8 @@ def run_bidirectional_iterative(cfg: DictConfig):
         logger.info(f"\n--- Bidirectional Iteration {i+1}/{num_iterations} ---")
         
         logger.info(f"--- Iteration {i+1}, Step 1: Layout-Aware HDS Sparsification ---")
-        # Ensure the permutation tensor is on the correct device
-        perm_tensor = torch.tensor(permutation, device=wrapped_model.device)
+        # Ensure the permutation tensor is on the correct device for the model
+        perm_tensor = torch.as_tensor(permutation, device=wrapped_model.device)
         apply_layout_aware_hds_finetuning(
             wrapped_model, data_loader, cfg.model, perm_tensor
         )
@@ -395,13 +409,26 @@ def run_bidirectional_iterative(cfg: DictConfig):
 
 def run_cleanup_if_configured(cfg: DictConfig, dry_run: bool = False):
     """Runs the cleanup utility if enabled in the config."""
-    if cfg.get("cleanup_old_outputs", False):
-        if dry_run:
-            print("\n🧹 Cleanup is enabled. Old output directories would be removed.")
-        else:
-            print("\n🧹 Running cleanup of old experiment outputs...")
-            cleanup_old_runs(dry_run=False)
-            print("✅ Cleanup completed successfully")
+    if not cfg.get("cleanup_old_outputs", False):
+        return
+
+    # Safeguard: Do not clean if the current working directory is the project root.
+    # This can happen with `hydra.run.dir=.`
+    try:
+        if Path.cwd().samefile(hydra.utils.get_original_cwd()):
+            logger.error("Refusing to clean output directories from the project root. "
+                         "Please use Hydra's default output directory structure.")
+            return
+    except (FileNotFoundError, TypeError):
+        # get_original_cwd can fail or return None in some contexts.
+        pass
+
+    if dry_run:
+        print("\n🧹 Cleanup is enabled. Old output directories would be removed.")
+    else:
+        print("\n🧹 Running cleanup of old experiment outputs...")
+        cleanup_old_runs(dry_run=False)
+        print("✅ Cleanup completed successfully")
 
 def print_dry_run_plan(cfg: DictConfig):
     """Prints the execution plan for a dry run."""

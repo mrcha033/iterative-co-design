@@ -21,6 +21,7 @@ import fnmatch
 
 from numpy.linalg import LinAlgError
 from omegaconf import DictConfig
+from ..utils.permutation import permute_rows, permute_cols, permute_vector, permute_in_proj_split
 
 # --- Setup ---
 logger = logging.getLogger(__name__)
@@ -66,9 +67,8 @@ def _get_activation_correlation(
     device: Optional[str] = None,
 ) -> np.ndarray:
     """Computes activation correlation, with special handling for Mamba's in_proj."""
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    model.to(device).eval()
+    model.eval()  # Ensure model is in eval mode, but don't move device here
+    device = next(model.parameters()).device  # Infer device from model
 
     activations = {name: [] for name in target_layer_names}
     hooks = []
@@ -111,16 +111,26 @@ def _get_activation_correlation(
     for name, acts_list in activations.items():
         if not acts_list:
             continue
-        all_acts = torch.cat(acts_list, dim=0)[:max_samples]
-        corr_matrix = torch.corrcoef(all_acts.T).cpu().numpy()
-        if np.any(np.isnan(corr_matrix)):
-            corr_matrix = np.nan_to_num(corr_matrix, nan=NAN_REPLACEMENT_VALUE)
-            np.fill_diagonal(corr_matrix, DIAGONAL_CORRELATION_VALUE)
+        
+        # PyTorch < 2.2 may not have a stable float16/bfloat16 kernel for corrcoef
+        if torch.__version__ < "2.2.0":
+            all_acts_fp32 = torch.cat(acts_list, dim=0)[:max_samples].to(torch.float32)
+            corr_matrix = torch.corrcoef(all_acts_fp32.T).cpu().numpy()
+        else:
+            # Use float16 for memory efficiency on newer PyTorch versions
+            all_acts_fp16 = torch.cat(acts_list, dim=0)[:max_samples].to(torch.float16)
+            # Calculate correlation and cast back to float32 for stability
+            corr_matrix = torch.corrcoef(all_acts_fp16.T).float().cpu().numpy()
+
         correlation_matrices.append(corr_matrix)
 
     if not correlation_matrices:
         raise ValueError("Failed to compute correlation.")
-    return np.mean(correlation_matrices, axis=0)
+    
+    final_corr = np.mean(correlation_matrices, axis=0)
+    # Ensure diagonal is always 1.0, as self-correlation should be perfect.
+    np.fill_diagonal(final_corr, 1.0)
+    return final_corr
 
 
 def _find_optimal_permutation(
@@ -134,14 +144,14 @@ def _find_optimal_permutation(
 
     # --- Robust Preprocessing Step ---
     # 1. Ensure the correlation matrix is fully finite before proceeding.
-    #    Activations with zero variance can cause `torch.corrcoef` to produce NaNs or Infs.
+    #    Use np.where to preserve sign information while handling NaNs.
     if not np.all(np.isfinite(correlation_matrix)):
         logger.warning("Correlation matrix contains non-finite values (NaN or Inf). Cleaning up...")
-        # Replace NaN with 0, and Inf/-Inf with the valid correlation bounds of 1/-1.
-        correlation_matrix = np.nan_to_num(correlation_matrix, nan=0.0, posinf=1.0, neginf=-1.0)
+        correlation_matrix = np.where(np.isnan(correlation_matrix), 0.0, correlation_matrix)
+        correlation_matrix = np.clip(correlation_matrix, -1.0, 1.0) # Clamp infs
 
-    # 2. Create the affinity matrix for clustering.
-    affinity_matrix = np.abs(correlation_matrix).astype(np.float64)
+    # 2. Create a positive-only affinity matrix to group co-activated neurons.
+    affinity_matrix = np.clip(correlation_matrix, 0, None).astype(np.float64)
 
     # 3. Enforce perfect symmetry to prevent sklearn warnings.
     affinity_matrix = (affinity_matrix + affinity_matrix.T) / 2
@@ -165,7 +175,8 @@ def _find_optimal_permutation(
                 affinity="precomputed",
                 random_state=random_state,
                 n_init=n_init,
-                assign_labels='discretize'
+                assign_labels="kmeans", # K-means is more stable for a wide range of k
+                eigen_tol=1e-5,
             ).fit(affinity_matrix)
 
             partition = [np.where(clustering.labels_ == i)[0] for i in range(k)]
@@ -187,57 +198,50 @@ def _find_optimal_permutation(
 
 def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List[int]):
     """Applies a permutation to a list of Mamba mixer blocks consistently."""
-    p = torch.tensor(permutation, dtype=torch.long)
+    if not mamba_mixers:
+        return
+
+    # Create permutation tensor once on the correct device for robustness.
+    dev = mamba_mixers[0].in_proj.weight.device
+    p = torch.tensor(permutation, dtype=torch.long, device=dev)
+
     pbar = tqdm(mamba_mixers, desc="3/3: Applying Permutation to Mamba Mixers", leave=False)
     for layer in pbar:
-        # We target d_inner, which is the input dimension to out_proj.
         d_inner = layer.out_proj.in_features
-        if p.numel() != d_inner:
-            logger.warning(f"Skipping layer due to permutation size mismatch (expected {d_inner}, got {p.numel()}).")
-            continue
-
-        dev = layer.in_proj.weight.device
-        p = p.to(dev)
+        assert p.numel() == d_inner, f"Permutation length {p.numel()} mismatch with d_inner {d_inner}"
 
         with torch.no_grad():
-            # 1. in_proj output is permuted on the d_inner dim.
-            #    So, its output becomes (xP, zP). Permute ROWS of in_proj's weight matrix.
-            w_in = layer.in_proj.weight
-            permuted_w_in = torch.cat((w_in[:d_inner][p], w_in[d_inner:][p]), dim=0)
-            layer.in_proj.weight.copy_(permuted_w_in)
+            # Use grad-safe helpers to reconstruct autograd graph
             if layer.in_proj.bias is not None:
-                b_in = layer.in_proj.bias
-                permuted_b_in = torch.cat((b_in[:d_inner][p], b_in[d_inner:][p]), dim=0)
-                layer.in_proj.bias.copy_(permuted_b_in)
+                layer.in_proj.weight, layer.in_proj.bias = permute_in_proj_split(
+                    layer.in_proj.weight, p, layer.in_proj.bias
+                )
+            else:
+                layer.in_proj.weight = permute_in_proj_split(layer.in_proj.weight, p)
 
-            # 2. conv1d takes the permuted state xP as input. Its weights
-            #    have shape (d_inner, 1, d_conv). Permute input channels (dim 0).
             if hasattr(layer, 'conv1d'):
-                layer.conv1d.weight.copy_(layer.conv1d.weight[p])
-                if layer.conv1d.bias is not None:
-                    layer.conv1d.bias.copy_(layer.conv1d.bias[p])
+                w = layer.conv1d.weight
+                if w.shape[0] == d_inner:
+                    layer.conv1d.weight = permute_rows(w, p)
+                elif w.shape[1] == d_inner:
+                    layer.conv1d.weight = permute_cols(w, p)
+                
+                if layer.conv1d.bias is not None and layer.conv1d.bias.numel() == d_inner:
+                    layer.conv1d.bias = permute_vector(layer.conv1d.bias, p)
             
-            # 3. x_proj projects xP to get components for B, C.
-            #    It takes xP as input, so permute its COLUMNS. Shape: (dt_rank + 2*d_state, d_inner).
             if hasattr(layer, 'x_proj'):
-                 layer.x_proj.weight.copy_(layer.x_proj.weight[:, p])
+                 layer.x_proj.weight = permute_cols(layer.x_proj.weight, p)
 
-            # 4. dt_proj projects xP to get Δ.
-            #    Weight shape is (d_inner, dt_rank). This is a projection FROM xP, so permute ROWS.
             if hasattr(layer, 'dt_proj'):
-                 layer.dt_proj.weight.copy_(layer.dt_proj.weight[p])
-                 if layer.dt_proj.bias is not None:
-                     # dt_proj.bias has shape (d_inner), so it must be permuted.
-                     layer.dt_proj.bias.copy_(layer.dt_proj.bias[p])
+                 W = layer.dt_proj.weight
+                 if W.shape[0] == d_inner:
+                     layer.dt_proj.weight = permute_rows(W, p)
+                 elif W.shape[1] == d_inner:
+                     layer.dt_proj.weight = permute_cols(W, p)
 
-            # 5. A_log and D are aligned with d_inner.
-            #    A_log shape: (d_inner, d_state). Permute ROWS.
-            #    D shape: (d_inner). Permute elements.
-            layer.A_log.copy_(layer.A_log[p])
-            layer.D.copy_(layer.D[p])
-
-            # 6. out_proj takes the final permuted state as input. Permute its COLUMNS.
-            layer.out_proj.weight.copy_(layer.out_proj.weight[:, p])
+            layer.A_log = permute_rows(layer.A_log, p)
+            layer.D = permute_vector(layer.D, p)
+            layer.out_proj.weight = permute_cols(layer.out_proj.weight, p)
 
 
 # --- Main Public Function ---
@@ -333,7 +337,12 @@ def run_iasp_on_mamba(
 
 def _apply_permutation_to_bert_ffn(model: nn.Module, permutation: List[int], target_layer_names: List[str]):
     """Applies a permutation to the specified FFN layers of a BERT-like model."""
-    p = torch.tensor(permutation, dtype=torch.long)
+    if not target_layer_names:
+        return
+        
+    # Create permutation tensor once on the correct device.
+    dev = model.get_submodule(target_layer_names[0]).weight.device
+    p = torch.tensor(permutation, dtype=torch.long, device=dev)
     d_ffn = len(permutation)
     
     pbar = tqdm(target_layer_names, desc="3/3: Applying Permutation to BERT FFN", leave=False)
@@ -352,18 +361,24 @@ def _apply_permutation_to_bert_ffn(model: nn.Module, permutation: List[int], tar
                     continue
 
                 pbar.set_postfix({"layer": layer_name})
-                dev = up_proj.weight.device
-                p = p.to(dev)
 
                 with torch.no_grad():
-                    # Permute the output of the 'up' projection (rows) -> P @ W
-                    up_proj.weight.data = up_proj.weight.data[p]
+                    # Re-wrap in nn.Parameter to be gradient-safe
+                    up_proj.weight = nn.Parameter(up_proj.weight.data[p])
                     if up_proj.bias is not None:
-                        up_proj.bias.data = up_proj.bias.data[p]
+                        up_proj.bias = nn.Parameter(up_proj.bias.data[p])
 
-                    # Permute the input of the 'down' projection (columns) -> W @ P^T
-                    down_proj.weight.data = down_proj.weight.data[:, p]
-
+                    down_proj.weight = nn.Parameter(down_proj.weight.data[:, p])
+                
+                # The LayerNorm after the FFN's residual connection acts on the un-permuted
+                # hidden state, so its parameters should NOT be permuted.
+                if hasattr(parent_module, 'output') and hasattr(parent_module.output, 'LayerNorm'):
+                    pass # Explicitly do nothing
+    
+    # After permuting the FFNs, we need to handle the very final LayerNorm,
+    # if the model has one and it acts on the hidden dimension that was NOT permuted.
+    # In standard BERT, the final LN is outside the encoder layers.
+    # For now, we assume the permutation is self-contained within the FFN.
 
 def run_iasp_on_bert(
     model: nn.Module,
