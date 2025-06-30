@@ -371,6 +371,8 @@ def run_iasp_on_mamba(
         A tuple containing the optimal permutation and its modularity score.
     """
     logger.info("🚀 Starting IASP optimization pipeline for Mamba model...")
+    # Infer device from model if not provided, ensuring consistency.
+    device = device or next(model.parameters()).device
 
     target_layer_spec = iasp_config.get("target_layer_names")
     if target_layer_spec:
@@ -534,6 +536,8 @@ def run_iasp_on_bert(
         A tuple containing the optimal permutation and its modularity score.
     """
     logger.info("🚀 Starting IASP optimization pipeline for BERT model...")
+    # Infer device from model if not provided, ensuring consistency.
+    device = device or next(model.parameters()).device
 
     target_layer_spec = iasp_config.get("target_layer_names")
     if target_layer_spec:
