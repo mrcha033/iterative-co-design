@@ -58,9 +58,16 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 from utils.logging import initialize_wandb
 import wandb
+import math
+import os
 
-# Register the custom 'eval' resolver for Hydra/OmegaConf
-OmegaConf.register_new_resolver("eval", eval)
+# Create a more secure environment for the 'eval' resolver
+safe_globals = {
+    "min": min,
+    "max": max,
+}
+# Register a sandboxed 'eval' resolver for Hydra/OmegaConf
+OmegaConf.register_new_resolver("eval", lambda expr: eval(expr, {"__builtins__": {}}, safe_globals))
 
 from utils.evaluation import calculate_task_metric
 from utils.profiler import LatencyProfiler
@@ -292,15 +299,13 @@ def run_permute_only(cfg: DictConfig):
         lm_head_weight_before = wrapped_model.model.lm_head.weight.detach().clone()
         logger.info("Saved lm_head weights for integrity check.")
 
-    # --- Smoke test for functional equivalence ---
+    # --- Memory-efficient smoke test for functional equivalence ---
     logger.info("--- Running IASP smoke test for functional equivalence ---")
-    import copy
-    model_clone = copy.deepcopy(wrapped_model.model)
-    device = next(model_clone.parameters()).device
-    dummy_input = make_dummy_input(model_clone, tokenizer, device)
+    device = next(wrapped_model.model.parameters()).device
+    dummy_input = make_dummy_input(wrapped_model.model, tokenizer, device)
 
     with torch.no_grad():
-        logits_before = model_clone(**dummy_input).logits
+        logits_before = wrapped_model.model(**dummy_input).logits.clone()
 
     permutation, modularity_score = _run_iasp(wrapped_model.model, data_loader, cfg)
 
@@ -528,6 +533,10 @@ def main(cfg: DictConfig):
     if cfg.get("dry_run", False):
         print_dry_run_plan(cfg)
         return
+
+    # Disable W&B if not explicitly enabled
+    if not cfg.wandb.log:
+        os.environ["WANDB_MODE"] = "disabled"
 
     # Initialize W&B
     if cfg.wandb.log:

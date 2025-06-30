@@ -213,21 +213,26 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
         with torch.no_grad():
             # Use grad-safe helpers to reconstruct autograd graph
             if layer.in_proj.bias is not None:
-                layer.in_proj.weight, layer.in_proj.bias = permute_in_proj_split(
+                layer.in_proj.bias = permute_in_proj_split(
                     layer.in_proj.weight, p, layer.in_proj.bias
-                )
-            else:
-                layer.in_proj.weight = permute_in_proj_split(layer.in_proj.weight, p)
+                )[1]
 
-            if hasattr(layer, 'conv1d'):
-                w = layer.conv1d.weight
+            # Handle potential API drift in mamba-ssm (conv1d vs conv1d_proj)
+            conv_layer = None
+            if hasattr(layer, "conv1d_proj"):
+                conv_layer = layer.conv1d_proj
+            elif hasattr(layer, "conv1d"):
+                conv_layer = layer.conv1d
+
+            if conv_layer:
+                w = conv_layer.weight
                 if w.shape[0] == d_inner:
-                    layer.conv1d.weight = permute_rows(w, p)
+                    conv_layer.weight = permute_rows(w, p)
                 elif w.shape[1] == d_inner:
-                    layer.conv1d.weight = permute_cols(w, p)
+                    conv_layer.weight = permute_cols(w, p)
                 
-                if layer.conv1d.bias is not None and layer.conv1d.bias.numel() == d_inner:
-                    layer.conv1d.bias = permute_vector(layer.conv1d.bias, p)
+                if conv_layer.bias is not None and conv_layer.bias.numel() == d_inner:
+                    conv_layer.bias = permute_vector(conv_layer.bias, p)
             
             if hasattr(layer, 'x_proj'):
                  layer.x_proj.weight = permute_cols(layer.x_proj.weight, p)

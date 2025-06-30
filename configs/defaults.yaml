@@ -2,6 +2,9 @@
 wandb:
   mode: "online"  # Default to online logging; override with +wandb.mode=offline for local
   project: "iterative-co-design"  # Must match project_name in config.yaml
+  log: ${oc.env:WANDB_LOG,false} # Opt-in via environment variable
+  entity: "mrcha033-yonsei-university"
+  run_name: "${method}-${model.name}-${dataset.name}"
 
 storage:
   cleanup_older_than_days: 30  # Cleanup runs older than this
@@ -49,3 +52,24 @@ iasp:
   # Spectral clustering parameters
   spectral_n_init: 10
   spectral_random_state: 0
+
+# @package _group_
+defaults:
+  - _self_
+  - model: bert_base
+  - dataset: sst2
+  - method_configs: defaults
+  - override hydra/launcher: joblib
+
+project_name: "iterative-co-design"
+experiment_name: "${model.name}-${dataset.name}-${method}"
+seed: 42
+dry_run: false
+cleanup_old_outputs: true
+
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
