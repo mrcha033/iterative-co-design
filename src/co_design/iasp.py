@@ -293,8 +293,13 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
         if hasattr(layer, 'in_proj'):
             inplace_permute_in_proj_split(layer.in_proj.weight, p, getattr(layer.in_proj, 'bias', None))
             seen_modules.add('in_proj')
+        
+        # 1b. The final norm in the block should not be permuted as it acts on a different dimension
+        # or has a different context than the inner state. Add to seen to prevent blanket pass.
+        if hasattr(layer, 'norm_f'):
+            seen_modules.add('norm_f')
 
-        # 1b. Handle all conv variants (conv1d, conv1d_proj)
+        # 1c. Handle all conv variants (conv1d, conv1d_proj)
         for conv_name in ('conv1d', 'conv1d_proj'):
             if hasattr(layer, conv_name):
                 conv_layer = getattr(layer, conv_name)
