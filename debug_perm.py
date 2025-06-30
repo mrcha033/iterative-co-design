@@ -15,6 +15,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from itertools import zip_longest
 from collections import OrderedDict
 from omegaconf import OmegaConf
+from dataclasses import is_dataclass
 
 from co_design.iasp import run_iasp_on_mamba   # <- 당신 프로젝트 import 경로
 from utils.input import make_dummy_input      # <- 동일
@@ -38,7 +39,7 @@ perm_tensor, _ = run_iasp_on_mamba(
     perm,
     dataloader=[dummy_in],                    # 리스트도 DataLoader 처럼 iterable
     iasp_config=OmegaConf.create({
-        "max_samples": 512,
+        "max_samples": 2048,                  # Increase samples to avoid NaN
         "cluster_size_range": [16, 64],       # 빠른 실행용
         "knn_k": 64,
         "spectral_n_init": 10,
@@ -50,6 +51,25 @@ perm_tensor, _ = run_iasp_on_mamba(
 EPS = 1e-4
 mismatch = OrderedDict()
 
+def extract_tensor(output):
+    """Recursively extracts a tensor from various model output types."""
+    if torch.is_tensor(output):
+        return output
+    if is_dataclass(output):
+        # Prefer 'last_hidden_state', fallback to the last item in 'hidden_states'
+        if hasattr(output, "last_hidden_state"):
+            return output.last_hidden_state
+        if hasattr(output, "hidden_states") and output.hidden_states:
+            return output.hidden_states[-1]
+    if isinstance(output, (list, tuple)) and output:
+        return extract_tensor(output[0])
+    if isinstance(output, dict):
+        # Common keys in HF model outputs
+        for key in ["last_hidden_state", "logits", "hidden_states"]:
+            if key in output:
+                return extract_tensor(output[key])
+    raise TypeError(f"Unsupported or empty output type: {type(output)}")
+
 def register_hooks(m1, m2, prefix=""):
     for (name1, module1), (name2, module2) in zip_longest(
         m1.named_children(), m2.named_children()
@@ -59,18 +79,20 @@ def register_hooks(m1, m2, prefix=""):
             continue
         full_name = f"{prefix}.{name1}" if prefix else name1
 
-        def make_hook(tag):
+        def make_hook(storage, tag):
             def _hook(mod, inp, out):
-                # 버전별로 tuple 반환일 수도 있어 첫 원소만 사용
-                if isinstance(out, (tuple, list)):
-                    out = out[0]
-                hooks_out[tag] = out.detach()
+                try:
+                    tensor_out = extract_tensor(out)
+                    storage[tag] = tensor_out.detach()
+                except (TypeError, AttributeError) as e:
+                    print(f"Hook error at {full_name} with output type {type(out)}: {e}")
+                    storage[tag] = None
             return _hook
 
-        hooks_out = {}            # local dict 캡처용
+        hooks_out = {} # Use a new dict for each recursive call's scope
 
-        h1 = module1.register_forward_hook(make_hook("o"))
-        h2 = module2.register_forward_hook(make_hook("p"))
+        h1 = module1.register_forward_hook(make_hook(hooks_out, "o"))
+        h2 = module2.register_forward_hook(make_hook(hooks_out, "p"))
 
         # 한 번만 실행
         with torch.no_grad():
@@ -79,19 +101,25 @@ def register_hooks(m1, m2, prefix=""):
 
         h1.remove(); h2.remove()
 
+        if hooks_out.get("o") is None or hooks_out.get("p") is None:
+            print(f"[⚠️] Could not compare outputs for {full_name}. Skipping.")
+            continue
+
         diff = (hooks_out["o"] - hooks_out["p"]).abs().max().item()
         if diff > EPS:
             mismatch[full_name] = diff
             print(f"[❌] mismatch @ {full_name:60s}  diff={diff:.6f}")
             # 최초 불일치 찾았으면 바로 종료해도 됨
-            break
+            # For full debug, comment out the break
+            # break 
         else:
             print(f"[✅] {full_name:60s}")
 
         # 재귀 탐색
-        register_hooks(module1, module2, full_name)
+        if not mismatch: # Stop recursion if a mismatch is found
+            register_hooks(module1, module2, full_name)
 
-register_hooks(orig, perm)
+register_hooks(orig.backbone, perm.backbone) # Compare backbone modules where changes occur
 
 if mismatch:
     k, v = next(iter(mismatch.items()))
