@@ -157,7 +157,7 @@ def _measure_and_collect_metrics(
     """Helper function to measure and collect all relevant metrics."""
     logger.info("Calculating evaluation metric...")
     task_metric = calculate_task_metric(
-        wrapped_model.model, tokenizer, data_loader, cfg.model.task
+        wrapped_model.model, data_loader, cfg.model.task
     )
     metric_name, metric_value = list(task_metric.items())[0]
     logger.info(f"{metric_name.title()}: {metric_value:.4f}")

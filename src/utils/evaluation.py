@@ -9,15 +9,17 @@ Properly handles variable sequence lengths and padding tokens.
 import torch
 from tqdm import tqdm
 import math
+import logging
+
+logger = logging.getLogger(__name__)
 
 
-def calculate_task_metric(model, tokenizer, data_loader, task_type):
+def calculate_task_metric(model, data_loader, task_type):
     """
     Calculates the appropriate evaluation metric based on the task type.
 
     Args:
         model: The model to evaluate
-        tokenizer: The tokenizer for the model
         data_loader: DataLoader with the evaluation data
         task_type: Either "language_modeling" or "sequence_classification"
 
@@ -25,7 +27,7 @@ def calculate_task_metric(model, tokenizer, data_loader, task_type):
         dict: A dictionary with the metric name and value
     """
     if task_type == "language_modeling":
-        perplexity = calculate_perplexity(model, tokenizer, data_loader)
+        perplexity = calculate_perplexity(model, data_loader)
         return {"perplexity": perplexity}
     elif task_type == "sequence_classification":
         accuracy = calculate_accuracy(model, data_loader)
@@ -34,12 +36,12 @@ def calculate_task_metric(model, tokenizer, data_loader, task_type):
         raise ValueError(f"Unknown task type: {task_type}")
 
 
-def calculate_perplexity(model, tokenizer, data_loader):
+def calculate_perplexity(model, data_loader):
     """
     Calculates the perplexity of a language model on a given dataset.
 
-    Properly accounts for variable sequence lengths by counting actual tokens
-    using the attention mask, rather than assuming fixed-length sequences.
+    Assumes the data_loader yields batches of pre-tokenized data with
+    'input_ids' and 'attention_mask'.
     """
     model.eval()
     if torch.cuda.is_available():
@@ -50,33 +52,28 @@ def calculate_perplexity(model, tokenizer, data_loader):
 
     with torch.no_grad():
         for batch in tqdm(data_loader, desc="Calculating Perplexity"):
-            inputs = tokenizer(
-                batch["text"],
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=512,
-            )
-            # Ensure input_ids are LongTensor
-            inputs["input_ids"] = inputs["input_ids"].long()
-            inputs["attention_mask"] = inputs["attention_mask"].long()
-            
             if torch.cuda.is_available():
-                inputs = {k: v.cuda() for k, v in inputs.items()}
+                batch = {k: v.cuda() for k, v in batch.items()}
 
-            outputs = model(**inputs, labels=inputs["input_ids"])
+            # For CausalLM, labels are the input_ids.
+            # The model handles shifting internally when labels are provided.
+            outputs = model(**batch, labels=batch["input_ids"])
             loss = outputs.loss
 
             # Count actual tokens using attention mask (excludes padding tokens)
             # The attention mask has 1s for real tokens and 0s for padding
-            batch_tokens = inputs["attention_mask"].sum().item()
+            batch_tokens = batch["attention_mask"].sum().item()
 
             # Loss is already averaged over the sequence length and batch size by transformers
             # We need to denormalize it to get the total loss for this batch
-            batch_loss = loss.item() * batch_tokens
+            if batch_tokens > 0:
+                batch_loss = loss.item() * batch_tokens
+                total_loss += batch_loss
+                total_tokens += batch_tokens
 
-            total_loss += batch_loss
-            total_tokens += batch_tokens
+    if total_tokens == 0:
+        logger.warning("No tokens were processed, cannot calculate perplexity.")
+        return float('inf')
 
     avg_loss = total_loss / total_tokens
     perplexity = math.exp(avg_loss)
