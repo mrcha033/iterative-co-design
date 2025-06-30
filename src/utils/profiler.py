@@ -135,6 +135,7 @@ class LatencyProfiler:
             
             if header_index == -1:
                 logger.warning("Could not find CSV header in NCU output.")
+                logger.debug(f"Full NCU output received:\n{csv_output}")
                 return None
 
             csv_data = "\n".join(csv_lines[header_index:])
