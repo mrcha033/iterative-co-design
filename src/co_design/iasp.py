@@ -268,38 +268,56 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
                 # 'weight_v' and 'weight_g' parameters instead of the computed 'weight'.
                 if hasattr(conv_layer, 'weight_v') and hasattr(conv_layer, 'weight_g'):
                     logger.debug(f"Permuting weight-normalized conv1d layer in {layer.__class__.__name__}")
-                    # weight_v has shape (d_inner, 1, kernel_size), permute its rows (dim 0)
-                    conv_layer.weight_v = permute_rows(conv_layer.weight_v, p)
-                    # weight_g has shape (d_inner), permute as a simple vector
-                    conv_layer.weight_g = permute_vector(conv_layer.weight_g, p)
+                    p_cast_v = p.to(conv_layer.weight_v.dtype)
+                    p_cast_g = p.to(conv_layer.weight_g.dtype)
+                    conv_layer.weight_v = permute_rows(conv_layer.weight_v, p_cast_v)
+                    conv_layer.weight_g = permute_vector(conv_layer.weight_g, p_cast_g)
                 else:
-                    # Handle standard convolution if no weight normalization is detected
                     w = conv_layer.weight
-                    if w.shape[0] == d_inner:
-                        conv_layer.weight = permute_rows(w, p)
+                    p_cast = p.to(w.dtype)
+                    p_inv_cast = p_inv.to(w.dtype)
+                    # Handle Mamba's double-width convolution for combined projections
+                    if w.shape[0] == 2 * d_inner:
+                        logger.debug(f"Permuting double-width conv1d layer in {layer.__class__.__name__}")
+                        # Permute the two halves (for x and z) independently
+                        w_x, w_z = w.chunk(2, dim=0)
+                        permuted_w_x = permute_rows(w_x, p_cast)
+                        permuted_w_z = permute_rows(w_z, p_cast)
+                        conv_layer.weight = nn.Parameter(torch.cat([permuted_w_x, permuted_w_z], dim=0))
+                    elif w.shape[0] == d_inner:
+                        conv_layer.weight = permute_rows(w, p_cast)
                     elif w.shape[1] == d_inner:
-                        conv_layer.weight = permute_cols(w, p) # Note: unusual case
+                        # This case is unusual but handled for completeness
+                        conv_layer.weight = permute_cols(w, p_inv_cast)
                 
                 if conv_layer.bias is not None and conv_layer.bias.numel() == d_inner:
-                    conv_layer.bias = permute_vector(conv_layer.bias, p)
+                    p_cast_bias = p.to(conv_layer.bias.dtype)
+                    conv_layer.bias = permute_vector(conv_layer.bias, p_cast_bias)
             
             if hasattr(layer, 'x_proj'):
                  # x_proj input is permuted state, so permute columns with inverse
-                 layer.x_proj.weight = permute_cols(layer.x_proj.weight, p_inv)
+                 p_inv_cast = p_inv.to(layer.x_proj.weight.dtype)
+                 layer.x_proj.weight = permute_cols(layer.x_proj.weight, p_inv_cast)
 
             if hasattr(layer, 'dt_proj'):
-                 # dt_proj output creates state, so permute rows
+                 # dt_proj output creates state, so permute rows, but its input can also be permuted
                  W = layer.dt_proj.weight
+                 p_cast = p.to(W.dtype)
+                 p_inv_cast = p_inv.to(W.dtype)
                  if W.shape[0] == d_inner:
-                     layer.dt_proj.weight = permute_rows(W, p)
-                 elif W.shape[1] == d_inner:
-                     layer.dt_proj.weight = permute_cols(W, p)
+                     layer.dt_proj.weight = permute_rows(W, p_cast)
+                 elif W.shape[1] == d_inner: # Input is permuted state
+                     layer.dt_proj.weight = permute_cols(W, p_inv_cast)
 
-            layer.A_log = permute_rows(layer.A_log, p)
-            layer.D = permute_vector(layer.D, p)
+            p_cast_A = p.to(layer.A_log.dtype)
+            layer.A_log = permute_rows(layer.A_log, p_cast_A)
+            
+            p_cast_D = p.to(layer.D.dtype)
+            layer.D = permute_vector(layer.D, p_cast_D)
             
             # out_proj input is the permuted state, so we permute its weight columns with the inverse
-            layer.out_proj.weight = permute_cols(layer.out_proj.weight, p_inv)
+            p_inv_cast_out = p_inv.to(layer.out_proj.weight.dtype)
+            layer.out_proj.weight = permute_cols(layer.out_proj.weight, p_inv_cast_out)
             # The bias term acts on the output dimension (d_model), which is not permuted.
             # Therefore, the bias should not be permuted.
             if layer.out_proj.bias is not None:
