@@ -269,13 +269,6 @@ class LatencyProfiler:
             # Use model's config to pass its original name for architecture loading
             model_name = getattr(getattr(model, "config", None), "_name_or_path", "unknown_model")
 
-            # Infer the task from the model's config for robust model loading in the target script.
-            task = "text-generation" # Default task
-            if hasattr(model, "config") and getattr(model.config, "architectures", None):
-                arch = model.config.architectures[0]
-                if "ForSequenceClassification" in arch:
-                    task = "sequence-classification"
-
             command = [
                 ncu_path,
                 "--metrics", "lts__t_sector_hit_rate.pct",
@@ -285,7 +278,6 @@ class LatencyProfiler:
                 str(model_path),
                 str(input_path),
                 model_name,
-                task,
             ]
 
             try:
