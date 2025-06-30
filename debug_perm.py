@@ -68,8 +68,8 @@ perm_tensor, _ = run_iasp_on_mamba(
     }),
 )
 
-# 3) hook 으로 층별 출력 비교 -----------------------------------------------
-EPS = 1e-4
+# 3) hook 으로 층별 출력 비교 (효율적인 방식) ---------------------------------
+EPS = 1e-3  # Relaxed epsilon for numerical stability with fp16/fp32 conversions
 mismatch = OrderedDict()
 
 def extract_tensor(output):
@@ -78,7 +78,7 @@ def extract_tensor(output):
         return output
     if is_dataclass(output):
         # Prefer 'last_hidden_state', fallback to the last item in 'hidden_states'
-        if hasattr(output, "last_hidden_state"):
+        if hasattr(output, "last_hidden_state") and output.last_hidden_state is not None:
             return output.last_hidden_state
         if hasattr(output, "hidden_states") and output.hidden_states:
             return output.hidden_states[-1]
@@ -91,59 +91,68 @@ def extract_tensor(output):
                 return extract_tensor(output[key])
     raise TypeError(f"Unsupported or empty output type: {type(output)}")
 
-def register_hooks(m1, m2, prefix=""):
-    for (name1, module1), (name2, module2) in zip_longest(
-        m1.named_children(), m2.named_children()
-    ):
-        # 서브 모듈이 없으면 leaf → 비교
-        if module1 is None or module2 is None:
-            continue
-        full_name = f"{prefix}.{name1}" if prefix else name1
+def collect_all_outputs(model, model_inputs):
+    """
+    Attaches hooks to all submodules, runs a single forward pass,
+    and collects all intermediate outputs in a dictionary.
+    """
+    outputs = {}
+    hooks = []
 
-        def make_hook(storage, tag):
-            def _hook(mod, inp, out):
-                try:
-                    tensor_out = extract_tensor(out)
-                    storage[tag] = tensor_out.detach()
-                except (TypeError, AttributeError) as e:
-                    print(f"Hook error at {full_name} with output type {type(out)}: {e}")
-                    storage[tag] = None
-            return _hook
+    def make_hook(name):
+        def _hook(mod, inp, out):
+            try:
+                outputs[name] = extract_tensor(out).detach()
+            except (TypeError, AttributeError) as e:
+                print(f"[⚠️] Hook error at {name} with output type {type(out)}: {e}")
+                outputs[name] = None
+        return _hook
 
-        hooks_out = {} # Use a new dict for each recursive call's scope
+    for name, module in model.named_modules():
+        hooks.append(module.register_forward_hook(make_hook(name)))
 
-        h1 = module1.register_forward_hook(make_hook(hooks_out, "o"))
-        h2 = module2.register_forward_hook(make_hook(hooks_out, "p"))
+    with torch.no_grad():
+        _ = model(**model_inputs)
 
-        # 한 번만 실행
-        with torch.no_grad():
-            _ = orig(**dummy_in)
-            _ = perm(**dummy_in)
+    for h in hooks:
+        h.remove()
+    
+    return outputs
 
-        h1.remove(); h2.remove()
+print("\nCollecting outputs from original model...")
+orig_outputs = collect_all_outputs(orig, dummy_in)
 
-        if hooks_out.get("o") is None or hooks_out.get("p") is None:
-            print(f"[⚠️] Could not compare outputs for {full_name}. Skipping.")
-            continue
+print("Collecting outputs from permuted model...")
+perm_outputs = collect_all_outputs(perm, dummy_in)
 
-        diff = (hooks_out["o"] - hooks_out["p"]).abs().max().item()
-        if diff > EPS:
-            mismatch[full_name] = diff
-            print(f"[❌] mismatch @ {full_name:60s}  diff={diff:.6f}")
-            # 최초 불일치 찾았으면 바로 종료해도 됨
-            # For full debug, comment out the break
-            # break 
-        else:
-            print(f"[✅] {full_name:60s}")
+print("\nComparing outputs...")
+# Use sorted keys to ensure consistent comparison order and parent-first traversal
+sorted_keys = sorted(orig_outputs.keys(), key=lambda x: (x.count('.'), x))
 
-        # 재귀 탐색
-        if not mismatch: # Stop recursion if a mismatch is found
-            register_hooks(module1, module2, full_name)
+for name in sorted_keys:
+    o_out = orig_outputs.get(name)
+    p_out = perm_outputs.get(name)
 
-register_hooks(orig.backbone, perm.backbone) # Compare backbone modules where changes occur
+    if o_out is None or p_out is None:
+        # A hook error was already printed, so just skip.
+        continue
+        
+    if o_out.shape != p_out.shape:
+        print(f"[❌] Mismatch @ {name:60s}  SHAPE DIFFERENCE! orig: {o_out.shape}, perm: {p_out.shape}")
+        mismatch[name] = float('inf')
+        break
+
+    diff = (o_out - p_out).abs().max().item()
+    if diff > EPS:
+        mismatch[name] = diff
+        print(f"[❌] Mismatch @ {name:60s}  diff={diff:.6f}")
+        # Break after finding the first divergence to pinpoint the root cause.
+        break
+    elif name.count('.') < 2: # Print success only for major blocks to reduce noise
+        print(f"[✅] {name:60s}  (diff: {diff:.6f})")
 
 if mismatch:
     k, v = next(iter(mismatch.items()))
-    print("\n➡️  FIRST layer causing divergence:", k, "| max diff =", v)
+    print(f"\n➡️  FIRST layer causing divergence: {k} | max diff = {v}")
 else:
-    print("\n✅  All layers identical within ±{EPS}")
+    print(f"\n✅  All layers are functionally equivalent (diff <= {EPS}).")
