@@ -70,18 +70,15 @@ def calculate_perplexity(model, data_loader, fp16: bool = True):
             if "attention_mask" in batch:
                 model_inputs["attention_mask"] = batch["attention_mask"]
 
-            # If the dataloader provides labels (like our SlidingWindowDataset), use them.
-            # Otherwise, create them from input_ids for standard Causal LM evaluation.
             if 'labels' in batch:
-                outputs = model(**model_inputs)
                 labels = batch['labels']
             else:
                 labels = batch["input_ids"].clone()
                 if pad_token_id is not None:
                     labels[labels == pad_token_id] = -100 # HF default ignore_index
-                
-                model_inputs["labels"] = labels
-                outputs = model(**model_inputs)
+            
+            model_inputs["labels"] = labels
+            outputs = model(**model_inputs)
             
             # Loss is already averaged, so we multiply by the number of non-padded tokens
             nll = outputs.loss * labels.ne(-100).sum()
