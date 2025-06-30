@@ -420,26 +420,44 @@ def run_iasp_on_mamba(
     )
     if not correlation_matrix_tuple:
         logger.error("Could not compute a valid correlation matrix for Mamba. Skipping IASP.")
-        dim = model.config.d_model
+        # Try to infer d_inner for a valid identity permutation
+        try:
+            first_mixer = model.backbone.layers[0].mixer
+            dim = first_mixer.out_proj.in_features
+        except (AttributeError, IndexError):
+            dim = getattr(model.config, 'd_inner', 2048) # Fallback
         return list(range(dim)), 0.0
 
     correlation_matrix, valid_indices = correlation_matrix_tuple
 
-    # Step 2: Find the optimal permutation
-    d_inner = correlation_matrix.shape[0]
+    # Step 2: Find the optimal permutation for the valid subset of channels
+    d_inner_valid = correlation_matrix.shape[0]
     min_size, max_size = iasp_config.cluster_size_range
-    min_clusters = max(MIN_CLUSTER_SIZE, d_inner // max_size)
-    max_clusters = max(MIN_CLUSTER_SIZE, d_inner // min_size)
+    min_clusters = max(MIN_CLUSTER_SIZE, d_inner_valid // max_size)
+    max_clusters = max(MIN_CLUSTER_SIZE, d_inner_valid // min_size)
     
-    permutation, modularity = _find_optimal_permutation(
+    perm_valid, modularity = _find_optimal_permutation(
         correlation_matrix, clusters_range=(min_clusters, max_clusters), iasp_config=iasp_config
     )
 
-    # Step 3: Apply the permutation to the model
-    _apply_permutation_to_mamba(mamba_mixers_to_permute, permutation)
+    # Step 3: Map the permutation of valid channels back to the full dimension
+    d_inner_full = valid_indices.numel()
+    # Ensure `valid_indices` is a boolean tensor for correct indexing
+    if valid_indices.dtype != torch.bool:
+        # This case shouldn't happen with our current logic, but as a safeguard:
+        valid_indices = torch.zeros(d_inner_full, dtype=torch.bool).scatter_(0, valid_indices, 1)
+
+    original_indices = torch.arange(d_inner_full, device=device)[valid_indices]
+    permuted_original_indices = original_indices[torch.tensor(perm_valid, device=device)]
+    
+    full_permutation = torch.arange(d_inner_full, device=device)
+    full_permutation[original_indices] = permuted_original_indices
+
+    # Step 4: Apply the full permutation to the model
+    _apply_permutation_to_mamba(mamba_mixers_to_permute, full_permutation.tolist())
 
     logger.info("✅ IASP optimization for Mamba completed successfully.")
-    return permutation, modularity
+    return full_permutation.tolist(), modularity
 
 
 def _apply_permutation_to_bert_ffn(model: nn.Module, permutation: List[int], target_layer_names: List[str]):
@@ -556,11 +574,15 @@ def run_iasp_on_bert(
     )
 
     # Step 3: Map the permutation of valid channels back to the full dimension
-    d_ffn_full = len(valid_indices)
-    original_indices = torch.arange(d_ffn_full)[valid_indices]
-    permuted_original_indices = original_indices[torch.tensor(perm_valid)]
+    d_ffn_full = valid_indices.numel()
+    # Ensure `valid_indices` is a boolean tensor for correct indexing
+    if valid_indices.dtype != torch.bool:
+        valid_indices = torch.zeros(d_ffn_full, dtype=torch.bool).scatter_(0, valid_indices, 1)
+
+    original_indices = torch.arange(d_ffn_full, device=device)[valid_indices]
+    permuted_original_indices = original_indices[torch.tensor(perm_valid, device=device)]
     
-    full_permutation = torch.arange(d_ffn_full)
+    full_permutation = torch.arange(d_ffn_full, device=device)
     full_permutation[original_indices] = permuted_original_indices
     
     # Step 4: Apply the permutation to the model
