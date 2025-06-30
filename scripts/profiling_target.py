@@ -56,8 +56,17 @@ def main():
         model = AutoModel.from_config(config, trust_remote_code=True)
         
         state_dict = torch.load(args.model_path, map_location="cpu")
+        
+        # Strip the 'backbone.' prefix if it exists, to match the loaded model
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith("backbone."):
+                new_state_dict[k[len("backbone."):]] = v
+            else:
+                new_state_dict[k] = v
+        
         # Use strict=False to gracefully handle custom layers (e.g., LoRA, sparsity)
-        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        missing, unexpected = model.load_state_dict(new_state_dict, strict=False)
         if unexpected:
             print(f"[profiling_target.py] Warning: Unexpected keys in state_dict: {unexpected}", file=sys.stderr)
         if missing:
