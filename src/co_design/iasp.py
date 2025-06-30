@@ -21,7 +21,7 @@ import fnmatch
 
 from numpy.linalg import LinAlgError
 from omegaconf import DictConfig
-from ..utils.permutation import permute_rows, permute_cols, permute_vector, permute_in_proj_split
+from utils.permutation import permute_rows, permute_cols, permute_vector, permute_in_proj_split
 
 # --- Setup ---
 logger = logging.getLogger(__name__)

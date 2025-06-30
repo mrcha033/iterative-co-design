@@ -289,7 +289,25 @@ def run_permute_only(cfg: DictConfig):
         lm_head_weight_before = wrapped_model.model.lm_head.weight.detach().clone()
         logger.info("Saved lm_head weights for integrity check.")
 
+    # --- Smoke test for functional equivalence ---
+    logger.info("--- Running IASP smoke test for functional equivalence ---")
+    import copy
+    model_clone = copy.deepcopy(wrapped_model.model)
+    device = next(model_clone.parameters()).device
+    dummy_input = make_dummy_input(model_clone, tokenizer, device)
+
+    with torch.no_grad():
+        logits_before = model_clone(**dummy_input).logits
+
     permutation, modularity_score = _run_iasp(wrapped_model.model, data_loader, cfg)
+
+    with torch.no_grad():
+        logits_after = wrapped_model.model(**dummy_input).logits
+    
+    diff = (logits_before - logits_after).abs().max()
+    assert diff < 1e-4, f"IASP permutation broke functional equivalence! Max logit diff: {diff}"
+    logger.info(f"✅ IASP smoke test passed. Max logit difference: {diff:.6f}")
+    # --- End of smoke test ---
 
     # --- Post-IASP weight integrity check ---
     if lm_head_weight_before is not None:
