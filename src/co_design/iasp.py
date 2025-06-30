@@ -160,6 +160,8 @@ def _find_optimal_permutation(
                 affinity="precomputed",
                 random_state=random_state,
                 n_init=n_init,
+                # Use the more numerically stable 'discretize' method for label assignment
+                # to avoid edge case errors within the default 'kmeans' method.
                 assign_labels='discretize'
             ).fit(affinity_matrix)
 
@@ -199,26 +201,31 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
         p = p.to(dev)
 
         with torch.no_grad():
-            # Create fully permuted tensors first to avoid in-place modification issues
-            # on tensor views, which can be a source of CUDA errors.
-            
-            # --- Permute in_proj ---
+            # 1. in_proj: Output is 2*d_inner. Permute rows.
             w_in = layer.in_proj.weight
             permuted_w_in = torch.cat((w_in[:d_inner][p], w_in[d_inner:][p]), dim=0)
             layer.in_proj.weight.copy_(permuted_w_in)
-            
             if layer.in_proj.bias is not None:
                 b_in = layer.in_proj.bias
                 permuted_b_in = torch.cat((b_in[:d_inner][p], b_in[d_inner:][p]), dim=0)
                 layer.in_proj.bias.copy_(permuted_b_in)
 
-            # --- Permute subsequent layers ---
-            layer.dt_proj.weight.copy_(layer.dt_proj.weight[:, p])
+            # 2. out_proj: Input is d_inner. Permute columns.
             layer.out_proj.weight.copy_(layer.out_proj.weight[:, p])
-            
-            # --- Permute state-aligned parameters ---
-            layer.A_log.copy_(layer.A_log[:, p])
-            layer.D.copy_(layer.D[p])
+
+            # 3. dt_proj, A_log, D: Dynamically check shape and permute accordingly.
+            if layer.dt_proj.weight.shape[1] == d_inner:
+                layer.dt_proj.weight.copy_(layer.dt_proj.weight[:, p])
+            elif layer.dt_proj.weight.shape[0] == d_inner:
+                layer.dt_proj.weight.copy_(layer.dt_proj.weight[p])
+
+            if layer.A_log.shape[1] == d_inner:
+                layer.A_log.copy_(layer.A_log[:, p])
+            elif layer.A_log.shape[0] == d_inner:
+                layer.A_log.copy_(layer.A_log[p])
+
+            if layer.D.numel() == d_inner:
+                layer.D.copy_(layer.D[p])
 
 
 # --- Main Public Function ---
