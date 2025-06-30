@@ -199,7 +199,7 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
         p = p.to(dev)
 
         with torch.no_grad():
-            # 1. in_proj: Output is 2*d_inner. Permute rows.
+            # --- Permute in_proj (permutes output, so permute ROWS) ---
             w_in = layer.in_proj.weight
             permuted_w_in = torch.cat((w_in[:d_inner][p], w_in[d_inner:][p]), dim=0)
             layer.in_proj.weight.copy_(permuted_w_in)
@@ -208,22 +208,21 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
                 permuted_b_in = torch.cat((b_in[:d_inner][p], b_in[d_inner:][p]), dim=0)
                 layer.in_proj.bias.copy_(permuted_b_in)
 
-            # 2. out_proj: Input is d_inner. Permute columns.
+            # --- Permute subsequent layers (they take permuted input, so permute COLUMNS) ---
+            # out_proj takes the permuted state as input
             layer.out_proj.weight.copy_(layer.out_proj.weight[:, p])
+            # dt_proj takes the permuted state as input
+            layer.dt_proj.weight.copy_(layer.dt_proj.weight[:, p])
+            if layer.dt_proj.bias is not None:
+                # dt_proj.bias has shape (d_inner) and is associated with the input, so it must be permuted
+                layer.dt_proj.bias.copy_(layer.dt_proj.bias[p])
 
-            # 3. dt_proj, A_log, D: Dynamically check shape and permute accordingly.
-            if layer.dt_proj.weight.shape[1] == d_inner:
-                layer.dt_proj.weight.copy_(layer.dt_proj.weight[:, p])
-            elif layer.dt_proj.weight.shape[0] == d_inner:
-                layer.dt_proj.weight.copy_(layer.dt_proj.weight[p])
+            # --- Permute state-aligned parameters ---
+            # A_log has shape (d_inner, d_state). Its rows correspond to the d_inner dimension.
+            layer.A_log.copy_(layer.A_log[p])
 
-            if layer.A_log.shape[1] == d_inner:
-                layer.A_log.copy_(layer.A_log[:, p])
-            elif layer.A_log.shape[0] == d_inner:
-                layer.A_log.copy_(layer.A_log[p])
-
-            if layer.D.numel() == d_inner:
-                layer.D.copy_(layer.D[p])
+            # D is a skip connection of size d_inner.
+            layer.D.copy_(layer.D[p])
 
 
 # --- Main Public Function ---
