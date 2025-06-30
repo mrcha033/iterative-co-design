@@ -313,14 +313,16 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
             if hasattr(layer, 'dt_proj'):
                  # dt_proj output creates state, so permute rows, but its input can also be permuted
                  W = layer.dt_proj.weight
+                 perm_dir = None
                  if W.shape[0] == d_inner:
                      inplace_permute_rows(W, p)
+                     perm_dir = p
                  elif W.shape[1] == d_inner: # Input is permuted state
                      inplace_permute_cols(W, p_inv)
-                 # Handle potential bias in dt_proj
-                 if hasattr(layer.dt_proj, 'bias') and layer.dt_proj.bias is not None:
-                    # Permutation direction depends on how the weight was permuted
-                    perm_dir = p if W.shape[0] == d_inner else p_inv
+                     perm_dir = p_inv
+                 
+                 # Handle potential bias in dt_proj, using the correct permutation direction
+                 if perm_dir is not None and hasattr(layer.dt_proj, 'bias') and layer.dt_proj.bias is not None:
                     inplace_permute_vector(layer.dt_proj.bias, perm_dir)
 
             inplace_permute_rows(layer.A_log, p)
@@ -328,10 +330,14 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
             
             # out_proj input is the permuted state, so we permute its weight columns with the inverse
             inplace_permute_cols(layer.out_proj.weight, p_inv)
-            # The bias term acts on the output dimension (d_model), which is not permuted.
-            # Therefore, the bias should not be permuted.
-            if layer.out_proj.bias is not None:
-                logger.debug(f"out_proj bias found in {layer.__class__.__name__} and is correctly not permuted.")
+            
+            # The bias term, IF it exists and has d_inner size, must also be permuted with p_inv
+            if hasattr(layer.out_proj, 'bias') and layer.out_proj.bias is not None:
+                if layer.out_proj.bias.numel() == d_inner:
+                    logger.debug(f"Permuting out_proj.bias for {layer.__class__.__name__}")
+                    inplace_permute_vector(layer.out_proj.bias, p_inv)
+                else:
+                    logger.debug(f"out_proj.bias for {layer.__class__.__name__} has size {layer.out_proj.bias.numel()} (not d_inner), so it is not permuted.")
 
 
 # --- Main Public Function ---
@@ -437,9 +443,11 @@ def _apply_permutation_to_bert_ffn(model: nn.Module, permutation: List[int], tar
     if not target_layer_names:
         return
         
-    # Create permutation tensor once on the correct device.
+    # Create permutation tensors once on the correct device.
     dev = model.get_submodule(target_layer_names[0]).weight.device
     p = torch.tensor(permutation, dtype=torch.long, device=dev)
+    p_inv = torch.empty_like(p)
+    p_inv[p] = torch.arange(p.numel(), device=dev)
     d_ffn = len(permutation)
     
     pbar = tqdm(target_layer_names, desc="3/3: Applying Permutation to BERT FFN", leave=False)
@@ -463,11 +471,9 @@ def _apply_permutation_to_bert_ffn(model: nn.Module, permutation: List[int], tar
                     # Permute the up-projection (output is permuted)
                     inplace_permute_rows(up_proj.weight, p)
                     if up_proj.bias is not None:
-                        inplace_permute_rows(up_proj.bias, p)
+                        inplace_permute_vector(up_proj.bias, p) # Use vector for clarity
 
                     # Permute the down-projection (input is permuted)
-                    p_inv = torch.empty_like(p)
-                    p_inv[p] = torch.arange(p.numel(), device=dev)
                     inplace_permute_cols(down_proj.weight, p_inv)
                     # Down-projection bias is not permuted as it's added after the matmul
                 
