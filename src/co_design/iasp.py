@@ -190,6 +190,7 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
     p = torch.tensor(permutation, dtype=torch.long)
     pbar = tqdm(mamba_mixers, desc="3/3: Applying Permutation to Mamba Mixers", leave=False)
     for layer in pbar:
+        # We target d_inner, which is the input dimension to out_proj.
         d_inner = layer.out_proj.in_features
         if p.numel() != d_inner:
             logger.warning(f"Skipping layer due to permutation size mismatch (expected {d_inner}, got {p.numel()}).")
@@ -199,7 +200,8 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
         p = p.to(dev)
 
         with torch.no_grad():
-            # --- Permute in_proj (permutes output, so permute ROWS) ---
+            # 1. in_proj output is permuted on the d_inner dim.
+            #    So, its output becomes (xP, zP). Permute ROWS of in_proj's weight matrix.
             w_in = layer.in_proj.weight
             permuted_w_in = torch.cat((w_in[:d_inner][p], w_in[d_inner:][p]), dim=0)
             layer.in_proj.weight.copy_(permuted_w_in)
@@ -208,21 +210,34 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
                 permuted_b_in = torch.cat((b_in[:d_inner][p], b_in[d_inner:][p]), dim=0)
                 layer.in_proj.bias.copy_(permuted_b_in)
 
-            # --- Permute subsequent layers (they take permuted input, so permute COLUMNS) ---
-            # out_proj takes the permuted state as input
-            layer.out_proj.weight.copy_(layer.out_proj.weight[:, p])
-            # dt_proj takes the permuted state as input
-            layer.dt_proj.weight.copy_(layer.dt_proj.weight[:, p])
-            if layer.dt_proj.bias is not None:
-                # dt_proj.bias has shape (d_inner) and is associated with the input, so it must be permuted
-                layer.dt_proj.bias.copy_(layer.dt_proj.bias[p])
+            # 2. conv1d takes the permuted state xP as input. Its weights
+            #    have shape (d_inner, 1, d_conv). Permute input channels (dim 0).
+            if hasattr(layer, 'conv1d'):
+                layer.conv1d.weight.copy_(layer.conv1d.weight[p])
+                if layer.conv1d.bias is not None:
+                    layer.conv1d.bias.copy_(layer.conv1d.bias[p])
+            
+            # 3. x_proj projects xP to get components for B, C.
+            #    It takes xP as input, so permute its COLUMNS. Shape: (dt_rank + 2*d_state, d_inner).
+            if hasattr(layer, 'x_proj'):
+                 layer.x_proj.weight.copy_(layer.x_proj.weight[:, p])
 
-            # --- Permute state-aligned parameters ---
-            # A_log has shape (d_inner, d_state). Its rows correspond to the d_inner dimension.
+            # 4. dt_proj projects xP to get Δ.
+            #    Weight shape is (d_inner, dt_rank). This is a projection FROM xP, so permute ROWS.
+            if hasattr(layer, 'dt_proj'):
+                 layer.dt_proj.weight.copy_(layer.dt_proj.weight[p])
+                 if layer.dt_proj.bias is not None:
+                     # dt_proj.bias has shape (d_inner), so it must be permuted.
+                     layer.dt_proj.bias.copy_(layer.dt_proj.bias[p])
+
+            # 5. A_log and D are aligned with d_inner.
+            #    A_log shape: (d_inner, d_state). Permute ROWS.
+            #    D shape: (d_inner). Permute elements.
             layer.A_log.copy_(layer.A_log[p])
-
-            # D is a skip connection of size d_inner.
             layer.D.copy_(layer.D[p])
+
+            # 6. out_proj takes the final permuted state as input. Permute its COLUMNS.
+            layer.out_proj.weight.copy_(layer.out_proj.weight[:, p])
 
 
 # --- Main Public Function ---
