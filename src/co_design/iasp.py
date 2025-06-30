@@ -311,18 +311,32 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
                     inplace_permute_vector(conv_layer.bias, p)
             
             if hasattr(layer, 'x_proj'):
-                 # x_proj input is permuted state. According to user feedback, permute with p.
-                 inplace_permute_cols(layer.x_proj.weight, p)
+                W = layer.x_proj.weight
+                # x_proj projects from d_model to d_inner, so we permute the output rows.
+                if W.shape[0] == 2 * d_inner:
+                    logger.debug(f"Permuting double-width x_proj layer in {layer.__class__.__name__}")
+                    alias_free_rows_slice(W, p, 0, d_inner)
+                    alias_free_rows_slice(W, p, d_inner, 2 * d_inner)
+                    if hasattr(layer.x_proj, 'bias') and layer.x_proj.bias is not None:
+                        # Bias would also be 2 * d_inner
+                        alias_free_rows_slice(layer.x_proj.bias, p, 0, d_inner)
+                        alias_free_rows_slice(layer.x_proj.bias, p, d_inner, 2 * d_inner)
+                elif W.shape[0] == d_inner:
+                    inplace_permute_rows(W, p)
+                    if hasattr(layer.x_proj, 'bias') and layer.x_proj.bias is not None:
+                        inplace_permute_vector(layer.x_proj.bias, p)
+                else:
+                    logger.warning(f"x_proj layer {layer.__class__.__name__} has unexpected shape {W.shape}, skipping permutation.")
 
             if hasattr(layer, 'dt_proj'):
                  # dt_proj output creates state, so permute rows, but its input can also be permuted
-                 W = layer.dt_proj.weight
+                 W_dt = layer.dt_proj.weight
                  perm_dir = None
-                 if W.shape[0] == d_inner:
-                     inplace_permute_rows(W, p)
+                 if W_dt.shape[0] == d_inner:
+                     inplace_permute_rows(W_dt, p)
                      perm_dir = p
-                 elif W.shape[1] == d_inner: # Input is permuted state
-                     inplace_permute_cols(W, p_inv)
+                 elif W_dt.shape[1] == d_inner: # Input is permuted state
+                     inplace_permute_cols(W_dt, p_inv)
                      perm_dir = p_inv
                  
                  # Handle potential bias in dt_proj, using the correct permutation direction
@@ -454,6 +468,9 @@ def run_iasp_on_mamba(
     
     full_permutation = torch.arange(d_inner_full, device=device)
     full_permutation[original_indices] = permuted_original_indices
+
+    # Final sanity check to ensure the permutation has the correct full dimension
+    assert full_permutation.numel() == d_inner_full, "Full permutation length mismatch!"
 
     # Step 4: Apply the full permutation to the model
     _apply_permutation_to_mamba(mamba_mixers_to_permute, full_permutation.tolist())
@@ -589,6 +606,9 @@ def run_iasp_on_bert(
     full_permutation = torch.arange(d_ffn_full, device=device)
     full_permutation[original_indices] = permuted_original_indices
     
+    # Final sanity check for BERT as well
+    assert full_permutation.numel() == d_ffn_full, "Full permutation length mismatch for BERT!"
+
     # Step 4: Apply the permutation to the model
     _apply_permutation_to_bert_ffn(model, full_permutation.tolist(), target_layer_names)
 
