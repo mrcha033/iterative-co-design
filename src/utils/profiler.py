@@ -282,9 +282,11 @@ class LatencyProfiler:
 
             # If sudo is available, prepend it to run NCU with elevated permissions.
             # The `-n` flag makes it non-interactive, preventing it from hanging on a password prompt.
+            # The `-E` flag preserves the user's environment variables (like PYTHONPATH).
             if shutil.which("sudo"):
-                logger.info("`sudo` found. Prepending 'sudo -n' to NCU command for profiling permissions.")
+                logger.info("`sudo` found. Prepending 'sudo -E -n' to NCU command for profiling permissions.")
                 command.insert(0, "-n")
+                command.insert(0, "-E")
                 command.insert(0, "sudo")
 
             try:
