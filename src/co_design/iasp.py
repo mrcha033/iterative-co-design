@@ -194,23 +194,26 @@ def _apply_permutation_to_mamba(mamba_mixers: List[nn.Module], permutation: List
         p = p.to(dev)
 
         with torch.no_grad():
-            # Permute output of in_proj (P @ W)
-            w_in = layer.in_proj.weight.data
-            b_in = layer.in_proj.bias  # Get tensor or None
-
-            layer.in_proj.weight.data.copy_(torch.cat((w_in[:d_inner][p], w_in[d_inner:][p])))
-            if b_in is not None:
-                # Access .data only after confirming the tensor exists
-                b_in_data = b_in.data
-                layer.in_proj.bias.data.copy_(torch.cat((b_in_data[:d_inner][p], b_in_data[d_inner:][p])))
-
-            # Permute inputs of subsequent layers (W @ P^T -> W[:, p])
-            layer.dt_proj.weight.data = layer.dt_proj.weight.data[:, p]
-            layer.out_proj.weight.data = layer.out_proj.weight.data[:, p]
+            # Create fully permuted tensors first to avoid in-place modification issues
+            # on tensor views, which can be a source of CUDA errors.
             
-            # Permute parameters aligned with d_inner
-            layer.A_log.data = layer.A_log.data[:, p]
-            layer.D.data = layer.D.data[p]
+            # --- Permute in_proj ---
+            w_in = layer.in_proj.weight
+            permuted_w_in = torch.cat((w_in[:d_inner][p], w_in[d_inner:][p]), dim=0)
+            layer.in_proj.weight.copy_(permuted_w_in)
+            
+            if layer.in_proj.bias is not None:
+                b_in = layer.in_proj.bias
+                permuted_b_in = torch.cat((b_in[:d_inner][p], b_in[d_inner:][p]), dim=0)
+                layer.in_proj.bias.copy_(permuted_b_in)
+
+            # --- Permute subsequent layers ---
+            layer.dt_proj.weight.copy_(layer.dt_proj.weight[:, p])
+            layer.out_proj.weight.copy_(layer.out_proj.weight[:, p])
+            
+            # --- Permute state-aligned parameters ---
+            layer.A_log.copy_(layer.A_log[:, p])
+            layer.D.copy_(layer.D[p])
 
 
 # --- Main Public Function ---
