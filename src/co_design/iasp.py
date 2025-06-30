@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 DEFAULTS = SimpleNamespace(
-    max_samples=8_192,
+    max_samples=1_024,
     sample_stride=2,
     knn_k=128,
     cluster_size_range=(32, 128),  # (min, max) cluster size
