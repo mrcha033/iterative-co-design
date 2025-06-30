@@ -447,7 +447,7 @@ def run_iasp_on_mamba(
         # This case shouldn't happen with our current logic, but as a safeguard:
         valid_indices = torch.zeros(d_inner_full, dtype=torch.bool).scatter_(0, valid_indices, 1)
 
-    original_indices = torch.arange(d_inner_full, device=device)[valid_indices]
+    original_indices = torch.arange(d_inner_full, device=device)[valid_indices.to(device)]
     permuted_original_indices = original_indices[torch.tensor(perm_valid, device=device)]
     
     full_permutation = torch.arange(d_inner_full, device=device)
@@ -579,7 +579,7 @@ def run_iasp_on_bert(
     if valid_indices.dtype != torch.bool:
         valid_indices = torch.zeros(d_ffn_full, dtype=torch.bool).scatter_(0, valid_indices, 1)
 
-    original_indices = torch.arange(d_ffn_full, device=device)[valid_indices]
+    original_indices = torch.arange(d_ffn_full, device=device)[valid_indices.to(device)]
     permuted_original_indices = original_indices[torch.tensor(perm_valid, device=device)]
     
     full_permutation = torch.arange(d_ffn_full, device=device)
