@@ -228,16 +228,23 @@ IASP_DISPATCH = {
 
 def _run_iasp(model, data_loader, cfg) -> tuple[list[int], float]:
     """Helper function to run the correct IASP function and return permutation and modularity."""
-    model_type = cfg.model.get("type", "bert")
-    iasp_config = cfg.model.iasp # Get the IASP config sub-section
+    # Auto-detect model type from class name instead of relying on config
+    model_name_lower = model.__class__.__name__.lower()
+    model_type = "unknown"
+    if 'mamba' in model_name_lower:
+        model_type = "mamba"
+    elif 'bert' in model_name_lower:
+        model_type = "bert"
+
+    iasp_config = cfg.model.iasp  # Get the IASP config sub-section
 
     iasp_runner = IASP_DISPATCH.get(model_type)
     if iasp_runner:
-        logger.info(f"Running IASP for {model_type} model...")
+        logger.info(f"Running IASP for auto-detected '{model_type}' model...")
         # Pass the entire model-specific IASP config
         return iasp_runner(model, data_loader, iasp_config)
     else:
-        raise NotImplementedError(f"IASP is not implemented for model type: {model_type}")
+        raise NotImplementedError(f"IASP is not implemented for model type: {model_name_lower}")
 
 
 def run_permute_only(cfg: DictConfig):

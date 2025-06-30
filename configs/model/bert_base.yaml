@@ -1,5 +1,6 @@
 # BERT-base Model Configuration
 name: "google-bert/bert-base-uncased"
+type: "bert"
 vocab_size: 30522
 hidden_size: 768 # d_model
 task: "sequence_classification"

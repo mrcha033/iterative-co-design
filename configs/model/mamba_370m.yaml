@@ -1,5 +1,6 @@
 # Mamba-370M Model Configuration
 name: "state-spaces/mamba-370m-hf"
+type: "mamba"
 vocab_size: 50280
 hidden_size: 1024
 task: "language_modeling"
