@@ -44,7 +44,6 @@ hds:
 iasp:
   # Target layer name for activation correlation analysis.
   # This is model-specific and should be overridden in model configs.
-  target_layers: null # Must be set in model config
   
   # Clustering and sampling parameters
   max_samples: 4096
