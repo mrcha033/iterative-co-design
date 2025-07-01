@@ -32,3 +32,6 @@ accelerate
 evaluate
 sacrebleu
 filelock
+
+# Added from the code block
+pynvml

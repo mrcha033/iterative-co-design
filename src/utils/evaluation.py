@@ -13,30 +13,31 @@ import logging
 from typing import Optional
 import torch.nn as nn
 from torch.utils.data import DataLoader
+import itertools
 
 logger = logging.getLogger(__name__)
 
 
-def calculate_task_metric(model, data_loader, metric: str):
+def calculate_task_metric(model, data_loader, metric: str, max_steps: Optional[int] = None):
     """
-    Calculates the specified evaluation metric.
+    Calculates the specified evaluation metric in a safe, no-gradient context.
 
     Args:
         model: The model to evaluate
         data_loader: DataLoader with the evaluation data
         metric: The name of the metric to calculate ("perplexity" or "accuracy")
-
-    Returns:
-        dict: A dictionary with the metric name and value
+        max_steps: The maximum number of batches to evaluate.
     """
-    if metric == "perplexity":
-        value = calculate_perplexity(model, data_loader)
-        return {"perplexity": value}
-    elif metric == "accuracy":
-        value = calculate_accuracy(model, data_loader)
-        return {"accuracy": value}
-    else:
-        raise ValueError(f"Unknown metric type: {metric}")
+    model.eval()
+    with torch.no_grad():
+        if metric == "perplexity":
+            value = calculate_perplexity(model, data_loader, max_steps=max_steps)
+            return {"perplexity": value}
+        elif metric == "accuracy":
+            value = calculate_accuracy(model, data_loader, max_steps=max_steps)
+            return {"accuracy": value}
+        else:
+            raise ValueError(f"Unknown metric type: {metric}")
 
 
 def mask_labels(input_ids, attention_mask, pad_token_id, ignore_index=-100):
@@ -49,7 +50,7 @@ def mask_labels(input_ids, attention_mask, pad_token_id, ignore_index=-100):
     return labels
 
 
-def calculate_perplexity(model, data_loader, fp16: bool = True):
+def calculate_perplexity(model, data_loader, fp16: bool = True, max_steps: Optional[int] = None):
     """
     Calculates the perplexity of a language model on a given dataset with
     correct handling for padding and device placement.
@@ -61,9 +62,13 @@ def calculate_perplexity(model, data_loader, fp16: bool = True):
 
     # Use the model's pad_token_id, or eos_token_id as a fallback
     pad_token_id = getattr(model.config, "pad_token_id", None) or getattr(model.config, "eos_token_id", None)
+    
+    # Limit the number of steps for evaluation if specified
+    if max_steps is not None:
+        data_loader = itertools.islice(data_loader, max_steps)
 
     with torch.amp.autocast(device_type=device.type, enabled=(fp16 and device.type == 'cuda')), torch.no_grad():
-        for batch in tqdm(data_loader, desc="Calculating Perplexity"):
+        for batch in tqdm(data_loader, desc="Calculating Perplexity", total=max_steps):
             batch = {k: v.to(device) for k, v in batch.items()}
             
             model_inputs = {"input_ids": batch["input_ids"]}
@@ -94,7 +99,7 @@ def calculate_perplexity(model, data_loader, fp16: bool = True):
     return perplexity
 
 
-def calculate_accuracy(model, data_loader):
+def calculate_accuracy(model, data_loader, max_steps: Optional[int] = None):
     """
     Calculates the accuracy of a classification model.
     """
@@ -104,8 +109,12 @@ def calculate_accuracy(model, data_loader):
     correct_predictions = 0
     total_predictions = 0
 
+    # Limit the number of steps for evaluation if specified
+    if max_steps is not None:
+        data_loader = itertools.islice(data_loader, max_steps)
+
     with torch.no_grad():
-        for batch in tqdm(data_loader, desc="Calculating Accuracy"):
+        for batch in tqdm(data_loader, desc="Calculating Accuracy", total=max_steps):
             # Move all tensors to the model's device
             inputs = {k: v.to(device) for k, v in batch.items() if torch.is_tensor(v)}
             labels = inputs.pop("labels", None) # Pop labels to avoid passing them as model inputs

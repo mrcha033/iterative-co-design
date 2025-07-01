@@ -12,6 +12,10 @@ storage:
 # Enable experiment mode for faster testing
 experiment: null  # Set to "debug" for quick runs 
 
+# Default dataset settings
+dataset:
+  max_eval_steps: 1000000 # Effectively infinite unless overridden for quick tests
+
 # Hardware-Native Differentiable Sparsity (HDS) Configuration
 hds:
   # Wildcard patterns for layers whose hidden dimension equals d_model.
@@ -40,15 +44,19 @@ hds:
 iasp:
   # Target layer name for activation correlation analysis.
   # This is model-specific and should be overridden in model configs.
-  target_layer_name: null
+  target_layers: null # Must be set in model config
   
-  # Range of cluster sizes to search for optimal permutation.
-  # This is also model-specific.
-  cluster_size_range: [16, 128]
-  
-  # Number of samples to collect for correlation analysis.
+  # Clustering and sampling parameters
   max_samples: 4096
-  
-  # Spectral clustering parameters
+  sample_stride: 2
+  knn_k: 128
+  cluster_size_range: [16, 128]
+
+  # Spectral clustering backend params
   spectral_n_init: 10
-  spectral_random_state: 0
+  spectral_random_state: 42
+  
+  # Performance tuning
+  jobs: 1 # Number of parallel jobs for layer processing
+  gpu_spectral: true # Use GPU-accelerated k-NN graph construction
+  modularity_skip_threshold: 0.01 # Skip permuting layers below this modularity gain

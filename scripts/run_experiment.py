@@ -20,25 +20,25 @@ Usage:
 from pathlib import Path
 
 # ------------------------------------------------------------------
-# Ensure the project's local 'src' package directory has highest import
-# precedence and force reload of local 'utils' and 'co_design' packages to
-# avoid conflicts with similarly named third-party packages installed in the
-# environment.
+# Environment variable setup must be the very first thing to ensure all
+# imported modules see them correctly.
+# ------------------------------------------------------------------
+import os
+# Set a default service wait time to prevent rate-limiting on fast sweeps
+os.environ.setdefault("WANDB__SERVICE_WAIT", "300")
+# Extra safety for rust-based tokenizers
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["TOKENIZERS_FAST_CORE_PARALLELISM"] = "false"
+
+# ------------------------------------------------------------------
+# Python path setup
 # ------------------------------------------------------------------
 import sys
-import importlib
-
+from pathlib import Path
 project_root = Path(__file__).resolve().parents[1]
 src_path = project_root / "src"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
-
-# Remove already-imported third-party variants, then invalidate caches so that
-# subsequent imports resolve to the project's versions.
-for _pkg in ("utils", "co_design"):
-    if _pkg in sys.modules:
-        del sys.modules[_pkg]
-importlib.invalidate_caches()
 
 import json
 import random
@@ -47,6 +47,7 @@ import torch
 import torch.nn as nn
 import fnmatch
 from torch.utils.data import DataLoader
+from collections import deque
 from transformers import (
     AutoModelForCausalLM,
     AutoModelForSequenceClassification,
@@ -60,14 +61,10 @@ from utils.logging import initialize_wandb
 import wandb
 import math
 import os
+from tqdm.auto import tqdm
 
-# Create a more secure environment for the 'eval' resolver
-safe_globals = {
-    "min": min,
-    "max": max,
-}
-# Register a sandboxed 'eval' resolver for Hydra/OmegaConf
-OmegaConf.register_new_resolver("eval", lambda expr: eval(expr, {"__builtins__": {}}, safe_globals))
+# Removed insecure 'eval' resolver. Dynamic paths should be handled in code.
+# For example, use hydra.utils.to_absolute_path() for file paths.
 
 from utils.evaluation import calculate_task_metric
 from utils.profiler import LatencyProfiler
@@ -75,8 +72,7 @@ from utils.cleanup import cleanup_old_runs
 from utils.input import make_dummy_input
 from co_design.iasp import run_iasp_on_mamba, run_iasp_on_bert
 from models.wrapper import ModelWrapper
-from co_design.hds import apply_hds
-from co_design.layout_aware import apply_layout_aware_hds_finetuning
+from co_design.hds import apply_hds, apply_layout_aware_hds_finetuning
 import logging
 from inspect import getmro
 
@@ -95,31 +91,69 @@ def set_random_seeds(seed: int):
         torch.backends.cudnn.benchmark = False
 
 
-class SlidingWindowDataset(torch.utils.data.Dataset):
-    """Dataset for creating sliding windows over a single token sequence."""
-    def __init__(self, token_ids, seq_len, stride):
-        self.token_ids = token_ids
+class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
+    """
+    An IterableDataset that tokenizes and creates sliding windows from a streaming
+    Hugging Face dataset on the fly, designed for memory efficiency.
+    """
+    def __init__(self, hf_dataset, tokenizer, seq_len, stride, buffer_size=65536):
+        super().__init__()
+        if stride <= 0 or stride > seq_len:
+            raise ValueError(f"Stride must be in (0, seq_len], but got stride={stride} and seq_len={seq_len}")
+        self.hf_dataset = hf_dataset
+        self.tokenizer = tokenizer
         self.seq_len = seq_len
         self.stride = stride
+        # Buffer size should be larger than seq_len
+        self.buffer_size = max(buffer_size, seq_len * 2)
 
-    def __len__(self):
-        # Calculate the number of windows
-        return (self.token_ids.size(0) - self.seq_len) // self.stride + 1
+    def __iter__(self):
+        # Correctly seed the random number generator for each worker for reproducibility.
+        worker_info = torch.utils.data.get_worker_info()
+        seed = worker_info.seed if worker_info else torch.initial_seed()
+        rng = random.Random(seed)
 
-    def __getitem__(self, idx):
-        start_idx = idx * self.stride
-        end_idx = start_idx + self.seq_len
+        # Use a deque with maxlen for a memory-efficient, automatically-managed buffer.
+        buffer = deque(maxlen=self.buffer_size)
         
-        input_ids = self.token_ids[start_idx:end_idx]
-        labels = input_ids.clone()
+        for sample in self.hf_dataset:
+            if "text" not in sample or not sample["text"]:
+                continue
 
-        # For overlapping strides, mask out the loss for the overlapping tokens
-        # in all but the first window. This prevents re-calculating loss on the
-        # same tokens and follows standard perplexity evaluation practice.
-        if idx > 0:
-            labels[:self.seq_len - self.stride] = -100
+            # Truncate long documents to buffer_size and sample a random starting point
+            # to avoid biasing towards the end of long texts.
+            token_ids = self.tokenizer(
+                sample["text"],
+                truncation=True,
+                max_length=self.buffer_size,
+                add_special_tokens=False
+            )["input_ids"]
 
-        return {"input_ids": input_ids, "labels": labels}
+            if len(token_ids) > self.seq_len:
+                start_index = rng.randint(0, len(token_ids) - self.seq_len)
+                buffer.extend(token_ids[start_index:])
+            else:
+                buffer.extend(token_ids)
+
+            # Yield all complete windows from the current buffer
+            while len(buffer) >= self.seq_len:
+                window_ids = [buffer[i] for i in range(self.seq_len)]
+                yield {"input_ids": torch.tensor(window_ids, dtype=torch.long)}
+
+                # Slide the window forward by popping `stride` elements from the left
+                for _ in range(self.stride):
+                    if not buffer: break
+                    buffer.popleft()
+
+
+def lm_collate(batch):
+    """Custom collate function that creates labels for language modeling."""
+    # Use default collator to stack tensors and handle padding
+    collated_batch = default_data_collator(batch)
+    # Create labels by direct assignment (view) instead of clone to save memory.
+    # This is safe as the labels are not modified in-place before loss calculation.
+    collated_batch["labels"] = collated_batch["input_ids"]
+    return collated_batch
 
 
 def get_model_and_data(cfg: DictConfig):
@@ -145,57 +179,31 @@ def get_model_and_data(cfg: DictConfig):
     print(f"Loading dataset: {cfg.dataset.name}")
 
     if cfg.model.task == "language_modeling":
-        # --- Pre-tokenization and Caching for LM tasks ---
+        # Use streaming to handle large datasets without loading all data into RAM.
+        hf_iterable_dataset = load_dataset(
+            cfg.dataset.name, cfg.dataset.get("subset"), streaming=True
+        )[cfg.dataset.get("eval_split", "validation")]
+        
         seq_len = cfg.dataset.get("seq_len", 512)
         stride = cfg.dataset.get("stride", seq_len // 2)
-        
-        # Robust cache key with tokenizer class and vocab size for reproducibility
-        tokenizer_ver_tag = f"{tokenizer.__class__.__name__}-{tokenizer.vocab_size}"
-        cache_dir = Path(f"cache/{cfg.dataset.name}-{tokenizer_ver_tag}")
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        
-        eval_split = "validation"
-        try:
-            # Attempt to load from disk first
-            dataset = load_dataset(cfg.dataset.path, cfg.dataset.get("subset"))
-            if eval_split not in dataset:
-                eval_split = "test"
-        except Exception:
-            logger.warning(f"Could not find dataset at path '{cfg.dataset.path}'. Attempting to download from Hub...")
-            dataset = load_dataset(cfg.dataset.name, cfg.dataset.get("subset"))
-            if eval_split not in dataset:
-                eval_split = "test"
-        
-        tokenized_cache_file = cache_dir / f"{eval_split}_tokenized.pt"
 
-        if tokenized_cache_file.exists():
-            logger.info(f"Loading tokenized data from cache: {tokenized_cache_file}")
-            encodings = torch.load(tokenized_cache_file)
-        else:
-            logger.info("Tokenizing and caching dataset...")
-            
-            raw_eval_dataset = dataset[eval_split]
-            # Preserve paragraph boundaries by joining with newlines
-            full_text = "\n\n".join(raw_eval_dataset["text"])
-            encodings = tokenizer(full_text, return_tensors="pt", truncation=False).input_ids.squeeze()
-            torch.save(encodings, tokenized_cache_file)
-            logger.info(f"Saved tokenized data to cache: {tokenized_cache_file}")
-
-        eval_dataset_text_only = dataset[eval_split] # for compatibility with return value
-        tokenized_dataset = SlidingWindowDataset(encodings, seq_len=seq_len, stride=stride)
-
-        # DataLoader tuning
-        num_cpu = max(1, os.cpu_count() // 2)
-        data_loader = DataLoader(
-            tokenized_dataset,
-            batch_size=cfg.dataset.batch_size,
-            collate_fn=default_data_collator,
-            num_workers=num_cpu,
-            pin_memory=True,
-            persistent_workers=True if num_cpu > 0 else False,
-            prefetch_factor=4 if num_cpu > 0 else 2,
+        streaming_dataset = StreamingSlidingWindowDataset(
+            hf_dataset=hf_iterable_dataset,
+            tokenizer=tokenizer,
+            seq_len=seq_len,
+            stride=stride
         )
-        return model, tokenizer, data_loader, eval_dataset_text_only
+        
+        # DataLoader tuning for IterableDataset. num_workers must be 0.
+        dl_kwargs = dict(
+            batch_size=cfg.dataset.batch_size,
+            collate_fn=lm_collate,
+            num_workers=0, # Must be 0 for this implementation of IterableDataset
+        )
+        
+        data_loader = DataLoader(streaming_dataset, **dl_kwargs)
+        # In streaming mode, there's no separate text-only dataset to return.
+        return model, tokenizer, data_loader, None
 
     # --- Original path for non-LM tasks (e.g., sequence classification) ---
     try:
@@ -223,16 +231,18 @@ def get_model_and_data(cfg: DictConfig):
     tokenized_dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
     
     # DataLoader tuning
-    num_cpu = max(1, os.cpu_count() // 2)
-    data_loader = DataLoader(
-        tokenized_dataset, 
-        batch_size=cfg.dataset.batch_size, 
+    num_cpu = max(0, os.cpu_count() // 2)
+    dl_kwargs = dict(
+        batch_size=cfg.dataset.batch_size,
         collate_fn=default_data_collator,
         num_workers=num_cpu,
-        pin_memory=True,
-        persistent_workers=True if num_cpu > 0 else False,
-        prefetch_factor=4 if num_cpu > 0 else 2,
+        pin_memory=False,
+        persistent_workers=False,
     )
+    if num_cpu > 0:
+        dl_kwargs["prefetch_factor"] = 4
+
+    data_loader = DataLoader(tokenized_dataset, **dl_kwargs)
 
     return model, tokenizer, data_loader, eval_dataset
 
@@ -271,13 +281,22 @@ def _measure_and_collect_metrics(
 
     logger.info("Calculating evaluation metric...")
     task_metric = calculate_task_metric(
-        model, data_loader, metric=cfg.dataset.metric_type
+        model,
+        data_loader,
+        metric=cfg.dataset.metric_type,
+        max_steps=cfg.dataset.get("max_eval_steps") or 1000  # Safe default
     )
     logger.info(f"{cfg.dataset.metric_type.capitalize()}: {list(task_metric.values())[0]:.4f}")
 
     logger.info("Measuring latency and hardware performance...")
-    dummy_input = make_dummy_input(tokenizer, cfg.model.task)
-    hw_metrics = profiler.profile_all_metrics(model, dummy_input)
+    device = next(model.parameters()).device
+    dummy_input = make_dummy_input(model, tokenizer, device)
+    
+    try:
+        hw_metrics = profiler.profile_all_metrics(model, dummy_input)
+    except Exception as e:
+        logger.error(f"Profiler failed: {e}. Hardware metrics will be omitted.", exc_info=True)
+        hw_metrics = {}
     
     # Log all collected hardware metrics
     if hw_metrics:
@@ -343,43 +362,36 @@ def run_sparsity_only(cfg: DictConfig):
     save_results(cfg, "sparsity_only", metrics)
 
 
-IASP_DISPATCH = {
-    "mamba": run_iasp_on_mamba,
-    "bert": run_iasp_on_bert,
-}
-
 def detect_family(model: nn.Module) -> str:
     """Robustly detects model family by inspecting class hierarchy."""
     for cls in getmro(model.__class__):
         name = cls.__name__.lower()
-        if "mamba" in name:
+        if any(k in name for k in ("mamba", "ssm")):
             return "mamba"
         if "bert" in name:
             return "bert"
     return "unknown"
 
 def _run_iasp(model, data_loader, cfg) -> tuple[list[int], float]:
-    """Helper function to run the correct IASP function and return permutation and modularity."""
-    model_type = detect_family(model)
-    
-    # Robustly find IASP config, supporting different method structures
-    if hasattr(cfg, "method") and hasattr(cfg.method, "iasp"):
-        iasp_config = cfg.method.iasp
-    elif hasattr(cfg, "iasp"):
-        iasp_config = cfg.iasp
-    else:
-        raise ValueError("Could not find IASP configuration in `cfg.method.iasp` or `cfg.iasp`")
+    """Helper to dispatch IASP to the correct model type."""
+    family = detect_family(model)
+    logger.info(f"Running IASP for model family: {family}")
 
-    # Expand wildcards in target_layers
-    if "target_layers" in iasp_config:
-        iasp_config.target_layers = _expand_target_layers(model, iasp_config.target_layers)
+    # The `target_layers` parameter is now consistently defined in the `iasp` config
+    # block, which is populated from defaults.yaml and overridden by model-specific YAMLs.
+    iasp_cfg = cfg.iasp
+    if not iasp_cfg.target_layers:
+        raise ValueError(
+            "IASP requires `iasp.target_layers` to be defined. Please set it in the model's config file."
+        )
 
-    iasp_runner = IASP_DISPATCH.get(model_type)
-    if iasp_runner:
-        logger.info(f"Running IASP for auto-detected '{model_type}' model...")
-        return iasp_runner(model, data_loader, iasp_config)
+    if family == "mamba":
+        return run_iasp_on_mamba(model, data_loader, iasp_cfg)
+    elif family == "bert":
+        return run_iasp_on_bert(model, data_loader, iasp_cfg)
     else:
-        raise NotImplementedError(f"IASP is not implemented for model type: {model_type}")
+        logger.warning(f"IASP not implemented for model family '{family}'. Skipping.")
+        return [], 0.0
 
 
 def run_permute_only(cfg: DictConfig):
@@ -403,10 +415,17 @@ def run_permute_only(cfg: DictConfig):
         lm_head_weight_before = wrapped_model.model.lm_head.weight.detach().clone()
         logger.info("Saved lm_head weights for integrity check.")
 
-    # --- Memory-efficient smoke test for functional equivalence ---
-    logger.info("--- Running IASP smoke test for functional equivalence ---")
+    # --- Enhanced smoke test for functional equivalence and parameter stability ---
+    logger.info("--- Running IASP smoke test ---")
     device = next(wrapped_model.model.parameters()).device
     dummy_input = make_dummy_input(wrapped_model.model, tokenizer, device)
+
+    # Check LayerNorm scales before permutation
+    ln_norms_before = {
+        name: p.norm().item()
+        for name, p in wrapped_model.model.named_parameters()
+        if "layernorm" in name.lower() or "norm" in name.lower()
+    }
 
     with torch.no_grad():
         logits_before = wrapped_model.model(**dummy_input).logits.clone()
@@ -416,9 +435,23 @@ def run_permute_only(cfg: DictConfig):
     with torch.no_grad():
         logits_after = wrapped_model.model(**dummy_input).logits
     
-    diff = (logits_before - logits_after).abs().max()
-    assert diff < 1e-4, f"IASP permutation broke functional equivalence! Max logit diff: {diff}"
-    logger.info(f"✅ IASP smoke test passed. Max logit difference: {diff:.6f}")
+    # Check LayerNorm scales after permutation
+    ln_norms_after = {
+        name: p.norm().item()
+        for name, p in wrapped_model.model.named_parameters()
+        if "layernorm" in name.lower() or "norm" in name.lower()
+    }
+
+    # 1. Check logit equivalence
+    logit_diff = (logits_before - logits_after).abs().max()
+    assert logit_diff < 1e-4, f"IASP broke functional equivalence! Max logit diff: {logit_diff}"
+    logger.info(f"✅ Logit equivalence test passed. Max difference: {logit_diff:.6f}")
+
+    # 2. Check LayerNorm stability
+    norm_diffs = {name: abs(ln_norms_before[name] - ln_norms_after[name]) for name in ln_norms_before}
+    max_norm_diff = max(norm_diffs.values()) if norm_diffs else 0.0
+    assert max_norm_diff < 1e-4, f"IASP permutation altered LayerNorm scales! Max norm diff: {max_norm_diff}"
+    logger.info(f"✅ LayerNorm stability test passed. Max norm difference: {max_norm_diff:.6f}")
     # --- End of smoke test ---
 
     # --- Post-IASP weight integrity check ---
@@ -631,39 +664,60 @@ def print_dry_run_plan(cfg: DictConfig):
     run_cleanup_if_configured(cfg, dry_run=True)
     print("="*50)
 
-def check_gpu_headroom(required_gb: float = 4.0):
-    """Checks if there is enough free GPU memory to proceed."""
+def check_gpu_headroom(required_gb: float = 4.0) -> bool:
+    """Checks if there is enough free GPU memory on ALL devices to proceed."""
+    nv_available = False
+    try:
+        import pynvml as nv
+        nv.nvmlInit()
+        nv_available = True
+    except (ImportError, nv.NVMLError) as e:
+        logger.warning(f"pynvml not installed or failed to initialize ({e}). Falling back to torch-only memory check.")
+
     if not torch.cuda.is_available():
         return True # Continue if on CPU
     
-    free_bytes, total_bytes = torch.cuda.mem_get_info()
-    free_gb = free_bytes / (1024**3)
+    for i in range(torch.cuda.device_count()):
+        free_gb = -1
+        try:
+            if nv_available:
+                handle = nv.nvmlDeviceGetHandleByIndex(i)
+                info = nv.nvmlDeviceGetMemoryInfo(handle)
+                free_gb = info.free / (1024**3)
+            else: # Fallback
+                with torch.cuda.device(i):
+                    free_bytes, _ = torch.cuda.mem_get_info()
+                    free_gb = free_bytes / (1024**3)
+            
+            logger.info(f"GPU {i}: Available Memory: {free_gb:.2f} GB")
+            if free_gb < required_gb:
+                logger.error(f"GPU {i} memory headroom is below the required {required_gb} GB. Skipping experiment to prevent OOM.")
+                Path.cwd().joinpath(f"skipped_low_gpu_{i}.sentinel").touch()
+                if nv_available:
+                    nv.nvmlShutdown()
+                return False
+        except (RuntimeError, nv.NVMLError) as e:
+            logger.warning(f"Could not check memory for GPU {i}: {e}. This may happen with older drivers. Proceeding with caution.")
     
-    logger.info(f"Available GPU Memory: {free_gb:.2f} GB")
-    if free_gb < required_gb:
-        logger.error(f"GPU memory headroom is below the required {required_gb} GB. Aborting to prevent OOM.")
-        # Exit gracefully to prevent crashing the whole run
-        sys.exit(1)
+    if nv_available:
+        nv.nvmlShutdown()
     return True
 
-@hydra.main(config_path=str(project_root / "configs"), config_name="config", version_base=None)
+@hydra.main(config_name="config", version_base=None, config_path=os.getenv("HYDRA_CONFIG_PATH", "../configs"))
 def main(cfg: DictConfig):
-    # Set TOKENIZERS_PARALLELISM to false to avoid warnings when using multiple
-    # workers in a DataLoader. This is a common issue when a tokenizer is used
-    # in the main process before forking for data loading.
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    
+    # --- Pre-run setup ---
+    # Disable W&B if not explicitly enabled. Must be done before wandb is used.
+    if not cfg.wandb.log:
+        os.environ["WANDB_DISABLED"] = "true"
+
     if cfg.get("dry_run", False):
         print_dry_run_plan(cfg)
         return
 
     # --- Pre-run checks ---
-    # Add a headroom check to prevent OOM errors during long runs
-    check_gpu_headroom(required_gb=cfg.get("min_gpu_headroom_gb", 4.0))
-
-    # Disable W&B if not explicitly enabled
-    if not cfg.wandb.log:
-        os.environ["WANDB_MODE"] = "disabled"
+    if not check_gpu_headroom(required_gb=cfg.get("min_gpu_headroom_gb", 4.0)):
+        logger.warning("Gracefully exiting run due to insufficient GPU memory.")
+        return
 
     # Initialize W&B
     if cfg.wandb.log:

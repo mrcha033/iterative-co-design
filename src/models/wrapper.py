@@ -23,22 +23,25 @@ class ModelWrapper(nn.Module):
     def __init__(self, model: nn.Module):
         super().__init__()
         self.model = model
-        self.device = (
-            next(model.parameters()).device
-            if list(model.parameters())
-            else torch.device("cpu")
-        )
+
+    @property
+    def device(self):
+        """Dynamically gets the device of the first model parameter."""
+        return next(self.model.parameters()).device
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
+    
+    def to(self, *args, **kwargs):
+        """Override `to` to move the model and update the device property."""
+        self.model.to(*args, **kwargs)
+        return self
 
     def cuda(self, *args, **kwargs):
-        self.device = torch.device("cuda")
         self.model.cuda(*args, **kwargs)
         return self
 
     def cpu(self, *args, **kwargs):
-        self.device = torch.device("cpu")
         self.model.cpu(*args, **kwargs)
         return self
 

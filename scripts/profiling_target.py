@@ -73,7 +73,7 @@ def main():
         if "bert" in config.model_type and "attention_mask" not in dummy_input:
             dummy_input["attention_mask"] = (dummy_input["input_ids"] != config.pad_token_id).long()
         
-        dummy_input = {k: v.to(device) for k, v in dummy_input.items()}
+            dummy_input = {k: v.to(device) for k, v in dummy_input.items()}
 
         # GPU Warm-up
         for _ in range(5):
