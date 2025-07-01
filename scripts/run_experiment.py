@@ -409,41 +409,25 @@ def _run_iasp(model, data_loader, cfg) -> tuple[list[int], float]:
     iasp_cfg = cfg.iasp
     
     # Diagnostic logging to understand config structure at runtime
-    logger.info(f"IASP config keys: {list(iasp_cfg.keys()) if hasattr(iasp_cfg, 'keys') else 'No keys method'}")
-    logger.info(f"IASP config structure: {OmegaConf.to_container(iasp_cfg, resolve=True)}")
+    logger.debug(f"IASP config structure: {OmegaConf.to_container(iasp_cfg, resolve=True)}")
     
-    # Convert to structured config if needed
+    # Convert to structured config with model family information
     try:
         from src.utils.config import create_iasp_config
-        # Create a structured config with defaults from the current config
+        
+        # Convert to dict for safe manipulation
         config_dict = OmegaConf.to_container(iasp_cfg, resolve=True)
         
-        # Apply model family specific defaults for target_layers if missing
-        if not config_dict.get("target_layers"):
-            family_defaults = {
-                "mamba": ["backbone.layers.*.mixer.in_proj"],
-                "bert": ["*.intermediate.dense"],
-            }
-            default_pattern = family_defaults.get(family, ["*.in_proj"])
-            logger.info(f"Using model-specific default target_layers for {family}: {default_pattern}")
-            config_dict["target_layers"] = default_pattern
+        # Add model family if not present
+        if "model_family" not in config_dict:
+            config_dict["model_family"] = family
             
-        # Create structured config
+        # Create structured config - target_layers will be set in __post_init__ if None
         iasp_cfg = create_iasp_config(config_dict)
-        logger.info(f"Using structured config for IASP with target_layers: {iasp_cfg.target_layers}")
+        logger.info(f"Using target_layers: {iasp_cfg.target_layers}")
     except (ImportError, AttributeError) as e:
-        # Fall back to dict-based approach if structured configs aren't available
-        logger.warning(f"Couldn't use structured config: {e}. Using dict-based approach.")
-        if not iasp_cfg.get("target_layers"):
-            family_defaults = {
-                "mamba": ["backbone.layers.*.mixer.in_proj"],
-                "bert": ["*.intermediate.dense"],
-            }
-            default_pattern = family_defaults.get(family, ["*.in_proj"])
-            logger.warning(
-                f"IASP configuration missing target_layers. Using default for {family}: {default_pattern}"
-            )
-            iasp_cfg = OmegaConf.merge(iasp_cfg, {"target_layers": default_pattern})
+        # Fall back to original config if structured configs aren't available
+        logger.warning(f"Couldn't use structured config: {e}")
 
     if family == "mamba":
         return run_iasp_on_mamba(model, data_loader, iasp_cfg)

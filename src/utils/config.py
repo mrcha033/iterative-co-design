@@ -263,8 +263,12 @@ def load_config(config_path: Union[str, Path]) -> Dict[str, Any]:
 class IaspConfig:
     """IO-Aware Scan Permutation configuration."""
     
-    # Target layer patterns (required, with model-specific defaults)
+    # Target layer patterns with model-family specific defaults
+    # The actual default will be applied at runtime based on model family
     target_layers: Optional[List[str]] = None
+    
+    # Model family for default pattern selection
+    model_family: str = "mamba"
     
     # Clustering parameters
     max_samples: int = 4096
@@ -284,8 +288,12 @@ class IaspConfig:
     def __post_init__(self):
         """Apply model-family specific defaults if target_layers is None."""
         if self.target_layers is None:
-            # Default will be applied at runtime based on model family
-            pass
+            family_defaults = {
+                "mamba": ["backbone.layers.*.mixer.in_proj"],
+                "bert": ["*.intermediate.dense"],
+            }
+            self.target_layers = family_defaults.get(self.model_family, ["*.in_proj"])
+            logger.debug(f"Applied default target_layers for {self.model_family}: {self.target_layers}")
 
 
 @dataclass
