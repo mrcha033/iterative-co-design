@@ -97,7 +97,7 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
     An IterableDataset that tokenizes and creates sliding windows from a streaming
     Hugging Face dataset on the fly, designed for memory efficiency.
     """
-    def __init__(self, hf_dataset, tokenizer, seq_len, stride, buffer_size=65536):
+    def __init__(self, hf_dataset, tokenizer, seq_len, stride, buffer_size=65536, max_samples=None):
         super().__init__()
         if stride <= 0 or stride > seq_len:
             raise ValueError(f"Stride must be in (0, seq_len], but got stride={stride} and seq_len={seq_len}")
@@ -105,6 +105,7 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
         self.tokenizer = tokenizer
         self.seq_len = seq_len
         self.stride = stride
+        self.max_samples = max_samples
         # Buffer size should be larger than seq_len
         self.buffer_size = max(buffer_size, seq_len * 2)
 
@@ -117,7 +118,22 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
         # Use a deque with maxlen for a memory-efficient, automatically-managed buffer.
         buffer = deque(maxlen=self.buffer_size)
         
-        for sample in self.hf_dataset:
+        samples_yielded = 0
+        dataset_iterator = iter(self.hf_dataset)
+
+        while self.max_samples is None or samples_yielded < self.max_samples:
+            try:
+                sample = next(dataset_iterator)
+            except StopIteration:
+                if self.max_samples is not None:
+                    # If the dataset is exhausted but we haven't met the sample count,
+                    # restart the iterator to loop over the data again.
+                    dataset_iterator = iter(self.hf_dataset)
+                    continue
+                else:
+                    # If no max_samples is set, just stop.
+                    break
+
             if "text" not in sample or not sample["text"]:
                 continue
 
@@ -143,8 +159,12 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
 
             # Yield all complete windows from the current buffer
             while len(buffer) >= self.seq_len:
+                if self.max_samples is not None and samples_yielded >= self.max_samples:
+                    return # Stop iteration once max_samples is reached
+
                 window_ids = [buffer[i] for i in range(self.seq_len)]
                 yield {"input_ids": torch.tensor(window_ids, dtype=torch.long)}
+                samples_yielded += 1
 
                 # Slide the window forward by popping `stride` elements from the left
                 for _ in range(self.stride):
@@ -198,7 +218,8 @@ def get_model_and_data(cfg: DictConfig):
             hf_dataset=hf_iterable_dataset,
             tokenizer=tokenizer,
             seq_len=seq_len,
-            stride=stride
+            stride=stride,
+            max_samples=cfg.iasp.get("max_samples", None)
         )
         
         # DataLoader tuning for IterableDataset. num_workers must be 0.
