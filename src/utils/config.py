@@ -318,60 +318,57 @@ class HdsConfig:
 
 def initialize_structured_configs():
     """
-    Register all dataclass schemas with OmegaConf.
+    Initialize structured config schemas for use with OmegaConf.
     Call this before Hydra initialization.
-    """
-    OmegaConf.register_resolver("get_default_target_layers", get_default_target_layers)
     
-    # Register structured configs
-    OmegaConf.register_structure(IaspConfig)
-    OmegaConf.register_structure(HdsConfig)
+    Note: This doesn't use global registration as that API is deprecated.
+    Instead, it provides factory functions for creating properly structured configs.
+    """
+    # Modern approach - directly create structured configs when needed
+    # No global registration, as that's deprecated
+    
+    # The resolver is also deprecated but still functional - will keep for now
+    # with a cleaner implementation
+    try:
+        # Try the new API (OmegaConf >= 2.1)
+        from omegaconf import register_resolver
+        register_resolver("get_default_target_layers", get_default_target_layers)
+    except ImportError:
+        # Fall back to old API
+        OmegaConf.register_resolver("get_default_target_layers", get_default_target_layers)
+    
+    logger.info("Structured config system initialized")
 
 
-def config_to_dataclass(config: Union[Dict[str, Any], DictConfig], dataclass_type: Type[T]) -> T:
+def create_iasp_config(cfg_dict: Optional[Dict[str, Any]] = None) -> Any:
     """
-    Convert a config dictionary or DictConfig to a dataclass instance with proper defaults.
-    
-    Args:
-        config: Configuration as dict or DictConfig
-        dataclass_type: The target dataclass type
-        
-    Returns:
-        An instance of the dataclass type
-    """
-    if not is_dataclass(dataclass_type):
-        raise ValueError(f"{dataclass_type.__name__} is not a dataclass")
-    
-    # Convert DictConfig to dict if needed
-    if isinstance(config, DictConfig):
-        config_dict = OmegaConf.to_container(config, resolve=True)
-    else:
-        config_dict = config
-        
-    # Create an instance with defaults
-    default_instance = dataclass_type()
-    
-    # Merge with provided config
-    merged_config = {**asdict(default_instance), **config_dict}
-    
-    # Create new instance with merged values
-    return dataclass_type(**{k: v for k, v in merged_config.items() 
-                            if k in asdict(default_instance)})
-
-
-def create_iasp_config(cfg_dict: Optional[Dict[str, Any]] = None) -> IaspConfig:
-    """
-    Create an IaspConfig from a dictionary, with proper defaults.
+    Create a structured IaspConfig from a dictionary, with proper defaults.
     
     Args:
         cfg_dict: Dictionary with IASP configuration values
         
     Returns:
-        IaspConfig instance with proper defaults
+        Structured config instance with proper defaults
     """
+    # Create base config with defaults
+    base_cfg = IaspConfig()
+    
     if cfg_dict is None:
-        return IaspConfig()
-    return config_to_dataclass(cfg_dict, IaspConfig)
+        # Return a structured instance of the default config
+        return OmegaConf.structured(base_cfg)
+    
+    # Convert dataclass to dict for safe merging
+    base_dict = asdict(base_cfg)
+    
+    # Update with provided values 
+    merged_dict = {**base_dict, **cfg_dict}
+    
+    # Create a config instance with the merged values
+    config_instance = IaspConfig(**{k: v for k, v in merged_dict.items() 
+                                 if k in base_dict})
+    
+    # Convert to structured config
+    return OmegaConf.structured(config_instance)
 
 
 def get_default_target_layers(model_family: str) -> list:
@@ -391,3 +388,34 @@ def get_default_target_layers(model_family: str) -> list:
         # Add more model families as needed
     }
     return family_defaults.get(model_family, ["*.in_proj"])
+
+
+def create_hds_config(cfg_dict: Optional[Dict[str, Any]] = None) -> Any:
+    """
+    Create a structured HdsConfig from a dictionary, with proper defaults.
+    
+    Args:
+        cfg_dict: Dictionary with HDS configuration values
+        
+    Returns:
+        Structured config instance with proper defaults
+    """
+    # Create base config with defaults
+    base_cfg = HdsConfig()
+    
+    if cfg_dict is None:
+        # Return a structured instance of the default config
+        return OmegaConf.structured(base_cfg)
+    
+    # Convert dataclass to dict for safe merging
+    base_dict = asdict(base_cfg)
+    
+    # Update with provided values 
+    merged_dict = {**base_dict, **cfg_dict}
+    
+    # Create a config instance with the merged values
+    config_instance = HdsConfig(**{k: v for k, v in merged_dict.items() 
+                                if k in base_dict})
+    
+    # Convert to structured config
+    return OmegaConf.structured(config_instance)
