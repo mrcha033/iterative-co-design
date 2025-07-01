@@ -44,6 +44,7 @@ from joblib import Parallel, delayed
 from numpy.linalg import LinAlgError  # needed for SpectralClustering errors
 from omegaconf import DictConfig
 from sklearn.cluster import SpectralClustering
+from sklearn.utils.extmath import randomized_svd
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
@@ -231,26 +232,28 @@ def _louvain_perm_numpy(corr_np: np.ndarray, cfg: DictConfig) -> Tuple[List[int]
 
     dim = corr_np.shape[0]
     
-    # 1. Embed correlation matrix into vectors using Cholesky factorization
-    # This avoids storing the full dim x dim affinity matrix in Faiss
-    try:
-        # Add a small epsilon for numerical stability
-        vectors = np.linalg.cholesky(corr_np + np.eye(dim) * 1e-5).astype('float32')
-    except np.linalg.LinAlgError:
-        logger.warning("Cholesky decomposition failed; falling back to using affinity matrix directly.")
-        vectors = (corr_np + 1) / 2
+    # 1. Embed correlation matrix into low-dim vectors using Randomized SVD
+    # This avoids the O(D^2) memory of Cholesky on the full correlation matrix.
+    n_components = cfg.get("svd_components", 256)
+    U, S, _ = randomized_svd(
+        corr_np, n_components=n_components, random_state=cfg.get("spectral_random_state", 42)
+    )
+    # Use explicit broadcasting and L2 normalization for robust vectors
+    vectors = (U * np.sqrt(S)[None, :]).astype('float32')
+    vectors /= (np.linalg.norm(vectors, axis=1, keepdims=True) + 1e-12)
         
     # 2. Build a memory-efficient k-NN graph index (HNSW)
     k = min(cfg.get("knn_k", DEFAULTS.knn_k), dim - 1)
-    index = faiss.IndexHNSWFlat(dim, 32) # Using HNSW for better memory/speed trade-off
-    index.add(vectors.astype(np.float32))
-    _, I = index.search(vectors.astype(np.float32), k + 1)
+    index = faiss.IndexHNSWFlat(n_components, 32)
+    index.add(vectors)
+    _, I = index.search(vectors, k + 1)
 
     # 3. Convert to igraph for Louvain, pruning low-weight edges
     A = (corr_np + 1) / 2
+    edge_thresh = cfg.get("edge_thresh", 1e-3)
     edges = [
         (i, j, float(A[i,j])) for i in range(dim)
-        for j in I[i,1:] if i < j and A[i,j] > 1e-3
+        for j in I[i,1:] if i < j and A[i,j] > edge_thresh
     ]
     g = ig.Graph.TupleList(edges, weights=True, directed=False)
     
@@ -396,6 +399,8 @@ def _apply_perm_to_mixer(mixer: nn.Module, p_val: torch.Tensor):
         conv = mixer.conv1d
         # Permute output channels (rows) of the convolution's weight and bias
         safe_permute_rows(conv.weight, p_val)
+        if conv.weight.size(1) == d_val: # Handle Mamba variants with d_val input channels
+            safe_permute_cols(conv.weight, p_inv_val)
         if conv.bias is not None:
             safe_permute_vector(conv.bias, p_val)
 
