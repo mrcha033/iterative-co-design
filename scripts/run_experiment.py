@@ -36,9 +36,9 @@ os.environ["TOKENIZERS_FAST_CORE_PARALLELISM"] = "false"
 import sys
 from pathlib import Path
 project_root = Path(__file__).resolve().parents[1]
-src_path = project_root / "src"
-if str(src_path) not in sys.path:
-    sys.path.insert(0, str(src_path))
+# Use project root for consistent 'src.' prefixed imports
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 import json
 import random
@@ -57,7 +57,7 @@ from transformers import (
 from datasets import load_dataset
 import hydra
 from omegaconf import DictConfig, OmegaConf
-from utils.logging import initialize_wandb
+from src.utils.logging import initialize_wandb
 import wandb
 import math
 import os
@@ -66,10 +66,10 @@ from tqdm.auto import tqdm
 # Removed insecure 'eval' resolver. Dynamic paths should be handled in code.
 # For example, use hydra.utils.to_absolute_path() for file paths.
 
-from utils.evaluation import calculate_task_metric
-from utils.profiler import LatencyProfiler
-from utils.cleanup import cleanup_old_runs
-from utils.input import make_dummy_input
+from src.utils.evaluation import calculate_task_metric
+from src.utils.profiler import LatencyProfiler
+from src.utils.cleanup import cleanup_old_runs
+from src.utils.input import make_dummy_input
 from src.co_design.iasp import run_iasp_on_mamba, run_iasp_on_bert
 from src.models.wrapper import ModelWrapper
 from src.co_design.hds import apply_hds
@@ -112,7 +112,7 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
         # Correctly seed the random number generator for each worker for reproducibility.
         worker_info = torch.utils.data.get_worker_info()
         seed = worker_info.seed if worker_info else torch.initial_seed()
-        rng = random.Random(seed)
+        rng = random.Random(seed & 0xFFFFFFFF)
 
         # Use a deque with maxlen for a memory-efficient, automatically-managed buffer.
         buffer = deque(maxlen=self.buffer_size)

@@ -28,8 +28,12 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import os
 from types import SimpleNamespace
 from typing import Iterable, List, Tuple, Union
+
+# Set OMP_NUM_THREADS to 1 to avoid MKL contention in joblib's threading backend.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import numpy as np
 import torch
@@ -167,7 +171,19 @@ def _collect_layer_corr(
 
     std = X.std(0)
     mask = std > 1e-6
+
+    if mask.sum() < 2:
+        logger.warning(f"Layer has < 2 active channels for correlation. Skipping.")
+        return torch.empty((0, 0), dtype=torch.float32, device=X.device), mask
+    
     X_masked = X[:, mask]
+
+    if X_masked.size(0) < X_masked.size(1):
+        logger.warning(
+            f"Number of samples ({X_masked.size(0)}) is less than number of features "
+            f"({X_masked.size(1)}). Correlation is ill-conditioned. Skipping."
+        )
+        return torch.empty((0, 0), dtype=torch.float32, device=X.device), mask
 
     # Use torch.corrcoef for GPU-accelerated computation
     corr = torch.corrcoef(X_masked.T)
@@ -192,7 +208,7 @@ def _spectral_perm_numpy(corr_np: np.ndarray, cfg: DictConfig) -> Tuple[List[int
             f"This is too large and would be slow/memory-intensive. "
             f"Consider using a faster clustering method or reducing `d_inner`."
         )
-        return best_perm, -1.0
+        return [], -1.0
 
     # build symmetric k‑NN affinity
     A = (corr_np + 1) / 2
@@ -460,7 +476,7 @@ def run_iasp_on_mamba(
             p_full[mask] = permuted_kept_indices
 
             # Bijectivity verification
-            if p_full.unique().numel() != p_full.numel():
+            if not p_full.float().histc(bins=p_full.numel()).eq(1).all():
                 raise ValueError(f"Non-bijective permutation generated for layer {layer_name}")
 
             # Final permutation: gate is identity, value is permuted
@@ -585,7 +601,13 @@ def run_iasp_on_bert(
     logger.info(f"IASP for BERT finished. Applied {applied_count} permutations with average modularity: {avg_q:.4f}")
 
     if not last_perm:
-        d_ffn = model.config.intermediate_size
+        try:
+            # Read d_ffn from the model's actual layer shape for robustness
+            first_layer = model.get_submodule(target_layers[0])
+            d_ffn = first_layer.weight.size(0)
+        except (IndexError, AttributeError):
+            # Fallback for safety
+            d_ffn = model.config.intermediate_size
         return list(range(d_ffn)), avg_q
         
     return last_perm, avg_q
