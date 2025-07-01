@@ -225,23 +225,35 @@ def get_model_and_data(cfg: DictConfig):
         
         seq_len = cfg.dataset.get("seq_len", 512)
         stride = cfg.dataset.get("stride", seq_len // 2)
+        
+        # Calculate reasonable buffer and batch sizes for performance
+        batch_size = cfg.dataset.get("batch_size", 8)
+        # Ensure batch size is at least 4 for reasonable GPU utilization
+        batch_size = max(4, batch_size)
+        # Set a larger buffer for higher throughput
+        buffer_size = cfg.dataset.get("buffer_size", max(65536, seq_len * 4))
 
         streaming_dataset = StreamingSlidingWindowDataset(
             hf_dataset=hf_iterable_dataset,
             tokenizer=tokenizer,
             seq_len=seq_len,
             stride=stride,
+            buffer_size=buffer_size,
             max_samples=cfg.iasp.get("max_samples", None)
         )
         
-        # DataLoader tuning for IterableDataset. num_workers must be 0.
+        # DataLoader tuning for IterableDataset
+        # For streaming datasets, we can parallelize tokenization
+        # with a worker that pre-fetches and tokenizes data
         dl_kwargs = dict(
-            batch_size=cfg.dataset.batch_size,
+            batch_size=batch_size,
             collate_fn=lm_collate,
-            num_workers=0, # Must be 0 for this implementation of IterableDataset
+            num_workers=0,  # Must be 0 for this implementation
+            pin_memory=True,  # Use pinned memory for faster CPU->GPU transfer
         )
         
         data_loader = DataLoader(streaming_dataset, **dl_kwargs)
+        logger.info(f"Created language modeling DataLoader with batch_size={batch_size}")
         # In streaming mode, there's no separate text-only dataset to return.
         return model, tokenizer, data_loader, None
 
