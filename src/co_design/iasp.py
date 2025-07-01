@@ -29,6 +29,7 @@ from __future__ import annotations
 import fnmatch
 import logging
 import os
+import hashlib
 from types import SimpleNamespace
 from typing import Iterable, List, Tuple, Union
 
@@ -46,6 +47,16 @@ from sklearn.cluster import SpectralClustering
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
+# IASP 2.0 specific imports
+try:
+    import faiss
+    import community as community_louvain
+    import igraph as ig
+    FAISS_LOUVAIN_AVAILABLE = True
+except ImportError:
+    FAISS_LOUVAIN_AVAILABLE = False
+    faiss = community_louvain = ig = None # for type checkers
+
 from .modularity import calculate_modularity
 from utils.permutation import (
     alias_free_rows_slice,
@@ -54,6 +65,9 @@ from utils.permutation import (
     inplace_permute_in_proj_split,
     inplace_permute_rows,
     inplace_permute_vector,
+    safe_permute_rows,
+    safe_permute_cols,
+    safe_permute_vector,
 )
 
 # ---------------------------------------------------------------------------
@@ -74,10 +88,23 @@ DEFAULTS = SimpleNamespace(
     knn_k=128,
     cluster_size_range=(32, 128),  # (min, max) cluster size
     permute_gate=False,
-        spectral_n_init=10,
-        spectral_random_state=42,
+    spectral_n_init=10,
+    spectral_random_state=42,
     min_cluster_size=2,
+    cluster_algo="auto",
+    max_dim_for_spectral=4096,
 )
+
+# ---------------------------------------------------------------------------
+# IASP 2.0 Helpers
+# ---------------------------------------------------------------------------
+
+def _get_param_sha1(param: torch.Tensor) -> str:
+    """Computes SHA1 hash of a tensor's data to verify integrity."""
+    if not isinstance(param, torch.Tensor):
+        param = param.data
+    return hashlib.sha1(param.cpu().numpy().tobytes()).hexdigest()
+
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -194,6 +221,52 @@ def _collect_layer_corr(
     return corr, mask
 
 
+def _louvain_perm_numpy(corr_np: np.ndarray, cfg: DictConfig) -> Tuple[List[int], float]:
+    """
+    Computes permutation using Faiss for k-NN graph and Louvain for clustering.
+    This is significantly faster and more memory-efficient for large dimensions.
+    """
+    if not FAISS_LOUVAIN_AVAILABLE:
+        raise ImportError("Faiss and python-louvain are required for 'louvain' clustering.")
+
+    dim = corr_np.shape[0]
+    
+    # 1. Embed correlation matrix into vectors using Cholesky factorization
+    # This avoids storing the full dim x dim affinity matrix in Faiss
+    try:
+        # Add a small epsilon for numerical stability
+        vectors = np.linalg.cholesky(corr_np + np.eye(dim) * 1e-5).astype('float32')
+    except np.linalg.LinAlgError:
+        logger.warning("Cholesky decomposition failed; falling back to using affinity matrix directly.")
+        vectors = (corr_np + 1) / 2
+        
+    # 2. Build a memory-efficient k-NN graph index (HNSW)
+    k = min(cfg.get("knn_k", DEFAULTS.knn_k), dim - 1)
+    index = faiss.IndexHNSWFlat(dim, 32) # Using HNSW for better memory/speed trade-off
+    index.add(vectors.astype(np.float32))
+    _, I = index.search(vectors.astype(np.float32), k + 1)
+
+    # 3. Convert to igraph for Louvain, pruning low-weight edges
+    A = (corr_np + 1) / 2
+    edges = [
+        (i, j, float(A[i,j])) for i in range(dim)
+        for j in I[i,1:] if i < j and A[i,j] > 1e-3
+    ]
+    g = ig.Graph.TupleList(edges, weights=True, directed=False)
+    
+    # 4. Run Louvain community detection
+    random_state = cfg.get("spectral_random_state", DEFAULTS.spectral_random_state)
+    partition = community_louvain.best_partition(g, weight='weight', random_state=random_state)
+    labels = np.array([partition[i] for i in range(dim)])
+    
+    # 5. Create permutation from community labels and calculate modularity
+    perm = np.argsort(labels)
+    parts = [np.where(labels == j)[0] for j in range(labels.max() + 1)]
+    q = calculate_modularity(corr_np, parts)
+
+    return perm.tolist(), q
+
+
 def _spectral_perm_numpy(corr_np: np.ndarray, cfg: DictConfig) -> Tuple[List[int], float]:
     """Return permutation list & modularity score. (NumPy/CPU version)"""
     dim = corr_np.shape[0]
@@ -201,15 +274,8 @@ def _spectral_perm_numpy(corr_np: np.ndarray, cfg: DictConfig) -> Tuple[List[int
 
     # Guardrail: Skip spectral clustering for dimensions that are too large,
     # as it's O(D^3) and will likely cause OOM or timeout.
-    max_dim_spectral = cfg.get("max_dim_for_spectral", 4096)
-    if dim > max_dim_spectral:
-        logger.warning(
-            f"Skipping spectral clustering for dim={dim} (>{max_dim_spectral}). "
-            f"This is too large and would be slow/memory-intensive. "
-            f"Consider using a faster clustering method or reducing `d_inner`."
-        )
-        return [], -1.0
-
+    # NOTE: This check is now handled by the dispatcher `_cluster_and_permute`.
+    
     # build symmetric k‑NN affinity
     A = (corr_np + 1) / 2
     
@@ -242,8 +308,8 @@ def _spectral_perm_numpy(corr_np: np.ndarray, cfg: DictConfig) -> Tuple[List[int
             labels = SpectralClustering(
                 n_clusters=n_cl,
                 affinity="precomputed",
-                n_init=cfg.spectral_n_init,
-                random_state=cfg.spectral_random_state,
+                n_init=cfg.get("spectral_n_init", DEFAULTS.spectral_n_init),
+                random_state=cfg.get("spectral_random_state", DEFAULTS.spectral_random_state),
                 assign_labels="kmeans",
             ).fit_predict(A)
         except LinAlgError:
@@ -256,6 +322,37 @@ def _spectral_perm_numpy(corr_np: np.ndarray, cfg: DictConfig) -> Tuple[List[int
     return best_perm, best_q
 
 
+def _cluster_and_permute(corr_np: np.ndarray, cfg: DictConfig) -> Tuple[List[int], float]:
+    """
+    Dispatcher: automatically selects the best clustering algorithm.
+    """
+    dim = corr_np.shape[0]
+    cluster_algo = cfg.get("cluster_algo", DEFAULTS.cluster_algo)
+    
+    # Auto-select algorithm based on dimension
+    if cluster_algo == "auto":
+        max_dim_spectral = cfg.get("max_dim_for_spectral", DEFAULTS.max_dim_for_spectral)
+        if dim > max_dim_spectral:
+            if not FAISS_LOUVAIN_AVAILABLE:
+                logger.warning(
+                    f"dim={dim} > {max_dim_spectral}, but Faiss/Louvain not installed. "
+                    "Skipping permutation. Install with: `pip install faiss-cpu python-louvain`"
+                )
+                return [], -1.0
+            logger.info(f"Dimension ({dim}) is large, using fast Faiss+Louvain clustering.")
+            cluster_algo = "louvain"
+        else:
+            cluster_algo = "spectral"
+
+    logger.info(f"Using '{cluster_algo}' clustering for dim={dim}.")
+    if cluster_algo == "spectral":
+        return _spectral_perm_numpy(corr_np, cfg)
+    elif cluster_algo == "louvain":
+        return _louvain_perm_numpy(corr_np, cfg)
+    else:
+        raise ValueError(f"Unknown clustering algorithm: '{cluster_algo}'")
+
+
 def _spectral_perm(*args, **kwargs):
     raise NotImplementedError("This function is deprecated. Call _spectral_perm_numpy")
 
@@ -263,120 +360,50 @@ def _spectral_perm(*args, **kwargs):
 # permutation application
 # ---------------------------------------------------------------------------
 
-def _permute_module_generic(
-    mod: nn.Module,
-    p_val: torch.Tensor,
-    p_inv_val: torch.Tensor,
-    p_full: torch.Tensor,
-    p_inv_full: torch.Tensor,
-):
+def _apply_perm_to_mixer(mixer: nn.Module, p_val: torch.Tensor):
+    """
+    Safely applies value-path permutations to a Mamba-style mixer block
+    using out-of-place tensor reconstruction.
+    """
     d_val = p_val.numel()
-    d_full = p_full.numel()
-    for _, param in mod.named_parameters(recurse=False):
-        if param.ndim == 1:
-            if param.numel() == d_val:
-                    inplace_permute_vector(param, p_val)
-            elif param.numel() == d_full:
-                    inplace_permute_vector(param, p_full)
-        elif param.ndim == 2:
-            r, c = param.shape
-            if r == d_val:
-                inplace_permute_rows(param, p_val)
-            if c == d_val:
-                inplace_permute_cols(param, p_inv_val)
-            if c == d_full:
-                inplace_permute_cols(param, p_inv_full)
-        elif param.ndim == 3 and param.shape[0] == d_val:
-            flat = param.data.view(d_val, -1).index_select(0, p_val)
-            param.data.copy_(flat.view_as(param))
-
-
-def _apply_perm_to_mixer(mixer: nn.Module, p_full: torch.Tensor):
-    d_full = p_full.numel()
-    d_val = d_full // 2
-    p_gate, p_val = p_full.split(d_val)
     p_inv_val = torch.argsort(p_val)
-    p_inv_full = torch.argsort(p_full)
 
-    # --- in_proj ---
-    # weight shape: [2*d_val, d_model], bias shape: [2*d_val]
-    # First half of output channels is gate, second is value.
-    alias_free_rows_slice(mixer.in_proj.weight, p_gate, 0, d_val)
-    alias_free_rows_slice(mixer.in_proj.weight, p_val, d_val, 2 * d_val)
-    if mixer.in_proj.bias is not None:
-        alias_free_vector_slice(mixer.in_proj.bias, p_gate, 0, d_val)
-        alias_free_vector_slice(mixer.in_proj.bias, p_val, d_val, 2 * d_val)
+    # --- 1. in_proj (Gate and Value) ---
+    # Reconstruct the weight and bias tensors out-of-place
+    with torch.no_grad():
+        gate_w, val_w_orig = mixer.in_proj.weight.data.split(d_val)
+        val_w_permuted = val_w_orig.index_select(0, p_val)
+        mixer.in_proj.weight.data = torch.cat([gate_w, val_w_permuted], dim=0)
 
-    # SSM / dt_proj
-    if getattr(mixer, "A_log", None) is not None and mixer.A_log.size(0) == d_val:
-        inplace_permute_rows(mixer.A_log, p_val)
-    if getattr(mixer, "D", None) is not None and mixer.D.numel() == d_val:
-        inplace_permute_vector(mixer.D, p_val)
+        if mixer.in_proj.bias is not None:
+            gate_b, val_b_orig = mixer.in_proj.bias.data.split(d_val)
+            val_b_permuted = val_b_orig.index_select(0, p_val)
+            mixer.in_proj.bias.data = torch.cat([gate_b, val_b_permuted], dim=0)
+
+    # --- 2. SSM Parameters (A_log, D, dt_proj) ---
+    if hasattr(mixer, "A_log") and mixer.A_log is not None and mixer.A_log.size(0) == d_val:
+        safe_permute_rows(mixer.A_log, p_val)
+    if hasattr(mixer, "D") and mixer.D is not None and mixer.D.numel() == d_val:
+        safe_permute_vector(mixer.D, p_val)
     if hasattr(mixer, "dt_proj"):
         if getattr(mixer.dt_proj, "weight", None) is not None and mixer.dt_proj.weight.numel() == d_val:
-            inplace_permute_vector(mixer.dt_proj.weight, p_val)
+            safe_permute_vector(mixer.dt_proj.weight, p_val)
         if getattr(mixer.dt_proj, "bias", None) is not None and mixer.dt_proj.bias.numel() == d_val:
-            inplace_permute_vector(mixer.dt_proj.bias, p_val)
+            safe_permute_vector(mixer.dt_proj.bias, p_val)
 
-    # children except specials
-    specials = {"conv1d", "conv1d_proj", "x_proj", "out_proj"}
-    for n, child in mixer.named_children():
-        if n in specials:
-            continue
-        _permute_module_generic(child, p_val, p_inv_val, p_full, p_inv_full)
+    # --- 3. Convolution (conv1d) ---
+    if hasattr(mixer, "conv1d"):
+        conv = mixer.conv1d
+        # Permute output channels (rows) of the convolution's weight and bias
+        safe_permute_rows(conv.weight, p_val)
+        if conv.bias is not None:
+            safe_permute_vector(conv.bias, p_val)
 
-    # conv variations
-    for cname in ("conv1d", "conv1d_proj"):
-        if not hasattr(mixer, cname):
-            continue
-        conv = getattr(mixer, cname)
-        if hasattr(conv, "weight_v") and conv.weight_v.size(0) == d_val:
-            assert conv.weight_v.shape[1] in (d_val, d_full), (
-                f"Unexpected shape for {cname}.weight_v: {conv.weight_v.shape}"
-            )
-            inplace_permute_rows(conv.weight_v, p_val)
-            if conv.weight_v.size(1) == d_full:
-                inplace_permute_cols(conv.weight_v, p_inv_full)
-        if hasattr(conv, "weight_g") and conv.weight_g.numel() == d_val:
-            inplace_permute_vector(conv.weight_g, p_val)
-        if getattr(conv, "bias", None) is not None and conv.bias.numel() == d_val:
-            inplace_permute_vector(conv.bias, p_val)
+    # --- 4. out_proj ---
+    # Permute input channels (columns) of the output projection
+    safe_permute_cols(mixer.out_proj.weight, p_inv_val)
+    # Bias of out_proj is not affected.
 
-    # x_proj can have multiple configurations
-    w = mixer.x_proj.weight
-    if w.size(0) == 2 * d_val:
-        # This case is ambiguous, but we assume the two outputs are gate/value
-        alias_free_rows_slice(w, p_gate, 0, d_val)
-        alias_free_rows_slice(w, p_val, d_val, 2 * d_val)
-    elif w.size(0) == d_val:
-        inplace_permute_rows(w, p_val)
-    
-    # Correctly handle input permutations
-    if w.size(1) == d_full:
-        inplace_permute_cols(w, p_inv_full)
-    elif w.size(1) == d_val:
-        inplace_permute_cols(w, p_inv_val)
-
-    # Correctly handle gate/value split in bias
-    if mixer.x_proj.bias is not None:
-        if mixer.x_proj.bias.numel() == 2 * d_val:
-            bias_as_rows = mixer.x_proj.bias.view(2, d_val)
-            # Permute value bias (row 1)
-            inplace_permute_vector(bias_as_rows[1], p_val)
-            # Gate bias (row 0) should remain identity, so no-op.
-        elif mixer.x_proj.bias.numel() == d_val:
-            # If bias is only d_val, assume it's for the value path
-            inplace_permute_vector(mixer.x_proj.bias, p_val)
-
-    # out_proj columns
-    if mixer.out_proj.weight.size(1) == d_full:
-        inplace_permute_cols(mixer.out_proj.weight, p_inv_full)
-    elif mixer.out_proj.weight.size(1) == d_val:
-        inplace_permute_cols(mixer.out_proj.weight, p_inv_val)
-
-# ---------------------------------------------------------------------------
-# public API
-# ---------------------------------------------------------------------------
 
 def run_iasp_on_mamba(
     model: nn.Module,
@@ -384,24 +411,18 @@ def run_iasp_on_mamba(
     cfg: DictConfig,
 ) -> Tuple[List[int], float]:
     """
-    Apply layer-wise IASP to a Mamba model.
-
-    This version uses a safe GPU-serial, CPU-parallel pipeline:
-    1. Serially collect all correlation matrices on the GPU.
-    2. In parallel on the CPU, run spectral clustering on each matrix.
-    3. Serially apply the resulting permutations back on the GPU.
+    Apply layer-wise IASP 2.0 to a Mamba model.
     """
     device = next(model.parameters()).device
-    permute_gate = bool(cfg.get("permute_gate", False))
-    if permute_gate:
+    if cfg.get("permute_gate", False):
         raise NotImplementedError(
-            "Gate permutation is currently unsupported for Mamba models "
-            "as it typically harms perplexity."
+            "IASP 2.0 design explicitly forbids gate permutation for safety. "
+            "Use the experimental `gate_sparsity` flag if needed."
         )
 
-    # Get config params with defaults
+    # Get config params with IASP 2.0 defaults
     n_jobs = cfg.get("jobs", 1)
-    modularity_skip_threshold = cfg.get("modularity_skip_threshold", 0.0)
+    min_modularity = cfg.get("min_modularity", 0.0)
     
     # Add a fallback for target_layers and ensure it's not empty
     target_layers = _expand_wildcard(model, cfg.get("target_layers") or "*.in_proj")
@@ -415,31 +436,26 @@ def run_iasp_on_mamba(
         try:
             corr_gpu, mask = _collect_layer_corr(
                 model, dataloader, layer_name,
-                max_samples=cfg.max_samples, stride=cfg.sample_stride
+                max_samples=cfg.get("max_samples", DEFAULTS.max_samples),
+                stride=cfg.get("sample_stride", DEFAULTS.sample_stride),
             )
             # Move to CPU for parallel processing. corr_gpu is already float32.
-            corr_np = corr_gpu.cpu().numpy()
-            corr_data[layer_name] = (corr_np, mask)
+            if corr_gpu.numel() > 0:
+                corr_np = corr_gpu.cpu().numpy()
+                corr_data[layer_name] = (corr_np, mask)
         except Exception as e:
             logger.error(f"Failed to collect correlation for {layer_name}: {e}")
             corr_data[layer_name] = None
 
-    # --- 2. Parallel CPU pass: Spectral Clustering ---
-    def _run_spectral_for_layer(data):
-        if data is None:
-            return None, -1.0
-        corr_np, _ = data
-        return _spectral_perm_numpy(corr_np, cfg)
-
+    # --- 2. Parallel CPU pass: Clustering ---
     layer_names = list(corr_data.keys())
-    spectral_inputs = [corr_data[name] for name in layer_names]
+    clustering_inputs = [corr_data[name][0] for name in layer_names if corr_data[name] is not None]
     
-    logger.info(f"Running spectral clustering for {len(spectral_inputs)} matrices using {n_jobs} parallel jobs (CPU)...")
-    # Use 'threading' backend for GIL-releasing libraries like NumPy
-    # to avoid the massive memory overhead of 'loky' (process-based).
+    logger.info(f"Running clustering for {len(clustering_inputs)} matrices using {n_jobs} parallel jobs (CPU)...")
+    # Use 'threading' backend for GIL-releasing libraries like NumPy/Faiss
     with joblib.parallel_backend("threading"):
         results = Parallel(n_jobs=n_jobs)(
-            delayed(_run_spectral_for_layer)(inp) for inp in tqdm(spectral_inputs, desc="Spectral clustering")
+            delayed(_cluster_and_permute)(inp, cfg) for inp in tqdm(clustering_inputs, desc="Clustering")
         )
     
     # --- 3. Serial GPU pass: Apply permutations ---
@@ -454,19 +470,22 @@ def run_iasp_on_mamba(
             continue
     
         all_q_scores.append(q)
-        logger.info(f"Layer {layer_name}: modularity={q:.4f}, permutation found={bool(perm_masked and q > modularity_skip_threshold)}")
-        if q < modularity_skip_threshold:
+        logger.info(f"Layer {layer_name}: modularity={q:.4f}")
+        if q < min_modularity:
+            logger.info(f"  -> Skipping permutation, modularity is below threshold ({min_modularity}).")
             continue
 
         try:
             _, mask = corr_data[layer_name]
             
-            # --- Verification Setup ---
+            # --- Gate Safety & Verification ---
             parent_name = layer_name.rsplit('.', 1)[0]
             mixer = model.get_submodule(parent_name)
             d_inner_full = mask.size(0)
-            # Make a copy of the original gate weights for verification
-            orig_gate_weight = mixer.in_proj.weight[:d_inner_full].clone()
+            
+            # Store hash of gate weights BEFORE permutation
+            gate_weight = mixer.in_proj.weight[:d_inner_full]
+            gate_hash_before = _get_param_sha1(gate_weight)
             
             # Project masked permutation back to the original dimension
             p_full = torch.arange(d_inner_full, device=device)
@@ -475,26 +494,23 @@ def run_iasp_on_mamba(
             permuted_kept_indices = kept_indices[p_masked_tensor]
             p_full[mask] = permuted_kept_indices
 
-            # Bijectivity verification
-            if not p_full.float().histc(bins=p_full.numel()).eq(1).all():
+            # Bijectivity verification - reverted to safer unique() check
+            if p_full.unique().numel() != p_full.numel():
                 raise ValueError(f"Non-bijective permutation generated for layer {layer_name}")
 
-            # Final permutation: gate is identity, value is permuted
-            # p_full must be 0-based as _apply_perm_to_mixer handles slicing offsets.
-            p_final = torch.cat([
-                torch.arange(d_inner_full, device=device), # gate (identity)
-                p_full                                     # value (permuted, 0-based)
-            ])
-            
-            # Apply permutation
-            _apply_perm_to_mixer(mixer, p_final)
+            # Apply permutation using the safe, out-of-place function
+            _apply_perm_to_mixer(mixer, p_full)
 
             # --- Verification Step ---
-            assert torch.allclose(
-                mixer.in_proj.weight[:d_inner_full], orig_gate_weight, atol=1e-6
-            ), f"Gate weights mutated for layer {layer_name}!"
+            gate_hash_after = _get_param_sha1(mixer.in_proj.weight[:d_inner_full])
+            if gate_hash_before != gate_hash_after:
+                raise RuntimeError(
+                    f"FATAL: Gate weights were modified for layer {layer_name} "
+                    f"despite safety checks! Hash before: {gate_hash_before}, "
+                    f"hash after: {gate_hash_after}"
+                )
 
-            logger.info(f"Applied permutation to {layer_name} with modularity {q:.4f}")
+            logger.info(f"  -> Applied permutation. Gate preserved (SHA1: {gate_hash_after[:8]}).")
             last_perm = p_full.cpu().tolist() # Save the most recent valid perm
         
         except Exception as e:
@@ -531,12 +547,12 @@ def _apply_perm_to_bert_ffn(
         output_layer_name = intermediate_layer_name.replace("intermediate.dense", "output.dense")
         down_proj = model.get_submodule(output_layer_name)
 
-        # Permute columns of the first dense layer (up-projection)
-        inplace_permute_cols(up_proj.weight, p_inv)
-        inplace_permute_vector(up_proj.bias, p_inv)
+        # Permute columns of the first dense layer (up-projection) using safe methods
+        safe_permute_cols(up_proj.weight, p_inv)
+        safe_permute_vector(up_proj.bias, p_inv)
         
         # Permute rows of the second dense layer (down-projection)
-        inplace_permute_rows(down_proj.weight, p)
+        safe_permute_rows(down_proj.weight, p)
         # The bias of the down-projection is not permuted.
 
 
@@ -557,7 +573,7 @@ def run_iasp_on_bert(
         raise ValueError("IASP on BERT requires 'target_layers' to be specified, e.g., '*.intermediate.dense'.")
     
     n_jobs = cfg.get("jobs", 1)
-    modularity_skip_threshold = cfg.get("modularity_skip_threshold", 0.0)
+    min_modularity = cfg.get("min_modularity", 0.0)
     logger.info(f"Starting IASP for {len(target_layers)} BERT FFN layers.")
 
     total_q = 0.0
@@ -572,8 +588,8 @@ def run_iasp_on_bert(
                 model,
                 dataloader,
                 layer_name,
-                max_samples=cfg.max_samples,
-                stride=cfg.sample_stride,
+                max_samples=cfg.get("max_samples", DEFAULTS.max_samples),
+                stride=cfg.get("sample_stride", DEFAULTS.sample_stride),
             )
             
             # The mask should be all True for BERT FFNs, but we check just in case.
@@ -581,16 +597,16 @@ def run_iasp_on_bert(
                 logger.warning(f"Layer {layer_name} has dead neurons. Skipping permutation.")
                 continue
 
-            # 2. Run spectral clustering
+            # 2. Run clustering
             corr_np = corr_gpu.cpu().numpy()
-            perm, q = _spectral_perm_numpy(corr_np, cfg)
+            perm, q = _cluster_and_permute(corr_np, cfg)
 
-            logger.info(f"Layer {layer_name}: modularity={q:.4f}, permutation found={bool(perm and q > modularity_skip_threshold)}")
+            logger.info(f"Layer {layer_name}: modularity={q:.4f}")
 
             # 3. Apply permutation if it's good enough
-            if perm and q > modularity_skip_threshold:
+            if perm and q > min_modularity:
                 _apply_perm_to_bert_ffn(model, perm, [layer_name])
-                logger.info(f"Applied permutation to {layer_name} with modularity {q:.4f}")
+                logger.info(f"  -> Applied permutation with modularity {q:.4f}")
                 total_q += q
                 applied_count += 1
                 last_perm = perm

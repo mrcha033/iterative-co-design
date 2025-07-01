@@ -4,5 +4,9 @@ subset: "wikitext-103-raw-v1"
 path: "wikitext"
 text_column: "text"
 sample_size: 50
-batch_size: 4
-learning_rate: 1.0e-5 
+batch_size: 8
+learning_rate: 1.0e-5
+metric_type: "perplexity"
+seq_len: 512
+stride: 256
+eval_split: "test"

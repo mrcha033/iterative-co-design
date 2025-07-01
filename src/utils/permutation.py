@@ -5,8 +5,42 @@ to model parameters.
 import torch
 import torch.nn as nn
 from typing import Optional, Union
+from torch.nn import Parameter
 
-TensorOrParameter = Union[torch.Tensor, nn.Parameter]
+TensorOrParameter = torch.Tensor | Parameter
+
+# ---------------------------------------------------------------------------
+# Safe, Out-of-Place Permutation Utilities (IASP 2.0)
+# These functions create a new tensor and re-assign .data to avoid
+# aliasing issues with in-place operations on slices.
+# ---------------------------------------------------------------------------
+
+def safe_permute_rows(param: TensorOrParameter, idx: torch.Tensor):
+    """Safely permutes rows of a 2D tensor out-of-place."""
+    assert param.ndim == 2, "Input must be a 2D tensor."
+    device = param.device
+    p_safe = idx.to(device)
+    param.data = param.data.index_select(0, p_safe).contiguous()
+
+def safe_permute_cols(param: TensorOrParameter, idx: torch.Tensor):
+    """Safely permutes columns of a 2D tensor out-of-place."""
+    assert param.ndim == 2, "Input must be a 2D tensor."
+    device = param.device
+    p_safe = idx.to(device)
+    param.data = param.data.index_select(1, p_safe).contiguous()
+
+def safe_permute_vector(param: TensorOrParameter, idx: torch.Tensor):
+    """Safely permutes elements of a 1D tensor out-of-place."""
+    assert param.ndim == 1, "Input must be a 1D tensor."
+    device = param.device
+    p_safe = idx.to(device)
+    param.data = param.data.index_select(0, p_safe).contiguous()
+
+
+# ---------------------------------------------------------------------------
+# In-place Permutation Utilities (Legacy)
+# Kept for reference or for contexts where aliasing is not a concern.
+# ---------------------------------------------------------------------------
 
 def inplace_permute_rows(param: TensorOrParameter, idx: torch.Tensor):
     """Alias-free, in-place permutation of a parameter's rows (dim 0)."""
