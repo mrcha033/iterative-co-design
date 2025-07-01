@@ -84,7 +84,7 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 DEFAULTS = SimpleNamespace(
-    max_samples=1_024,
+    max_samples=8_192,
     sample_stride=2,
     knn_k=128,
     cluster_size_range=(32, 128),  # (min, max) cluster size
@@ -234,7 +234,7 @@ def _louvain_perm_numpy(corr_np: np.ndarray, cfg: DictConfig) -> Tuple[List[int]
     
     # 1. Embed correlation matrix into low-dim vectors using Randomized SVD
     # This avoids the O(D^2) memory of Cholesky on the full correlation matrix.
-    n_components = cfg.get("svd_components", 256)
+    n_components = min(cfg.get("svd_components", 256), dim // 4 or 1, dim)
     U, S, _ = randomized_svd(
         corr_np, n_components=n_components, random_state=cfg.get("spectral_random_state", 42)
     )
@@ -257,10 +257,9 @@ def _louvain_perm_numpy(corr_np: np.ndarray, cfg: DictConfig) -> Tuple[List[int]
     ]
     g = ig.Graph.TupleList(edges, weights=True, directed=False)
     
-    # 4. Run Louvain community detection
-    random_state = cfg.get("spectral_random_state", DEFAULTS.spectral_random_state)
-    partition = community_louvain.best_partition(g, weight='weight', random_state=random_state)
-    labels = np.array([partition[i] for i in range(dim)])
+    # 4. Run Louvain community detection using igraph's native implementation
+    # This is more efficient and avoids TypeError from community_louvain expecting a networkx graph.
+    labels = np.array(g.community_multilevel(weights='weight').membership)
     
     # 5. Create permutation from community labels and calculate modularity
     perm = np.argsort(labels)

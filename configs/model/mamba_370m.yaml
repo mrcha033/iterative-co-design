@@ -10,10 +10,10 @@ d_inner: 2048
 iasp:
   # Wildcard pattern for layers to apply IASP.
   # For Mamba, we target the main input projection.
-  target_layers: "backbone.layers.*.mixer.in_proj"
+  target_layers: ["backbone.layers.*.mixer.in_proj"]
   cluster_size_range: [64, 256]
-  max_samples: 8192 # Reduced from 65k for speed
-  sample_stride: 4
+  max_samples: 8192
+  sample_stride: 1
   knn_k: 128
   spectral_n_init: 10
   spectral_random_state: 42
