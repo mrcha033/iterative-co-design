@@ -84,7 +84,7 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 DEFAULTS = SimpleNamespace(
-    max_samples=8_192,
+    max_samples=2_048,
     sample_stride=2,
     knn_k=128,
     cluster_size_range=(32, 128),  # (min, max) cluster size
@@ -101,10 +101,15 @@ DEFAULTS = SimpleNamespace(
 # ---------------------------------------------------------------------------
 
 def _get_param_sha1(param: torch.Tensor) -> str:
-    """Computes SHA1 hash of a tensor's data to verify integrity."""
+    """
+    Computes SHA1 hash of a tensor's data to verify integrity.
+
+    Uses .detach() to avoid gradient tracking, .cpu() to move to host,
+    and .numpy() to convert to raw bytes.
+    """
     if not isinstance(param, torch.Tensor):
-        param = param.data
-    return hashlib.sha1(param.cpu().numpy().tobytes()).hexdigest()
+        param = torch.as_tensor(param)
+    return hashlib.sha1(param.detach().cpu().numpy().tobytes()).hexdigest()
 
 
 # ---------------------------------------------------------------------------
