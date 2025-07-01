@@ -5,11 +5,15 @@ Implements Task 1.3 from tasks.md.
 
 import yaml
 from pathlib import Path
-from typing import Dict, Any, Union, List, Optional
+from typing import Dict, Any, Union, List, Optional, Type, TypeVar
+from dataclasses import dataclass, field, asdict, is_dataclass
 from omegaconf import DictConfig, OmegaConf
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Type variable for generic dataclass types
+T = TypeVar('T')
 
 
 def load_yaml_config(config_path: Union[str, Path]) -> Dict[str, Any]:
@@ -251,3 +255,131 @@ def load_config(config_path: Union[str, Path]) -> Dict[str, Any]:
         Dictionary containing the configuration data
     """
     return load_yaml_config(config_path)
+
+
+# === Structured Configuration Extensions ===
+
+@dataclass
+class IaspConfig:
+    """IO-Aware Scan Permutation configuration."""
+    
+    # Target layer patterns (required, with model-specific defaults)
+    target_layers: Optional[List[str]] = None
+    
+    # Clustering parameters
+    max_samples: int = 4096
+    sample_stride: int = 2
+    knn_k: int = 128
+    cluster_size_range: List[int] = field(default_factory=lambda: [16, 128])
+    
+    # Performance tuning
+    jobs: int = 1
+    gpu_spectral: bool = True
+    modularity_skip_threshold: float = 0.01
+    
+    # Spectral clustering parameters
+    spectral_n_init: int = 10
+    spectral_random_state: int = 42
+    
+    def __post_init__(self):
+        """Apply model-family specific defaults if target_layers is None."""
+        if self.target_layers is None:
+            # Default will be applied at runtime based on model family
+            pass
+
+
+@dataclass
+class HdsConfig:
+    """Hardware-Native Differentiable Sparsity configuration."""
+    
+    # Target layers for sparsification
+    target_layers: List[str] = field(default_factory=list)
+    
+    # N:M sparsity parameters
+    n: int = 2
+    m: int = 4
+    
+    # Fine-tuning parameters
+    fine_tuning_epochs: int = 1
+    learning_rate: float = 0.0001
+    
+    # Layout-aware parameters
+    layout_aware_lambda: float = 0.01
+    penalty_fn: str = "inverse"
+
+
+def initialize_structured_configs():
+    """
+    Register all dataclass schemas with OmegaConf.
+    Call this before Hydra initialization.
+    """
+    OmegaConf.register_resolver("get_default_target_layers", get_default_target_layers)
+    
+    # Register structured configs
+    OmegaConf.register_structure(IaspConfig)
+    OmegaConf.register_structure(HdsConfig)
+
+
+def config_to_dataclass(config: Union[Dict[str, Any], DictConfig], dataclass_type: Type[T]) -> T:
+    """
+    Convert a config dictionary or DictConfig to a dataclass instance with proper defaults.
+    
+    Args:
+        config: Configuration as dict or DictConfig
+        dataclass_type: The target dataclass type
+        
+    Returns:
+        An instance of the dataclass type
+    """
+    if not is_dataclass(dataclass_type):
+        raise ValueError(f"{dataclass_type.__name__} is not a dataclass")
+    
+    # Convert DictConfig to dict if needed
+    if isinstance(config, DictConfig):
+        config_dict = OmegaConf.to_container(config, resolve=True)
+    else:
+        config_dict = config
+        
+    # Create an instance with defaults
+    default_instance = dataclass_type()
+    
+    # Merge with provided config
+    merged_config = {**asdict(default_instance), **config_dict}
+    
+    # Create new instance with merged values
+    return dataclass_type(**{k: v for k, v in merged_config.items() 
+                            if k in asdict(default_instance)})
+
+
+def create_iasp_config(cfg_dict: Optional[Dict[str, Any]] = None) -> IaspConfig:
+    """
+    Create an IaspConfig from a dictionary, with proper defaults.
+    
+    Args:
+        cfg_dict: Dictionary with IASP configuration values
+        
+    Returns:
+        IaspConfig instance with proper defaults
+    """
+    if cfg_dict is None:
+        return IaspConfig()
+    return config_to_dataclass(cfg_dict, IaspConfig)
+
+
+def get_default_target_layers(model_family: str) -> list:
+    """
+    Get the default target layers for a specific model family.
+    This can be used as a resolver in YAML configs.
+    
+    Args:
+        model_family: The model family (e.g., "mamba", "bert")
+        
+    Returns:
+        List of default target layer patterns
+    """
+    family_defaults = {
+        "mamba": ["backbone.layers.*.mixer.in_proj"],
+        "bert": ["*.intermediate.dense"],
+        # Add more model families as needed
+    }
+    return family_defaults.get(model_family, ["*.in_proj"])

@@ -405,13 +405,45 @@ def _run_iasp(model, data_loader, cfg) -> tuple[list[int], float]:
     family = detect_family(model)
     logger.info(f"Running IASP for model family: {family}")
 
-    # The `target_layers` parameter is now consistently defined in the `iasp` config
-    # block, which is populated from defaults.yaml and overridden by model-specific YAMLs.
+    # Get the IASP config and ensure target_layers exists with a fallback
     iasp_cfg = cfg.iasp
-    if not iasp_cfg.target_layers:
-        raise ValueError(
-            "IASP requires `iasp.target_layers` to be defined. Please set it in the model's config file."
-        )
+    
+    # Diagnostic logging to understand config structure at runtime
+    logger.info(f"IASP config keys: {list(iasp_cfg.keys()) if hasattr(iasp_cfg, 'keys') else 'No keys method'}")
+    logger.info(f"IASP config structure: {OmegaConf.to_container(iasp_cfg, resolve=True)}")
+    
+    # Convert to structured config if needed
+    try:
+        from src.utils.config import create_iasp_config
+        # Create a structured config with defaults from the current config
+        config_dict = OmegaConf.to_container(iasp_cfg, resolve=True)
+        
+        # Apply model family specific defaults for target_layers if missing
+        if not config_dict.get("target_layers"):
+            family_defaults = {
+                "mamba": ["backbone.layers.*.mixer.in_proj"],
+                "bert": ["*.intermediate.dense"],
+            }
+            default_pattern = family_defaults.get(family, ["*.in_proj"])
+            logger.info(f"Using model-specific default target_layers for {family}: {default_pattern}")
+            config_dict["target_layers"] = default_pattern
+            
+        # Create structured config
+        iasp_cfg = create_iasp_config(config_dict)
+        logger.info(f"Using structured config for IASP with target_layers: {iasp_cfg.target_layers}")
+    except (ImportError, AttributeError) as e:
+        # Fall back to dict-based approach if structured configs aren't available
+        logger.warning(f"Couldn't use structured config: {e}. Using dict-based approach.")
+        if not iasp_cfg.get("target_layers"):
+            family_defaults = {
+                "mamba": ["backbone.layers.*.mixer.in_proj"],
+                "bert": ["*.intermediate.dense"],
+            }
+            default_pattern = family_defaults.get(family, ["*.in_proj"])
+            logger.warning(
+                f"IASP configuration missing target_layers. Using default for {family}: {default_pattern}"
+            )
+            iasp_cfg = OmegaConf.merge(iasp_cfg, {"target_layers": default_pattern})
 
     if family == "mamba":
         return run_iasp_on_mamba(model, data_loader, iasp_cfg)
@@ -733,6 +765,14 @@ def check_gpu_headroom(required_gb: float = 4.0) -> bool:
 
 @hydra.main(config_name="config", version_base=None, config_path=os.getenv("HYDRA_CONFIG_PATH", "../configs"))
 def main(cfg: DictConfig):
+    # --- Initialize structured configs if available ---
+    try:
+        from src.utils.config import initialize_structured_configs
+        initialize_structured_configs()
+        logger.info("Initialized structured configuration system")
+    except ImportError:
+        logger.info("Structured configuration system not available")
+
     # --- Pre-run setup ---
     # Disable W&B if not explicitly enabled. Must be done before wandb is used.
     if not cfg.wandb.log:
