@@ -70,9 +70,10 @@ from utils.evaluation import calculate_task_metric
 from utils.profiler import LatencyProfiler
 from utils.cleanup import cleanup_old_runs
 from utils.input import make_dummy_input
-from co_design.iasp import run_iasp_on_mamba, run_iasp_on_bert
-from models.wrapper import ModelWrapper
-from co_design.hds import apply_hds, apply_layout_aware_hds_finetuning
+from src.co_design.iasp import run_iasp_on_mamba, run_iasp_on_bert
+from src.models.wrapper import ModelWrapper
+from src.co_design.hds import apply_hds
+from src.co_design.layout_aware import apply_layout_aware_hds_finetuning
 import logging
 from inspect import getmro
 
@@ -129,6 +130,11 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
                 add_special_tokens=False
             )["input_ids"]
 
+            # Skip documents that are shorter than the desired sequence length
+            # to prevent them from creating biased, repetitive samples.
+            if len(token_ids) < self.seq_len:
+                continue
+
             if len(token_ids) > self.seq_len:
                 start_index = rng.randint(0, len(token_ids) - self.seq_len)
                 buffer.extend(token_ids[start_index:])
@@ -150,9 +156,10 @@ def lm_collate(batch):
     """Custom collate function that creates labels for language modeling."""
     # Use default collator to stack tensors and handle padding
     collated_batch = default_data_collator(batch)
-    # Create labels by direct assignment (view) instead of clone to save memory.
-    # This is safe as the labels are not modified in-place before loss calculation.
-    collated_batch["labels"] = collated_batch["input_ids"]
+    # Create a detached clone for labels. This is the safest practice, as it
+    # prevents any potential in-place modifications to input_ids from affecting
+    # the labels during evaluation (e.g., in model.generate).
+    collated_batch["labels"] = collated_batch["input_ids"].clone().detach()
     return collated_batch
 
 

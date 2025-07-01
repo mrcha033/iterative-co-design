@@ -34,6 +34,7 @@ from typing import Iterable, List, Tuple, Union
 import numpy as np
 import torch
 import torch.nn as nn
+import joblib
 from joblib import Parallel, delayed
 from numpy.linalg import LinAlgError  # needed for SpectralClustering errors
 from omegaconf import DictConfig
@@ -420,9 +421,10 @@ def run_iasp_on_mamba(
     logger.info(f"Running spectral clustering for {len(spectral_inputs)} matrices using {n_jobs} parallel jobs (CPU)...")
     # Use 'threading' backend for GIL-releasing libraries like NumPy
     # to avoid the massive memory overhead of 'loky' (process-based).
-    results = Parallel(n_jobs=n_jobs, backend="threading")(
-        delayed(_run_spectral_for_layer)(inp) for inp in tqdm(spectral_inputs, desc="Spectral clustering")
-    )
+    with joblib.parallel_backend("threading"):
+        results = Parallel(n_jobs=n_jobs)(
+            delayed(_run_spectral_for_layer)(inp) for inp in tqdm(spectral_inputs, desc="Spectral clustering")
+        )
     
     # --- 3. Serial GPU pass: Apply permutations ---
     logger.info("Applying permutations to model layers (GPU)...")
