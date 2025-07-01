@@ -58,7 +58,7 @@ except ImportError:
     faiss = community_louvain = ig = None # for type checkers
 
 from .modularity import calculate_modularity
-from utils.permutation import (
+from src.utils.permutation import (
     alias_free_rows_slice,
     alias_free_vector_slice,
     inplace_permute_cols,
