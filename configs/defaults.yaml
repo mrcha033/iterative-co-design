@@ -14,7 +14,7 @@ experiment: null  # Set to "debug" for quick runs
 
 # Default dataset settings
 dataset:
-  max_eval_steps: 1000000 # Effectively infinite unless overridden for quick tests
+  max_eval_steps: 1000 # Reasonable number of steps for evaluation
 
 # Hardware-Native Differentiable Sparsity (HDS) Configuration
 hds:

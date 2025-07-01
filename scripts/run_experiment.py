@@ -108,7 +108,19 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
         self.max_samples = max_samples
         # Buffer size should be larger than seq_len
         self.buffer_size = max(buffer_size, seq_len * 2)
-
+    
+    def __len__(self):
+        """
+        Return estimated dataset length for progress bars.
+        For IterableDataset, this is just an estimate to help tqdm.
+        """
+        # If max_samples is set, use that as the length
+        if self.max_samples is not None:
+            return self.max_samples
+        
+        # Otherwise use a reasonable default that doesn't trigger extreme ETA estimates
+        return min(10000, max(1000, self.buffer_size))
+        
     def __iter__(self):
         # Correctly seed the random number generator for each worker for reproducibility.
         worker_info = torch.utils.data.get_worker_info()
