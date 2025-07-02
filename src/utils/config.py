@@ -327,14 +327,14 @@ def initialize_structured_configs():
     # Modern approach - directly create structured configs when needed
     # No global registration, as that's deprecated
     
-    # The resolver is also deprecated but still functional - will keep for now
-    # with a cleaner implementation
+    # Register resolver using the modern approach
     try:
-        # Try the new API (OmegaConf >= 2.1)
-        from omegaconf import register_resolver
+        # Modern approach (OmegaConf >= 2.1)
+        from omegaconf.resolvers import register_resolver
         register_resolver("get_default_target_layers", get_default_target_layers)
     except ImportError:
-        # Fall back to old API
+        # Fall back to old API for backward compatibility
+        from omegaconf import OmegaConf
         OmegaConf.register_resolver("get_default_target_layers", get_default_target_layers)
     
     logger.info("Structured config system initialized")
