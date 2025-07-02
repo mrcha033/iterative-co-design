@@ -11,4 +11,3 @@ seq_len: 512
 stride: 256
 max_samples_per_split: 4096
 eval_split: "test"
-max_eval_steps: 256

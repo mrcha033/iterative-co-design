@@ -108,6 +108,11 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
         self.max_samples = max_samples
         # Buffer size should be larger than seq_len
         self.buffer_size = max(buffer_size, seq_len * 2)
+        # For diagnostics
+        self.document_count = 0
+        self.total_tokens = 0
+        self.skipped_docs = 0
+        logger.info(f"Created StreamingSlidingWindowDataset with seq_len={seq_len}, stride={stride}, max_samples={max_samples}")
     
     def __len__(self):
         """
@@ -136,17 +141,22 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
         while self.max_samples is None or samples_yielded < self.max_samples:
             try:
                 sample = next(dataset_iterator)
+                self.document_count += 1
             except StopIteration:
+                logger.info(f"Dataset iterator exhausted after {self.document_count} documents, yielded {samples_yielded} samples")
                 if self.max_samples is not None:
                     # If the dataset is exhausted but we haven't met the sample count,
                     # restart the iterator to loop over the data again.
                     dataset_iterator = iter(self.hf_dataset)
+                    logger.info("Restarting dataset iterator to fulfill max_samples requirement")
                     continue
                 else:
                     # If no max_samples is set, just stop.
+                    logger.info(f"Stopping after processing {self.document_count} documents, yielded {samples_yielded} samples")
                     break
 
             if "text" not in sample or not sample["text"]:
+                self.skipped_docs += 1
                 continue
 
             # Truncate long documents to buffer_size and sample a random starting point
@@ -157,10 +167,13 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
                 max_length=self.buffer_size,
                 add_special_tokens=False
             )["input_ids"]
+            
+            self.total_tokens += len(token_ids)
 
             # Skip documents that are shorter than the desired sequence length
             # to prevent them from creating biased, repetitive samples.
             if len(token_ids) < self.seq_len:
+                self.skipped_docs += 1
                 continue
 
             if len(token_ids) > self.seq_len:
@@ -172,6 +185,7 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
             # Yield all complete windows from the current buffer
             while len(buffer) >= self.seq_len:
                 if self.max_samples is not None and samples_yielded >= self.max_samples:
+                    logger.info(f"Reached max_samples limit of {self.max_samples}")
                     return # Stop iteration once max_samples is reached
 
                 window_ids = [buffer[i] for i in range(self.seq_len)]
@@ -182,6 +196,13 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
                 for _ in range(self.stride):
                     if not buffer: break
                     buffer.popleft()
+        
+        # Log final statistics
+        if samples_yielded > 0:
+            logger.info(f"Dataset iteration complete: processed {self.document_count} documents ({self.skipped_docs} skipped) "
+                        f"with {self.total_tokens} tokens, yielded {samples_yielded} samples")
+            logger.info(f"Average tokens per document: {self.total_tokens / (self.document_count - self.skipped_docs):.1f}")
+            logger.info(f"Average samples per document: {samples_yielded / (self.document_count - self.skipped_docs):.1f}")
 
 
 def lm_collate(batch):
@@ -302,7 +323,19 @@ def get_model_and_data(cfg: DictConfig):
 def save_results(cfg: DictConfig, method: str, metrics: dict):
     output_dir = Path.cwd()
     results_file = output_dir / f"{method}_metrics.json"
+    
+    # Add metadata about evaluation settings
+    metrics["eval_config"] = {
+        "max_eval_steps_configured": cfg.dataset.get("max_eval_steps", 1000),
+        "dataset_name": cfg.dataset.name,
+        "dataset_subset": cfg.dataset.get("subset", None),
+        "batch_size": cfg.dataset.get("batch_size", 8),
+        "seq_len": cfg.dataset.get("seq_len", 512),
+        "stride": cfg.dataset.get("stride", 256),
+    }
+    
     print(f"Saving results to {results_file}")
+    print(f"Evaluation metrics: {metrics}")
     with open(results_file, "w") as f:
         json.dump(metrics, f, indent=4)
     
