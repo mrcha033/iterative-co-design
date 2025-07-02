@@ -71,6 +71,9 @@ from src.utils.permutation import (
     safe_permute_vector,
 )
 
+# Import our new utility function
+from src.utils.hydra_utils import to_plain_list
+
 # ---------------------------------------------------------------------------
 # Version Guard
 # ---------------------------------------------------------------------------
@@ -116,33 +119,45 @@ def _get_param_sha1(param: torch.Tensor) -> str:
 # helpers
 # ---------------------------------------------------------------------------
 
-def _expand_wildcard(model: nn.Module, spec: Union[str, Iterable[str]]) -> List[str]:
-    """Expand wildcard patterns (e.g. `backbone.*.in_proj`)."""
-    if not spec:
+def _expand_wildcard(model: nn.Module, patterns: List[str]) -> List[str]:
+    """
+    Expand wildcard patterns (e.g. `backbone.*.in_proj`) to matching module names.
+    
+    Args:
+        model: The model containing modules to match against
+        patterns: List of string patterns that may contain wildcards
+        
+    Returns:
+        List of fully qualified module names that match the pattern(s)
+    """
+    if not patterns:
         return []
 
+    # Get all named modules from the model
     names = [n for n, _ in model.named_modules()]
     
-    # Handle potential OmegaConf objects
-    if hasattr(spec, '_is_config'):
-        # Convert OmegaConf object to a regular Python list
-        patterns = list(spec)
-    elif isinstance(spec, (list, tuple)):
-        patterns = spec
-    else:
-        # Single string pattern
-        patterns = [spec]
-        
     out: List[str] = []
     for pat in patterns:
         if "*" in pat:
-            m = fnmatch.filter(names, pat)
-            if not m:
-                logger.warning("pattern %s matched nothing", pat)
-            out.extend(m)
-        else:
+            # This is a wildcard pattern
+            matched = fnmatch.filter(names, pat)
+            if not matched:
+                logger.warning(f"Wildcard pattern '{pat}' did not match any modules.")
+            else:
+                logger.debug(f"Pattern '{pat}' matched {len(matched)} modules.")
+            out.extend(matched)
+        elif pat in names:
+            # This is an exact module name
             out.append(pat)
-    return out
+        else:
+            # This is a non-wildcard pattern that doesn't match any module
+            logger.warning(f"Pattern '{pat}' is not a wildcard and does not match any module name.")
+            
+    if not out:
+        logger.warning(f"No modules matched any patterns. Check your target_layers configuration.")
+        
+    # Return unique module names
+    return list(set(out))
 
 
 def _collect_layer_corr(
@@ -156,19 +171,33 @@ def _collect_layer_corr(
     model.eval()
     device = next(model.parameters()).device
 
+    # Ensure layer is a string
+    if not isinstance(layer, str):
+        raise TypeError(f"Expected string layer name, got {type(layer).__name__}: {layer}")
+        
+    # Verify the layer exists in the model
+    try:
+        target_module = model.get_submodule(layer)
+    except AttributeError:
+        available_modules = [n for n, _ in model.named_modules()][:5]
+        raise ValueError(f"Layer '{layer}' not found in model. Sample available layers: {available_modules}...")
+
     acts: list[torch.Tensor] = []
 
     def _hook(_, __, out):
-        d_inner = out.size(-1) // 2
-        # Gate is first half, Value is second. Permute based on Value stats.
-        # Keep in full precision to avoid numerical issues with std calculation.
-        x = out[..., d_inner:]
-        if x.ndim == 3:
-            # Flatten (batch, seq, dim) to (batch*seq, dim)
-            x = x.reshape(-1, d_inner)
-        acts.append(x)  # Keep on device
+        try:
+            d_inner = out.size(-1) // 2
+            # Gate is first half, Value is second. Permute based on Value stats.
+            # Keep in full precision to avoid numerical issues with std calculation.
+            x = out[..., d_inner:]
+            if x.ndim == 3:
+                # Flatten (batch, seq, dim) to (batch*seq, dim)
+                x = x.reshape(-1, d_inner)
+            acts.append(x)  # Keep on device
+        except Exception as e:
+            raise RuntimeError(f"Error in forward hook for layer {layer}: {e}") from e
 
-    h = model.get_submodule(layer).register_forward_hook(_hook)
+    h = target_module.register_forward_hook(_hook)
     collected = 0
     try:
         with torch.no_grad():
@@ -448,14 +477,10 @@ def run_iasp_on_mamba(
     n_jobs = cfg.get("jobs", 1)
     min_modularity = cfg.get("min_modularity", 0.0)
     
-    # Add a fallback for target_layers and ensure it's not empty
-    # Fix: Handle ListConfig properly by converting to a regular list
+    # Use our utility function to safely get a list of strings
     target_spec = cfg.get("target_layers") or "*.in_proj"
-    if isinstance(target_spec, (list, tuple)) and hasattr(target_spec, '_is_config'):
-        # Convert OmegaConf ListConfig to a regular Python list
-        target_spec = list(target_spec)
-        
-    target_layers = _expand_wildcard(model, target_spec)
+    target_layers = _expand_wildcard(model, to_plain_list(target_spec))
+    
     if not target_layers:
         raise RuntimeError("IASP: No target layers were found for the model. Please check `iasp.target_layers` in your config.")
 
@@ -550,7 +575,31 @@ def run_iasp_on_mamba(
     logger.info(f"IASP finished. Applied {len(all_q_scores)} permutations with average modularity: {avg_q:.4f}")
 
     if not last_perm:
-        d_model = model.config.d_model if hasattr(model.config, "d_model") else 2048
+        # Safer fallback with proper attribute checking
+        d_model = None
+        if hasattr(model, "config"):
+            d_model = getattr(model.config, "d_model", None) or getattr(model.config, "hidden_size", None)
+        
+        if d_model is None:
+            # Try to infer from model structure
+            try:
+                first_mixer = None
+                for name, module in model.named_modules():
+                    if "mixer" in name and hasattr(module, "out_proj"):
+                        first_mixer = module
+                        break
+                
+                if first_mixer is not None:
+                    d_model = first_mixer.out_proj.in_features
+                else:
+                    # Last resort fallback
+                    logger.warning("Could not determine model dimension. Using default identity permutation of size 1024.")
+                    d_model = 1024
+            except Exception as e:
+                logger.error(f"Error while trying to infer model dimension: {e}")
+                d_model = 1024
+                
+        logger.info(f"No valid permutation found. Using identity permutation of size {d_model}.")
         return list(range(d_model)), avg_q
 
     return last_perm, avg_q
@@ -598,13 +647,10 @@ def run_iasp_on_bert(
     implementation. A permutation is calculated for each FFN's intermediate
     output, and only applied if it improves modularity beyond a threshold.
     """
-    # Fix: Handle ListConfig properly by converting to a regular list
+    # Use our utility function to safely get a list of strings
     target_spec = cfg.get("target_layers") or "*.intermediate.dense"
-    if isinstance(target_spec, (list, tuple)) and hasattr(target_spec, '_is_config'):
-        # Convert OmegaConf ListConfig to a regular Python list
-        target_spec = list(target_spec)
-        
-    target_layers = _expand_wildcard(model, target_spec)
+    target_layers = _expand_wildcard(model, to_plain_list(target_spec))
+    
     if not target_layers:
         raise ValueError("IASP on BERT requires 'target_layers' to be specified, e.g., '*.intermediate.dense'.")
     
@@ -653,13 +699,29 @@ def run_iasp_on_bert(
     logger.info(f"IASP for BERT finished. Applied {applied_count} permutations with average modularity: {avg_q:.4f}")
 
     if not last_perm:
-        try:
-            # Read d_ffn from the model's actual layer shape for robustness
-            first_layer = model.get_submodule(target_layers[0])
-            d_ffn = first_layer.weight.size(0)
-        except (IndexError, AttributeError):
-            # Fallback for safety
-            d_ffn = model.config.intermediate_size
+        # Safer fallback with proper attribute checking
+        d_ffn = None
+        if hasattr(model, "config"):
+            d_ffn = getattr(model.config, "intermediate_size", None)
+        
+        if d_ffn is None:
+            # Try to infer from model structure
+            try:
+                # Find the first intermediate layer to get its size
+                for name, module in model.named_modules():
+                    if "intermediate.dense" in name and hasattr(module, "weight"):
+                        d_ffn = module.weight.size(0)
+                        break
+                
+                if d_ffn is None:
+                    # Last resort fallback
+                    logger.warning("Could not determine FFN dimension. Using default identity permutation of size 768.")
+                    d_ffn = 768
+            except Exception as e:
+                logger.error(f"Error while trying to infer FFN dimension: {e}")
+                d_ffn = 768
+                
+        logger.info(f"No valid permutation found. Using identity permutation of size {d_ffn}.")
         return list(range(d_ffn)), avg_q
         
     return last_perm, avg_q
