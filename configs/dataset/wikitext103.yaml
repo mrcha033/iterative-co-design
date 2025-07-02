@@ -9,5 +9,15 @@ learning_rate: 1.0e-5
 metric_type: "perplexity"
 seq_len: 512
 stride: 256
+
+# Padding configuration - adjust these for sensitivity testing
+min_seq_len: 64  # Default: 64, try 128 or 256 for sensitivity testing
+pad_shorter_sequences: true
+
+# Evaluation mode - set to true for full dataset evaluation 
+epoch_based_evaluation: false  # Set to true for processing entire dataset once
+
+# Sampling limits
 max_samples_per_split: 4096
+max_eval_steps: 1000  # Reduce to ~200 for faster sensitivity testing
 eval_split: "test"

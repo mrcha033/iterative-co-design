@@ -97,7 +97,8 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
     An IterableDataset that tokenizes and creates sliding windows from a streaming
     Hugging Face dataset on the fly, designed for memory efficiency.
     """
-    def __init__(self, hf_dataset, tokenizer, seq_len, stride, buffer_size=65536, max_samples=None):
+    def __init__(self, hf_dataset, tokenizer, seq_len, stride, buffer_size=65536, max_samples=None, 
+                 min_seq_len=64, pad_shorter_sequences=True):
         super().__init__()
         if stride <= 0 or stride > seq_len:
             raise ValueError(f"Stride must be in (0, seq_len], but got stride={stride} and seq_len={seq_len}")
@@ -112,7 +113,17 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
         self.document_count = 0
         self.total_tokens = 0
         self.skipped_docs = 0
-        logger.info(f"Created StreamingSlidingWindowDataset with seq_len={seq_len}, stride={stride}, max_samples={max_samples}")
+        # New parameters
+        self.min_seq_len = min_seq_len  # Accept shorter sequences, down to this length
+        self.pad_shorter_sequences = pad_shorter_sequences  # Pad sequences shorter than seq_len
+        
+        # Padding statistics
+        self.padded_samples = 0
+        self.total_padding_tokens = 0
+        self.full_length_samples = 0
+        
+        logger.info(f"Created StreamingSlidingWindowDataset with seq_len={seq_len}, stride={stride}, "
+                   f"min_seq_len={min_seq_len}, max_samples={max_samples}")
     
     def __len__(self):
         """
@@ -159,8 +170,7 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
                 self.skipped_docs += 1
                 continue
 
-            # Truncate long documents to buffer_size and sample a random starting point
-            # to avoid biasing towards the end of long texts.
+            # Tokenize the current document
             token_ids = self.tokenizer(
                 sample["text"],
                 truncation=True,
@@ -170,12 +180,39 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
             
             self.total_tokens += len(token_ids)
 
-            # Skip documents that are shorter than the desired sequence length
-            # to prevent them from creating biased, repetitive samples.
-            if len(token_ids) < self.seq_len:
+            # Handle short sequences differently than before
+            if len(token_ids) < self.min_seq_len:
+                # Skip sequences that are too short even for our minimum length
                 self.skipped_docs += 1
                 continue
+                
+            if len(token_ids) < self.seq_len:
+                # For sequences between min_seq_len and seq_len
+                if self.pad_shorter_sequences:
+                    # Pad to seq_len if needed
+                    pad_id = self.tokenizer.pad_token_id or 0
+                    padding_length = self.seq_len - len(token_ids)
+                    padded_ids = token_ids + [pad_id] * padding_length
+                    
+                    # Track padding statistics
+                    self.padded_samples += 1
+                    self.total_padding_tokens += padding_length
+                    padding_ratio = padding_length / self.seq_len
+                    
+                    # Create a sample immediately rather than going through the buffer
+                    if self.max_samples is not None and samples_yielded >= self.max_samples:
+                        logger.info(f"Reached max_samples limit of {self.max_samples}")
+                        return  # Stop iteration once max_samples is reached
+                    
+                    yield {"input_ids": torch.tensor(padded_ids, dtype=torch.long)}
+                    samples_yielded += 1
+                    continue
+                else:
+                    # Skip if we don't want to pad
+                    self.skipped_docs += 1
+                    continue
 
+            # For sequences >= seq_len, use the sliding window approach
             if len(token_ids) > self.seq_len:
                 start_index = rng.randint(0, len(token_ids) - self.seq_len)
                 buffer.extend(token_ids[start_index:])
@@ -191,6 +228,7 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
                 window_ids = [buffer[i] for i in range(self.seq_len)]
                 yield {"input_ids": torch.tensor(window_ids, dtype=torch.long)}
                 samples_yielded += 1
+                self.full_length_samples += 1
 
                 # Slide the window forward by popping `stride` elements from the left
                 for _ in range(self.stride):
@@ -201,6 +239,21 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
         if samples_yielded > 0:
             logger.info(f"Dataset iteration complete: processed {self.document_count} documents ({self.skipped_docs} skipped) "
                         f"with {self.total_tokens} tokens, yielded {samples_yielded} samples")
+            
+            # Log padding statistics
+            if self.padded_samples > 0:
+                avg_padding = self.total_padding_tokens / self.padded_samples
+                padding_percentage = (self.padded_samples / samples_yielded) * 100
+                avg_padding_ratio = (self.total_padding_tokens / (self.padded_samples * self.seq_len)) * 100
+                logger.info(f"Padding statistics: {self.padded_samples} padded samples ({padding_percentage:.1f}% of total)")
+                logger.info(f"Average padding: {avg_padding:.1f} tokens per padded sample ({avg_padding_ratio:.1f}% of seq_len)")
+                logger.info(f"Full-length samples: {self.full_length_samples} ({(self.full_length_samples/samples_yielded)*100:.1f}% of total)")
+                
+                # Critical warning if padding is excessive
+                if avg_padding_ratio > 25:
+                    logger.warning(f"HIGH PADDING ALERT: Average padding ratio is {avg_padding_ratio:.1f}%. "
+                                  f"Consider increasing min_seq_len from {self.min_seq_len} to reduce padding bias.")
+            
             logger.info(f"Average tokens per document: {self.total_tokens / (self.document_count - self.skipped_docs):.1f}")
             logger.info(f"Average samples per document: {samples_yielded / (self.document_count - self.skipped_docs):.1f}")
 
@@ -253,6 +306,25 @@ def get_model_and_data(cfg: DictConfig):
         batch_size = max(4, batch_size)
         # Set a larger buffer for higher throughput
         buffer_size = cfg.dataset.get("buffer_size", max(65536, seq_len * 4))
+        
+        # Get additional dataset parameters with sensible defaults
+        min_seq_len = cfg.dataset.get("min_seq_len", 64)  # Accept sequences of at least 64 tokens
+        pad_shorter = cfg.dataset.get("pad_shorter_sequences", True)  # Pad shorter sequences by default
+        
+        # For sensitivity testing, override min_seq_len if specified
+        if cfg.get("min_seq_len_sensitivity_test"):
+            min_seq_len = cfg.min_seq_len_sensitivity_test
+            logger.info(f"Running sensitivity test with min_seq_len={min_seq_len}")
+            
+        # Determine if we're using max_samples or epoch-based evaluation
+        max_samples = None
+        if cfg.get("epoch_based_evaluation", False):
+            logger.info("Using epoch-based evaluation (processing the entire dataset once)")
+            # Leave max_samples as None to process the entire dataset once
+        else:
+            # Use max_samples if specified
+            max_samples = cfg.iasp.get("max_samples", None)
+            logger.info(f"Using max_samples={max_samples} for evaluation")
 
         streaming_dataset = StreamingSlidingWindowDataset(
             hf_dataset=hf_iterable_dataset,
@@ -260,7 +332,9 @@ def get_model_and_data(cfg: DictConfig):
             seq_len=seq_len,
             stride=stride,
             buffer_size=buffer_size,
-            max_samples=cfg.iasp.get("max_samples", None)
+            max_samples=max_samples,
+            min_seq_len=min_seq_len,
+            pad_shorter_sequences=pad_shorter
         )
         
         # DataLoader tuning for IterableDataset
@@ -364,12 +438,23 @@ def _measure_and_collect_metrics(
     model = wrapped_model.model
     model.eval()
 
+    # Determine evaluation settings
+    # For permutation experiments (where we're checking relative differences),
+    # we can use fewer steps than for absolute metric reporting
+    is_permutation_exp = "permute" in cfg.method
+    max_eval_steps = cfg.dataset.get("max_eval_steps") or 1000
+    
+    # For permutation experiments, we can use far fewer steps (just enough for a valid comparison)
+    if is_permutation_exp and max_eval_steps > 100:
+        max_eval_steps = 100  # 100 steps is sufficient for relative comparisons
+        logger.info(f"Using reduced evaluation (max_steps={max_eval_steps}) for permutation experiment")
+    
     logger.info("Calculating evaluation metric...")
     task_metric = calculate_task_metric(
         model,
         data_loader,
         metric=cfg.dataset.metric_type,
-        max_steps=cfg.dataset.get("max_eval_steps") or 1000  # Safe default
+        max_steps=max_eval_steps
     )
     logger.info(f"{cfg.dataset.metric_type.capitalize()}: {list(task_metric.values())[0]:.4f}")
 
@@ -397,6 +482,30 @@ def _measure_and_collect_metrics(
         **task_metric,
         "modularity": modularity,
     }
+    
+    # Add dataset padding statistics if available
+    if hasattr(data_loader.dataset, 'padded_samples') and data_loader.dataset.padded_samples > 0:
+        total_samples = data_loader.dataset.padded_samples + data_loader.dataset.full_length_samples
+        if total_samples > 0:
+            padding_percentage = (data_loader.dataset.padded_samples / total_samples) * 100
+            avg_padding_ratio = 0
+            if data_loader.dataset.padded_samples > 0:
+                avg_padding_ratio = (data_loader.dataset.total_padding_tokens / 
+                                    (data_loader.dataset.padded_samples * data_loader.dataset.seq_len)) * 100
+            
+            metrics.update({
+                "padding_stats": {
+                    "padded_samples": data_loader.dataset.padded_samples,
+                    "full_length_samples": data_loader.dataset.full_length_samples,
+                    "padding_percentage": padding_percentage,
+                    "avg_padding_ratio": avg_padding_ratio,
+                    "min_seq_len": data_loader.dataset.min_seq_len,
+                }
+            })
+            
+            logger.info(f"Dataset padding stats: {padding_percentage:.1f}% padded samples, "
+                      f"{avg_padding_ratio:.1f}% avg padding per padded sample")
+    
     # Add hardware metrics to the final dictionary, handling the case where profiling might fail
     if hw_metrics:
         metrics.update(hw_metrics)
