@@ -1,0 +1,24 @@
+# WikiText-103 Dataset Configuration - Quick Comparison Variant
+# For fast comparative testing of different min_seq_len values
+name: "wikitext"
+subset: "wikitext-103-raw-v1"
+path: "wikitext"
+text_column: "text"
+sample_size: 2000
+batch_size: 16
+learning_rate: 1.0e-5
+metric_type: "perplexity"
+seq_len: 512
+stride: 256
+
+# Padding configuration - default settings, override via command line
+min_seq_len: 256  # Override this via command line for testing
+pad_shorter_sequences: true
+
+# Use epoch-based evaluation
+epoch_based_evaluation: true
+
+# Sampling limits
+max_samples_per_split: 4096
+max_eval_steps: 256  # Reduced for quick comparative testing
+eval_split: "test" 
