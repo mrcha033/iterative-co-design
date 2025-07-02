@@ -85,12 +85,20 @@ def calculate_perplexity(model, data_loader, fp16: bool = True, max_steps: Optio
             if "attention_mask" in batch:
                 model_inputs["attention_mask"] = batch["attention_mask"]
 
+            # Create labels and ensure padding is properly masked
             if 'labels' in batch:
                 labels = batch['labels']
             else:
                 labels = batch["input_ids"].clone()
+                # Explicitly mask padding tokens in labels to be ignored in loss calculation
                 if pad_token_id is not None:
-                    labels[labels == pad_token_id] = -100 # HF default ignore_index
+                    labels[labels == pad_token_id] = -100  # HF default ignore_index
+                
+                # Create an attention mask if not present and we have padding tokens
+                if "attention_mask" not in model_inputs and pad_token_id is not None:
+                    # 1 for real tokens, 0 for padding
+                    attention_mask = (batch["input_ids"] != pad_token_id).long()
+                    model_inputs["attention_mask"] = attention_mask
             
             model_inputs["labels"] = labels
             outputs = model(**model_inputs)
