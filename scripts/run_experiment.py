@@ -98,7 +98,7 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
     Hugging Face dataset on the fly, designed for memory efficiency.
     """
     def __init__(self, hf_dataset, tokenizer, seq_len, stride, buffer_size=65536, max_samples=None, 
-                 min_seq_len=64, pad_shorter_sequences=True):
+                 min_seq_len=64, pad_shorter_sequences=True, verbose=False):
         super().__init__()
         if stride <= 0 or stride > seq_len:
             raise ValueError(f"Stride must be in (0, seq_len], but got stride={stride} and seq_len={seq_len}")
@@ -116,6 +116,7 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
         # New parameters
         self.min_seq_len = min_seq_len  # Accept shorter sequences, down to this length
         self.pad_shorter_sequences = pad_shorter_sequences  # Pad sequences shorter than seq_len
+        self.verbose = verbose  # Control logging verbosity
         
         # Padding statistics
         self.padded_samples = 0
@@ -154,16 +155,19 @@ class StreamingSlidingWindowDataset(torch.utils.data.IterableDataset):
                 sample = next(dataset_iterator)
                 self.document_count += 1
             except StopIteration:
-                logger.info(f"Dataset iterator exhausted after {self.document_count} documents, yielded {samples_yielded} samples")
+                if self.verbose:
+                    logger.info(f"Dataset iterator exhausted after {self.document_count} documents, yielded {samples_yielded} samples")
                 if self.max_samples is not None:
                     # If the dataset is exhausted but we haven't met the sample count,
                     # restart the iterator to loop over the data again.
                     dataset_iterator = iter(self.hf_dataset)
-                    logger.info("Restarting dataset iterator to fulfill max_samples requirement")
+                    if self.verbose:
+                        logger.info("Restarting dataset iterator to fulfill max_samples requirement")
                     continue
                 else:
                     # If no max_samples is set, just stop.
-                    logger.info(f"Stopping after processing {self.document_count} documents, yielded {samples_yielded} samples")
+                    if self.verbose:
+                        logger.info(f"Stopping after processing {self.document_count} documents, yielded {samples_yielded} samples")
                     break
 
             if "text" not in sample or not sample["text"]:
