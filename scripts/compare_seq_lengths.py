@@ -56,7 +56,7 @@ def run_test(min_seq_len, pad_shorter):
         "python", "scripts/run_experiment.py",
         f"dataset=wikitext103_quick",
         "method=dense",
-        f"min_seq_len={min_seq_len}",
+        f"dataset.min_seq_len={min_seq_len}",
         f"dataset.pad_shorter_sequences={str(pad_shorter).lower()}",
         f"hydra.run.dir={outdir}"
     ]
@@ -81,31 +81,42 @@ def run_test(min_seq_len, pad_shorter):
 
 def extract_metrics(results):
     """Extract relevant metrics from the results dictionary."""
-    if results is None or "padding_stats" not in results:
-        return {
-            "perplexity": None,
-            "padded_samples": 0,
-            "full_length_samples": 0,
-            "padding_percentage": 0,
-            "avg_padding_ratio": 0
-        }
-    
+    # Default values if results are None or incomplete
     metrics = {
-        "perplexity": results.get("perplexity"),
-        "eval_steps": results.get("eval_steps"),
+        "perplexity": None,
+        "eval_steps": 0,
+        "padded_samples": 0,
+        "full_length_samples": 0,
+        "padding_percentage": 0,
+        "avg_padding_ratio": 0,
+        "total_samples": 0  # Ensure this is always present
     }
     
-    padding_stats = results.get("padding_stats", {})
+    # Early return if results are completely missing
+    if results is None:
+        return metrics
+    
+    # Update with actual values if available
     metrics.update({
-        "padded_samples": padding_stats.get("padded_samples", 0),
-        "full_length_samples": padding_stats.get("full_length_samples", 0),
+        "perplexity": results.get("perplexity"),
+        "eval_steps": results.get("eval_steps", 0),
+    })
+    
+    # Extract padding stats if available
+    padding_stats = results.get("padding_stats", {})
+    padded_samples = padding_stats.get("padded_samples", 0)
+    full_length_samples = padding_stats.get("full_length_samples", 0)
+    
+    metrics.update({
+        "padded_samples": padded_samples,
+        "full_length_samples": full_length_samples,
         "padding_percentage": padding_stats.get("padding_percentage", 0),
         "avg_padding_ratio": padding_stats.get("avg_padding_ratio", 0),
         "min_seq_len": padding_stats.get("min_seq_len", 0),
     })
     
     # Calculate total samples
-    metrics["total_samples"] = metrics["padded_samples"] + metrics["full_length_samples"]
+    metrics["total_samples"] = padded_samples + full_length_samples
     
     return metrics
 
