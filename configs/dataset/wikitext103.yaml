@@ -11,13 +11,13 @@ seq_len: 512
 stride: 256
 
 # Padding configuration - don't pad, only use full-length samples
-min_seq_len: 256  # Only accept full-length sequences (no padding)
-pad_shorter_sequences: false  # Skip sequences shorter than seq_len rather than padding them
+min_seq_len: 64  # Only accept full-length sequences (no padding)
+pad_shorter_sequences: true  # Skip sequences shorter than seq_len rather than padding them
 
 # Use epoch-based evaluation for better statistical significance
 epoch_based_evaluation: true  # Process full dataset to ensure we get enough samples
 
 # Sampling limits
 max_samples_per_split: 4096
-max_eval_steps: 1000  # May need to be reduced if not enough full-length samples exist
+max_eval_steps: 256  # May need to be reduced if not enough full-length samples exist
 eval_split: "test" 
