@@ -122,7 +122,17 @@ def _expand_wildcard(model: nn.Module, spec: Union[str, Iterable[str]]) -> List[
         return []
 
     names = [n for n, _ in model.named_modules()]
-    patterns = spec if isinstance(spec, (list, tuple)) else [spec]
+    
+    # Handle potential OmegaConf objects
+    if hasattr(spec, '_is_config'):
+        # Convert OmegaConf object to a regular Python list
+        patterns = list(spec)
+    elif isinstance(spec, (list, tuple)):
+        patterns = spec
+    else:
+        # Single string pattern
+        patterns = [spec]
+        
     out: List[str] = []
     for pat in patterns:
         if "*" in pat:
@@ -303,8 +313,13 @@ def _spectral_perm_numpy(corr_np: np.ndarray, cfg: DictConfig) -> Tuple[List[int
     A = np.maximum(G, G.T)
     np.fill_diagonal(A, 0)
 
-    # cluster search range
+    # cluster search range - safely convert from OmegaConf if needed
     cmin, cmax = cfg.cluster_size_range
+    if hasattr(cmin, '_is_config'):
+        cmin = int(cmin)
+    if hasattr(cmax, '_is_config'):
+        cmax = int(cmax)
+    
     k_min = max(DEFAULTS.min_cluster_size, dim // cmax)
     k_max = max(DEFAULTS.min_cluster_size, dim // cmin)
 
@@ -434,7 +449,13 @@ def run_iasp_on_mamba(
     min_modularity = cfg.get("min_modularity", 0.0)
     
     # Add a fallback for target_layers and ensure it's not empty
-    target_layers = _expand_wildcard(model, cfg.get("target_layers") or "*.in_proj")
+    # Fix: Handle ListConfig properly by converting to a regular list
+    target_spec = cfg.get("target_layers") or "*.in_proj"
+    if isinstance(target_spec, (list, tuple)) and hasattr(target_spec, '_is_config'):
+        # Convert OmegaConf ListConfig to a regular Python list
+        target_spec = list(target_spec)
+        
+    target_layers = _expand_wildcard(model, target_spec)
     if not target_layers:
         raise RuntimeError("IASP: No target layers were found for the model. Please check `iasp.target_layers` in your config.")
 
@@ -577,7 +598,13 @@ def run_iasp_on_bert(
     implementation. A permutation is calculated for each FFN's intermediate
     output, and only applied if it improves modularity beyond a threshold.
     """
-    target_layers = _expand_wildcard(model, cfg.get("target_layers") or "*.intermediate.dense")
+    # Fix: Handle ListConfig properly by converting to a regular list
+    target_spec = cfg.get("target_layers") or "*.intermediate.dense"
+    if isinstance(target_spec, (list, tuple)) and hasattr(target_spec, '_is_config'):
+        # Convert OmegaConf ListConfig to a regular Python list
+        target_spec = list(target_spec)
+        
+    target_layers = _expand_wildcard(model, target_spec)
     if not target_layers:
         raise ValueError("IASP on BERT requires 'target_layers' to be specified, e.g., '*.intermediate.dense'.")
     
