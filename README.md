@@ -4,6 +4,16 @@ This repository contains the official implementation for the paper, **"The Ortho
 
 ---
 
+## 🚀 Key Features
+
+- **Production-Ready IASP**: Robust permutation system with automatic rollback and safety monitoring
+- **Hardware-Native Sparsity (HDS)**: N:M structured sparsity that maps directly to tensor cores
+- **Multi-Objective Optimization**: Pareto-optimal tradeoffs between accuracy, latency, and memory
+- **Distributed Training Support**: Full compatibility with DDP, FSDP, and mixed precision
+- **Comprehensive Safety**: Layer-type registry, optimizer state tracking, and perplexity watchdogs
+
+---
+
 ## Getting Started
 
 ### 1. Clone the Repository
@@ -25,20 +35,22 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 ### 3. Install Dependencies
 
-The simplest way to get started is to install the package in editable mode with the `dev` extras, which include all necessary dependencies for running experiments, tests, and building documentation.
-
+For basic installation with core features:
 ```bash
-# Install the project and all development dependencies
+pip install -e .
+```
+
+For full development setup with all safety features:
+```bash
 pip install -e ".[dev]"
 ```
 
-This command installs:
-- Core dependencies like `torch`, `transformers`, and `datasets`.
-- Mamba support (`mamba-ssm`).
-- Testing tools like `pytest`.
-- Documentation tools like `mkdocs`.
+For production deployment with advanced IASP clustering:
+```bash
+pip install -e ".[iasp]"
+```
 
-**Note on Mamba:** The `mamba-ssm` package requires a C++ toolchain and CUDA if you are using a GPU. If you encounter issues, the recommended solution is to use the provided Docker environment.
+**Note:** For Mamba models, you'll need `mamba-ssm` which requires CUDA. Use Docker for the easiest setup.
 
 ### 4. (Optional) Docker for Reproducibility
 
@@ -68,7 +80,8 @@ python scripts/run_experiment.py model=bert_base dataset=sst2 method=dense
 
 **Run the `iterative` co-design method with Mamba on the WikiText-103 dataset:**
 ```bash
-python scripts/run_experiment.py model=mamba_370m dataset=wikitext103 method=iterative
+python scripts/run_experiment.py model=mamba_370m dataset=wikitext103 method=iterative \
+    iasp.max_ppl_increase=0.03  # 3% safety threshold
 ```
 
 **Perform a "dry run" to see the experiment plan without executing:**
@@ -84,6 +97,24 @@ python scripts/run_experiment.py model=bert_base dataset=sst2 method=iterative d
 - `linear_pipeline`: Applies IASP, then HDS.
 - `iterative`: Applies HDS and IASP in a feedback loop.
 
+### Production Safety Features
+
+The IASP system now includes multiple safety layers:
+
+```python
+# Example: Using IASP with production safety
+from src.co_design.iasp_rollback import create_safe_iasp_wrapper
+
+result = create_safe_iasp_wrapper(
+    run_iasp_on_mamba,
+    model=model,
+    dataloader=train_dl,
+    eval_dataloader=val_dl,
+    config=iasp_config,
+    max_ppl_increase=0.05  # 5% perplexity tolerance
+)
+```
+
 ---
 
 ## Project Structure
@@ -94,12 +125,17 @@ iterative-co-design/
 │   ├── co_design/               # Core optimization algorithms
 │   │   ├── hds.py              # Hardware-Native Differentiable Sparsity
 │   │   ├── iasp.py             # IO-Aware Scan Permutation
+│   │   ├── iasp_rollback.py    # Safety rollback system
+│   │   ├── pareto_watchdog.py  # Multi-objective monitoring
 │   │   └── modularity.py       # Modularity calculation
 │   ├── models/                  # Model wrappers and utilities
 │   └── utils/                   # Utilities and profiling
 ├── configs/                     # Hydra configuration files
 ├── scripts/                     # Experiment and utility scripts
 ├── tests/                       # Comprehensive test suite
+│   ├── test_iasp_safety.py     # Production safety tests
+│   ├── test_distributed_iasp.py # Multi-GPU tests
+│   └── test_permutation_training.py # Training continuity
 ├── notebooks/                   # Jupyter analysis notebooks
 ├── outputs/                     # Experiment results (auto-generated)
 └── results/                     # Cached profiling results

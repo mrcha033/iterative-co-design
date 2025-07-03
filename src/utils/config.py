@@ -186,6 +186,56 @@ def validate_config(config: Union[Dict[str, Any], DictConfig],
             if not isinstance(dataset_config['batch_size'], int) or dataset_config['batch_size'] < 1:
                 raise ValueError("'dataset.batch_size' must be a positive integer")
     
+    # Validate IASP configuration
+    if 'iasp' in config_dict:
+        iasp_config = config_dict['iasp']
+        
+        # CRITICAL: Ensure permute_gate is False or not set
+        if 'permute_gate' in iasp_config and iasp_config['permute_gate'] is not False:
+            raise ValueError(
+                "IASP configuration error: 'permute_gate' must be False. "
+                "Gate permutation is explicitly forbidden for safety reasons."
+            )
+        
+        # Validate cluster size range
+        if 'cluster_size_range' in iasp_config:
+            csr = iasp_config['cluster_size_range']
+            if not isinstance(csr, (list, tuple)) or len(csr) != 2:
+                raise ValueError("'iasp.cluster_size_range' must be a list/tuple of 2 integers")
+            if csr[0] >= csr[1]:
+                raise ValueError("'iasp.cluster_size_range' must have min < max")
+            if csr[0] < 1:
+                raise ValueError("'iasp.cluster_size_range' minimum must be positive")
+        
+        # Validate max_samples
+        if 'max_samples' in iasp_config:
+            if not isinstance(iasp_config['max_samples'], int) or iasp_config['max_samples'] < 1:
+                raise ValueError("'iasp.max_samples' must be a positive integer")
+        
+        # Validate rollback parameters if present
+        if 'max_ppl_increase' in iasp_config:
+            max_ppl = iasp_config['max_ppl_increase']
+            if not isinstance(max_ppl, (int, float)) or max_ppl <= 0 or max_ppl > 1:
+                raise ValueError("'iasp.max_ppl_increase' must be between 0 and 1")
+    
+    # Validate HDS configuration
+    if 'hds' in config_dict:
+        hds_config = config_dict['hds']
+        
+        # Validate N:M sparsity pattern
+        if 'n' in hds_config and 'm' in hds_config:
+            n, m = hds_config['n'], hds_config['m']
+            if not (isinstance(n, int) and isinstance(m, int)):
+                raise ValueError("'hds.n' and 'hds.m' must be integers")
+            if n >= m or n < 1 or m < 2:
+                raise ValueError("HDS sparsity must satisfy 1 <= n < m, with m >= 2")
+        
+        # Validate learning rate
+        if 'learning_rate' in hds_config:
+            lr = hds_config['learning_rate']
+            if not isinstance(lr, (int, float)) or lr <= 0:
+                raise ValueError("'hds.learning_rate' must be positive")
+    
     logger.info("Configuration validation passed")
     return True
 

@@ -50,6 +50,8 @@ dependencies = [
     "evaluate>=0.4.0",
     "sacrebleu>=2.3.0",
     "pynvml>=11.5.2",
+    "joblib>=1.3.0",
+    "psutil>=5.9.0",
 ]
 
 [project.urls]
@@ -64,10 +66,21 @@ mamba = [
 ]
 profiling = [
     "psutil>=5.9.0",
+    "pyitt>=1.1.0",  # Intel VTune integration
+    "py-nvtx>=0.2.3",  # NVIDIA NSight integration
+]
+# IASP-specific dependencies for advanced clustering
+iasp = [
+    "faiss-cpu>=1.7.4",  # For efficient k-NN graph construction
+    "python-louvain>=0.16",  # For Louvain community detection
+    "python-igraph>=0.10.4",  # For graph operations
 ]
 test = [
     "pytest>=8.0.2",
     "pytest-cov",
+    "pytest-mock>=3.11.0",  # For mocking in safety tests
+    "pytest-timeout>=2.1.0",  # For distributed test timeouts
+    "pytest-xdist>=3.3.0",  # For parallel test execution
 ]
 docs = [
     "mkdocs>=1.5.3",
@@ -75,8 +88,9 @@ docs = [
     "mkdocstrings[python]>=0.24.1",
 ]
 dev = [
-    "iterative-co-design[test,docs,mamba,profiling]",
+    "iterative-co-design[test,docs,mamba,profiling,iasp]",
     "ruff>=0.12.0",
+    "pre-commit>=3.3.3",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -132,7 +146,9 @@ markers = [
     "unit: Unit tests",
     "integration: Integration tests", 
     "slow: Slow tests that take more than a few seconds",
-    "gpu: Tests that require GPU"
+    "gpu: Tests that require GPU",
+    "distributed: Tests that require multiple GPUs or distributed setup",
+    "safety: Tests for production safety features"
 ]
 
 [tool.ruff]

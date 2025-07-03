@@ -437,10 +437,17 @@ def _apply_perm_to_mixer(mixer: nn.Module, p_val: torch.Tensor):
     if hasattr(mixer, "D") and mixer.D is not None and mixer.D.numel() == d_val:
         safe_permute_vector(mixer.D, p_val)
     if hasattr(mixer, "dt_proj"):
-        if getattr(mixer.dt_proj, "weight", None) is not None and mixer.dt_proj.weight.numel() == d_val:
-            safe_permute_vector(mixer.dt_proj.weight, p_val)
+        if getattr(mixer.dt_proj, "weight", None) is not None:
+            # dt_proj is a linear layer, so weight is 2D
+            if mixer.dt_proj.weight.ndim == 2 and mixer.dt_proj.weight.size(1) == d_val:
+                # Permute input features (columns)
+                safe_permute_cols(mixer.dt_proj.weight, p_inv_val)
+            elif mixer.dt_proj.weight.ndim == 1 and mixer.dt_proj.weight.numel() == d_val:
+                # In case it's a 1D parameter (less likely but handle it)
+                safe_permute_vector(mixer.dt_proj.weight, p_val)
         if getattr(mixer.dt_proj, "bias", None) is not None and mixer.dt_proj.bias.numel() == d_val:
-            safe_permute_vector(mixer.dt_proj.bias, p_val)
+            # dt_proj bias doesn't need permutation since it's on the output side
+            pass
 
     # --- 3. Convolution (conv1d) ---
     if hasattr(mixer, "conv1d"):
