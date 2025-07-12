@@ -311,3 +311,132 @@ def create_default_config() -> Config:
         logging=LoggingConfig(),
         reproducibility=ReproducibilityConfig()
     )
+
+
+def load_config(config_path: str) -> Dict[str, Any]:
+    """
+    Load configuration from YAML file.
+    
+    Args:
+        config_path: Path to YAML configuration file
+        
+    Returns:
+        Configuration dictionary
+    """
+    if not Path(config_path).exists():
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+    
+    with open(config_path, 'r') as f:
+        config_dict = yaml.safe_load(f)
+    
+    return config_dict
+
+
+def merge_config_with_args(config: Dict[str, Any], args) -> Dict[str, Any]:
+    """
+    Merge configuration with command line arguments.
+    
+    Command line arguments take precedence over config file values.
+    
+    Args:
+        config: Base configuration dictionary
+        args: Parsed command line arguments
+        
+    Returns:
+        Merged configuration dictionary
+    """
+    # Create a deep copy to avoid modifying original
+    import copy
+    merged_config = copy.deepcopy(config)
+    
+    # Model configuration
+    if hasattr(args, 'model') and args.model:
+        merged_config['model']['name'] = args.model
+    
+    # Dataset configuration  
+    if hasattr(args, 'dataset') and args.dataset:
+        merged_config['dataset']['name'] = args.dataset
+    
+    # Experiment configuration
+    if hasattr(args, 'strategy') and args.strategy:
+        merged_config['experiment']['strategy'] = args.strategy
+    
+    if hasattr(args, 'num_iterations') and args.num_iterations is not None:
+        merged_config['experiment']['num_iterations'] = args.num_iterations
+    
+    if hasattr(args, 'seed') and args.seed is not None:
+        merged_config['experiment']['seed'] = args.seed
+    
+    if hasattr(args, 'output_dir') and args.output_dir:
+        merged_config['experiment']['output_dir'] = args.output_dir
+    
+    if hasattr(args, 'save_intermediate') and args.save_intermediate:
+        merged_config['experiment']['save_intermediate'] = args.save_intermediate
+    
+    # IASP configuration
+    if hasattr(args, 'layer_name') and args.layer_name:
+        merged_config['iasp']['layer_name'] = args.layer_name
+    
+    if hasattr(args, 'num_clusters') and args.num_clusters is not None:
+        merged_config['iasp']['num_clusters'] = args.num_clusters
+    
+    # HDS configuration
+    if hasattr(args, 'sparsity_pattern') and args.sparsity_pattern:
+        merged_config['hds']['pattern'] = args.sparsity_pattern
+    
+    if hasattr(args, 'hds_epochs') and args.hds_epochs is not None:
+        merged_config['hds']['num_epochs'] = args.hds_epochs
+    
+    # PTQ configuration
+    if hasattr(args, 'quantization_bits') and args.quantization_bits is not None:
+        merged_config['ptq']['bits'] = args.quantization_bits
+    
+    # Hardware configuration
+    if hasattr(args, 'device') and args.device:
+        merged_config['hardware']['device'] = args.device
+    
+    if hasattr(args, 'gpu_id') and args.gpu_id is not None:
+        merged_config['hardware']['gpu_id'] = args.gpu_id
+    
+    # Logging configuration
+    if hasattr(args, 'log_level') and args.log_level:
+        merged_config['logging']['level'] = args.log_level
+    
+    # Benchmarking configuration
+    if hasattr(args, 'benchmark_runs') and args.benchmark_runs is not None:
+        merged_config['benchmark']['num_runs'] = args.benchmark_runs
+    
+    # Profiling configuration
+    if hasattr(args, 'profile') and args.profile:
+        merged_config['profiling']['enabled'] = True
+    
+    # Precomputed correlation matrix
+    if hasattr(args, 'precomputed_correlation') and args.precomputed_correlation:
+        merged_config['precomputed_correlation'] = args.precomputed_correlation
+    
+    return merged_config
+
+
+def validate_config(config: Dict[str, Any]) -> None:
+    """
+    Validate configuration dictionary.
+    
+    Args:
+        config: Configuration dictionary to validate
+    """
+    # Try to create Pydantic model to validate
+    try:
+        validated_config = Config(**config)
+    except Exception as e:
+        raise ValueError(f"Configuration validation failed: {e}")
+    
+    # Additional validation logic can go here
+    pass
+
+
+class BaseConfig(BaseModel):
+    """Base configuration class with common functionality."""
+    
+    class Config:
+        extra = "forbid"  # Forbid extra fields
+        validate_assignment = True  # Validate on assignment

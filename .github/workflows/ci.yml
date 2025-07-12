@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ['3.10']
+        python-version: ['3.8', '3.9', '3.10', '3.11']
     
     steps:
     - uses: actions/checkout@v4
@@ -48,21 +48,37 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
     
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
+        pip install pytest pytest-cov pytest-xvfb
         pip install -e .
     
     - name: Run unit tests
-      run: pytest tests/unit/ -v --cov=src --cov-report=xml
+      run: pytest tests/unit/ -v --cov=src --cov-report=xml --cov-report=term-missing --cov-fail-under=85
+    
+    - name: Run integration tests
+      run: pytest tests/integration/ -v -x
+      env:
+        PYTHONPATH: ${{ github.workspace }}
     
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v3
+      if: matrix.python-version == '3.10'
       with:
         file: ./coverage.xml
         flags: unittests
         name: codecov-umbrella
+        fail_ci_if_error: false
 
   docker:
     runs-on: ubuntu-latest
@@ -87,3 +103,71 @@ jobs:
         print('CUDA available:', torch.cuda.is_available())
         print('Docker environment test passed!')
         "
+
+  test-scripts:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install matplotlib seaborn pandas
+        pip install -e .
+    
+    - name: Test table generation script
+      run: |
+        mkdir -p test_results/experiment_1
+        echo '{"experiment_id": "test", "config": {"model": {"name": "mamba-3b"}, "experiment": {"strategy": "baseline"}}, "baseline_benchmark": {"mean_latency_ms": 10.0, "std_latency_ms": 0.1}, "final_benchmark": {"mean_latency_ms": 8.0, "std_latency_ms": 0.1}}' > test_results/experiment_1/results.json
+        python scripts/generate_tables.py --results-dir test_results --output-dir test_tables --tables main
+    
+    - name: Test figure generation script
+      run: |
+        python scripts/generate_figures.py --results-dir test_results --output-dir test_figures --figures synthetic
+    
+    - name: Validate script syntax
+      run: |
+        python -m py_compile scripts/*.py
+        python -m py_compile main.py
+
+  security:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: Install security tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install bandit safety
+    
+    - name: Run bandit security linter
+      run: |
+        bandit -r src/ -f json -o bandit-report.json
+      continue-on-error: true
+    
+    - name: Check dependencies for known security vulnerabilities
+      run: |
+        safety check --json --output safety-report.json
+      continue-on-error: true
+    
+    - name: Upload security reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-reports
+        path: |
+          bandit-report.json
+          safety-report.json

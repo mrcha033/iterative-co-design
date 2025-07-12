@@ -6,10 +6,12 @@ from typing import Optional, Tuple, List, Dict, Any
 
 import torch
 import numpy as np
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+from scipy.linalg import eigh
+import networkx as nx
 
 from .correlation import CorrelationMatrixComputer
-from .spectral import SpectralClusteringOptimizer
-from .apply import PermutationApplicator
 from ..models.permutable_model import PermutableModel
 from ..utils.exceptions import IterativeCoDesignError
 
@@ -20,18 +22,11 @@ class IASPPermutationOptimizer:
     
     This class implements the spectral clustering-based permutation optimization
     described in the paper, using modularity maximization for cache efficiency.
-    
-    This class acts as a high-level coordinator that uses dedicated modules:
-    - SpectralClusteringOptimizer for spectral clustering and permutation generation
-    - PermutationApplicator for safe permutation application to model weights
-    - CorrelationMatrixComputer for activation correlation computation
     """
     
     def __init__(
         self,
         correlation_computer: Optional[CorrelationMatrixComputer] = None,
-        spectral_optimizer: Optional[SpectralClusteringOptimizer] = None,
-        permutation_applicator: Optional[PermutationApplicator] = None,
         device: str = 'cuda'
     ):
         """
@@ -39,13 +34,9 @@ class IASPPermutationOptimizer:
         
         Args:
             correlation_computer: Correlation matrix computer instance
-            spectral_optimizer: Spectral clustering optimizer instance  
-            permutation_applicator: Permutation applicator instance
             device: Device to use for computation
         """
         self.correlation_computer = correlation_computer or CorrelationMatrixComputer()
-        self.spectral_optimizer = spectral_optimizer or SpectralClusteringOptimizer()
-        self.permutation_applicator = permutation_applicator
         self.device = device
     
     def optimize_permutation(
@@ -88,10 +79,8 @@ class IASPPermutationOptimizer:
         
         # Step 2: Generate permutation based on method
         if method == 'spectral':
-            permutation, info = self.spectral_optimizer.compute_permutation(
-                correlation_matrix, 
-                num_clusters=num_clusters, 
-                correlation_threshold=correlation_threshold
+            permutation, info = self._spectral_permutation(
+                correlation_matrix, num_clusters, correlation_threshold
             )
         elif method == 'tsp':
             permutation, info = self._tsp_permutation(
@@ -120,44 +109,103 @@ class IASPPermutationOptimizer:
         
         return permutation, optimization_info
     
-    def apply_optimized_permutation(
+    def _spectral_permutation(
         self,
-        model: PermutableModel,
-        layer_name: str,
-        permutation: np.ndarray,
-        dimension: str = 'input',
-        validate: bool = True
-    ) -> Dict[str, Any]:
+        correlation_matrix: torch.Tensor,
+        num_clusters: int,
+        correlation_threshold: float
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
-        Apply an optimized permutation to a model layer.
+        Generate permutation using spectral clustering on correlation matrix.
+        
+        This implements the core IASP algorithm from the paper:
+        1. Construct affinity matrix from correlation
+        2. Compute graph Laplacian
+        3. Find smallest eigenvectors
+        4. Cluster using k-means
+        5. Concatenate cluster indices
         
         Args:
-            model: The permutable model
-            layer_name: Name of the layer to permute
-            permutation: Permutation to apply
-            dimension: Which dimension to permute ('input', 'output', 'both')
-            validate: Whether to validate permutation before applying
+            correlation_matrix: Correlation matrix [D, D]
+            num_clusters: Number of clusters
+            correlation_threshold: Threshold for graph construction
             
         Returns:
-            Application result dictionary
+            Tuple of (permutation, info_dict)
         """
-        print(f"Applying optimized permutation to layer '{layer_name}' ({dimension} dimension)...")
+        print(f"Computing spectral permutation with {num_clusters} clusters...")
         
-        # Create permutation applicator if not provided
-        if self.permutation_applicator is None:
-            self.permutation_applicator = PermutationApplicator(model)
+        # Convert to numpy for scipy operations
+        corr_np = correlation_matrix.numpy()
+        D = corr_np.shape[0]
         
-        # Apply permutation using the dedicated module
-        result = self.permutation_applicator.apply_permutation(
-            layer_name=layer_name,
-            permutation=permutation,
-            dimension=dimension,
-            validate=validate
-        )
+        # Step 1: Construct affinity matrix (W)
+        # Use absolute correlation values above threshold
+        W = np.abs(corr_np)
+        W[W < correlation_threshold] = 0
         
-        print(f"Permutation applied successfully to {layer_name}")
+        # Step 2: Compute degree matrix (D) and graph Laplacian (L)
+        degree = np.sum(W, axis=1)
+        D_matrix = np.diag(degree)
+        L = D_matrix - W
         
-        return result
+        # Add small regularization to handle isolated nodes
+        L += 1e-8 * np.eye(D)
+        
+        # Step 3: Compute smallest eigenvectors
+        try:
+            # We want the smallest eigenvalues (excluding the trivial 0 eigenvalue)
+            eigenvalues, eigenvectors = eigh(L, eigvals=(1, num_clusters))
+            
+            # Use eigenvectors as features for clustering
+            features = eigenvectors  # [D, num_clusters]
+            
+        except Exception as e:
+            warnings.warn(f"Eigenvalue computation failed: {e}. Using random initialization.")
+            features = np.random.randn(D, num_clusters)
+        
+        # Step 4: Perform k-means clustering
+        try:
+            kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10)
+            cluster_labels = kmeans.fit_predict(features)
+            
+            # Compute silhouette score for clustering quality
+            if num_clusters > 1 and len(np.unique(cluster_labels)) > 1:
+                silhouette = silhouette_score(features, cluster_labels)
+            else:
+                silhouette = 0.0
+            
+        except Exception as e:
+            warnings.warn(f"K-means clustering failed: {e}. Using random clustering.")
+            cluster_labels = np.random.randint(0, num_clusters, size=D)
+            silhouette = 0.0
+        
+        # Step 5: Construct permutation by concatenating cluster indices
+        permutation = []
+        for cluster_id in range(num_clusters):
+            cluster_indices = np.where(cluster_labels == cluster_id)[0]
+            # Sort indices within cluster for consistency
+            cluster_indices = np.sort(cluster_indices)
+            permutation.extend(cluster_indices)
+        
+        # Handle any remaining indices (shouldn't happen with proper clustering)
+        all_indices = set(range(D))
+        used_indices = set(permutation)
+        remaining_indices = sorted(all_indices - used_indices)
+        permutation.extend(remaining_indices)
+        
+        permutation = np.array(permutation[:D])  # Ensure correct length
+        
+        # Compute clustering quality metrics
+        info = {
+            'num_clusters_used': len(np.unique(cluster_labels)),
+            'silhouette_score': silhouette,
+            'graph_edges': np.sum(W > 0),
+            'graph_density': np.sum(W > 0) / (D * D),
+            'eigenvalues': eigenvalues.tolist() if 'eigenvalues' in locals() else [],
+        }
+        
+        return permutation, info
     
     def _tsp_permutation(
         self,
@@ -308,6 +356,52 @@ class IASPPermutationOptimizer:
         
         return total_modularity / num_blocks if num_blocks > 0 else 0.0
     
+    def apply_permutation(
+        self,
+        model: PermutableModel,
+        layer_name: str,
+        permutation: np.ndarray,
+        dimension: str = 'input'
+    ) -> None:
+        """
+        Apply permutation to model layer.
+        
+        Args:
+            model: The permutable model
+            layer_name: Name of the layer to permute
+            permutation: Permutation to apply
+            dimension: Which dimension to permute ('input', 'output', 'both')
+        """
+        print(f"Applying permutation to layer '{layer_name}' ({dimension} dimension)...")
+        
+        # Validate permutation
+        if not self._validate_permutation(permutation):
+            raise ValueError("Invalid permutation: must be a valid rearrangement of indices")
+        
+        # Apply permutation using the model's method
+        model.apply_permutation(layer_name, permutation, dimension)
+        
+        print(f"Permutation applied successfully to {layer_name}")
+    
+    def _validate_permutation(self, permutation: np.ndarray) -> bool:
+        """
+        Validate that a permutation is valid.
+        
+        Args:
+            permutation: Permutation to validate
+            
+        Returns:
+            True if valid, False otherwise
+        """
+        if len(permutation) == 0:
+            return False
+        
+        # Check if it's a valid permutation (contains each index exactly once)
+        expected_indices = set(range(len(permutation)))
+        actual_indices = set(permutation)
+        
+        return expected_indices == actual_indices
+    
     def evaluate_permutation(
         self,
         correlation_matrix: torch.Tensor,
@@ -356,55 +450,3 @@ class IASPPermutationOptimizer:
             'block_coherence': block_coherence,
             'permutation_length': len(permutation)
         }
-    
-    # Backward compatibility methods
-    def apply_permutation(
-        self,
-        model: PermutableModel,
-        layer_name: str,
-        permutation: np.ndarray,
-        dimension: str = 'input'
-    ) -> None:
-        """
-        Apply permutation to model layer (backward compatibility).
-        
-        Args:
-            model: The permutable model
-            layer_name: Name of the layer to permute
-            permutation: Permutation to apply
-            dimension: Which dimension to permute ('input', 'output', 'both')
-        """
-        warnings.warn(
-            "apply_permutation is deprecated. Use apply_optimized_permutation instead.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        
-        result = self.apply_optimized_permutation(
-            model=model,
-            layer_name=layer_name,
-            permutation=permutation,
-            dimension=dimension
-        )
-        
-        # Check for errors in the result
-        if not result.get('success', False):
-            raise IterativeCoDesignError(f"Failed to apply permutation to {layer_name}")
-    
-    def validate_permutation(self, permutation: np.ndarray) -> bool:
-        """
-        Validate that a permutation is valid (backward compatibility).
-        
-        Args:
-            permutation: Permutation to validate
-            
-        Returns:
-            True if valid, False otherwise
-        """
-        warnings.warn(
-            "validate_permutation is deprecated. Use spectral_optimizer.validate_permutation instead.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        
-        return self.spectral_optimizer.validate_permutation(permutation)
