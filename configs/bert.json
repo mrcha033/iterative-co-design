@@ -1,0 +1,14 @@
+{
+  "pipeline": {"mode": "iterative", "repeats": 100, "warmup_iter": 20, "fixed_clock": false},
+  "graph": {
+    "source": "pytorch",
+    "normalize": "sym",
+    "pytorch": {"hops": 2, "byte_weight": true, "reuse_decay": 0.7, "max_len": 128},
+    "nnz_cap": 1000000
+  },
+  "solver": {"time_budget_s": 60, "refine_steps": 500, "k_blocks": 4, "rng_seed": 0},
+  "transform": {"sparsity": {"enable": false}, "quant": {"enable": false}, "kv": {"enable": false}},
+  "measure": {"ncu_enable": false, "power_enable": false},
+  "report": {"out_dir": "runs/bert_smoke", "formats": ["html", "csv"]}
+}
+
