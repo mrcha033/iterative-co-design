@@ -100,7 +100,8 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
             "used_ops": [f"aten::{k}" for k in used_ops],
             "skipped_ops_count": pt_meta.get("skipped_ops_count", 0),
             "hops": pt_meta.get("hops", 1),
-            "notes": "last-dim feature heuristic; attention-aware mapping pending",
+            "roles_present": used_ops,
+            "notes": "last-dim feature heuristic; attention-aware mapping enabled when sectioning",
         }
         _write_json(meta_path, meta_doc)
         _write_json(ops_path, ops_doc)

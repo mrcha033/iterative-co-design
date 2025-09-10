@@ -84,11 +84,26 @@ def fit_permutation(
     Returns (pi, stats) with stats including C, Q, J, improved flag.
     """
     cfg = cfg or CostConfig()
+    n = W.shape[0]
+    pi_id = list(range(n))
+    stats_id = eval_cost(W, pi_id, pi_id, cfg)
+
     pi0 = _spectral_init_like(W, seed=seed)
     stats0 = eval_cost(W, pi0, pi0, cfg)
-    pi1, improved = _local_refine_adjacent(W, pi0, cfg, steps=refine_steps, time_budget_s=time_budget_s)
-    stats1 = eval_cost(W, pi1, pi0, cfg)
-    stats1["improved"] = bool(improved or (stats1["J"] < stats0["J"]))
+
+    # Start refine from the better of identity vs spectral init
+    start_pi = pi0 if stats0["J"] <= stats_id["J"] else pi_id
+    base_stats = stats0 if start_pi is pi0 else stats_id
+
+    pi1, improved = _local_refine_adjacent(W, start_pi, cfg, steps=refine_steps, time_budget_s=time_budget_s)
+    stats1 = eval_cost(W, pi1, start_pi, cfg)
+
+    # Safety: never return worse than identity
+    if stats1["J"] > stats_id["J"]:
+        pi1, stats1 = pi_id, stats_id
+        improved = False
+
+    stats1["improved"] = bool(improved or (stats1["J"] < base_stats["J"]))
     return pi1, stats1
 
 
