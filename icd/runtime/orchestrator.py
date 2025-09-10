@@ -57,45 +57,58 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         ev = {"stage": stage, "t": time.time(), "ok": ok, "meta": (meta or {})}
         events.append(ev)
 
-    # Build W (mock-only)
+    # Build W (mock or pytorch)
     gcfg = cfg.get("graph", {})
     W = build_w(source=gcfg.get("source", "mock"), **gcfg.get("mock", gcfg))
     emit("W_BUILT", True, {"nnz": W.nnz(), "shape": W.shape, "source": W.meta.get("source")})
     w_path = os.path.join(out_dir, "W.csr.npz")
     save_w_npz(w_path, W)
+    # Always write a simple meta snapshot for W
+    meta_path = os.path.join(out_dir, "w.meta.json")
+    _write_json(
+        meta_path,
+        {
+            "D": W.shape[0],
+            "nnz": W.nnz(),
+            "normalize": gcfg.get("normalize", "sym"),
+            "format": W.meta.get("format"),
+            "source": W.meta.get("source"),
+            "seed": gcfg.get("seed", 0),
+        },
+    )
     # Write meta/ops json for PyTorch source
     if W.meta.get("source") == "pytorch":
         import hashlib, json as _json
 
-        meta_path = os.path.join(out_dir, "w.meta.json")
         ops_path = os.path.join(out_dir, "w.ops.json")
         pt_meta = W.meta.get("pytorch", {})
         used_ops = pt_meta.get("used_ops", [])
         trace_hash = hashlib.sha256(("|".join(used_ops) + f"|D={W.shape[0]}|hops={pt_meta.get('hops')}").encode("utf-8")).hexdigest()
-        meta_doc = {
-            "D": W.shape[0],
-            "nnz": W.nnz(),
-            "normalize": gcfg.get("normalize", "sym"),
-            "band_kernel": {
-                "hops": gcfg.get("pytorch", {}).get("hops", 1),
-                "reuse_decay": gcfg.get("pytorch", {}).get("reuse_decay", 0.7),
-            },
-            "op_weights": {
-                "linear": 1.0,
-                "matmul": 1.0,
-                "addmm": 1.0,
-                "bmm": 0.8,
-                "sdpa": 1.2,
-                "add": 0.25,
-                "layout": 0.1,
-            },
-            "seed": scfg.get("rng_seed", 0),
-            "trace_source": "pytorch",
-            "trace_hash": pt_meta.get("trace_hash") or trace_hash,
-        }
-        # bubble up attention block if present
+        # augment meta snapshot with pytorch-specific fields
+        _meta_doc = _read_json(meta_path)
+        _meta_doc.update(
+            {
+                "band_kernel": {
+                    "hops": gcfg.get("pytorch", {}).get("hops", 1),
+                    "reuse_decay": gcfg.get("pytorch", {}).get("reuse_decay", 0.7),
+                },
+                "op_weights": {
+                    "linear": 1.0,
+                    "matmul": 1.0,
+                    "addmm": 1.0,
+                    "bmm": 0.8,
+                    "sdpa": 1.2,
+                    "add": 0.25,
+                    "layout": 0.1,
+                },
+                "trace_source": "pytorch",
+                "trace_hash": pt_meta.get("trace_hash") or trace_hash,
+            }
+        )
+        # include solver seed if available
+        _meta_doc["seed"] = cfg.get("solver", {}).get("rng_seed", 0)
         if pt_meta.get("attention"):
-            meta_doc["attention"] = pt_meta.get("attention")
+            _meta_doc["attention"] = pt_meta.get("attention")
         ops_doc = {
             "used_ops": [f"aten::{k}" for k in used_ops],
             "skipped_ops_count": pt_meta.get("skipped_ops_count", 0),
@@ -103,7 +116,7 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
             "roles_present": used_ops,
             "notes": "last-dim feature heuristic; attention-aware mapping enabled when sectioning",
         }
-        _write_json(meta_path, meta_doc)
+        _write_json(meta_path, _meta_doc)
         _write_json(ops_path, ops_doc)
 
     # Baseline permute
@@ -130,6 +143,20 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         seed=int(scfg.get("rng_seed", 0)),
     )
     emit("PERMUTED", True, {"J": stats0.get("J"), "C": stats0.get("C"), "Q": stats0.get("Q")})
+    # persist baseline perm/stats
+    def _hash_pi(pi: list[int]) -> str:
+        import hashlib
+
+        h = hashlib.sha256(
+            ("|".join(str(int(x)) for x in pi) + f"|D={len(pi)}").encode("utf-8")
+        ).hexdigest()
+        return h
+
+    _write_json(
+        os.path.join(out_dir, "perm_before.json"),
+        {"D": len(pi0), "pi": list(map(int, pi0)), "hash": _hash_pi(pi0)},
+    )
+    _write_json(os.path.join(out_dir, "stats_before.json"), stats0)
 
     # Transform (mock: no-op + meta)
     transform_meta = {"delta_layout": False}
@@ -149,6 +176,11 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         )
         improved = stats1.get("J", 0.0) < stats0.get("J", 0.0)
         emit("REPERMUTED", True, {"improved": improved, "J1": stats1.get("J"), "J0": stats0.get("J")})
+        _write_json(
+            os.path.join(out_dir, "perm_after.json"),
+            {"D": len(pi1), "pi": list(map(int, pi1)), "hash": _hash_pi(pi1)},
+        )
+        _write_json(os.path.join(out_dir, "stats_after.json"), stats1)
 
     # Acceptance/rollback (ΔJ gate; HW gates optional)
     delta_J = stats1.get("J", 0.0) - stats0.get("J", 0.0)
@@ -200,15 +232,27 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     ept = None
     if power_enable:
         try:
-            # Placeholder: require external epilogger to compute energy; here set None
-            ept = None
+            # Optional: sample power series and persist as CSV
+            from icd.measure.nvml_logger import sample_power_series
+
+            series = sample_power_series(seconds=max(1.0, repeats / 1000.0), hz=int(measure_cfg.get("power_sample_hz", 10)))
+            import csv
+
+            with open(os.path.join(out_dir, "power.csv"), "w", newline="", encoding="utf-8") as f:
+                wcsv = csv.DictWriter(f, fieldnames=["t_s", "power_w"])
+                wcsv.writeheader()
+                for row in series:
+                    wcsv.writerow(row)
+            ept = None  # energy/token requires integration + token count; left None
         except Exception as e:
             errors.append({"stage": "power", "kind": "error", "detail": str(e)})
 
     metrics = {
+        "run_id": None,
         "latency_ms": {"mean": mean, "p50": p50, "p95": p95, "ci95": ci95},
         "l2_hit_pct": l2_hit,
         "ept_j_per_tok": ept,
+        "throughput_toks_s": None,
         "mode": mode,
         "C": stats1.get("C"),
         "Q": stats1.get("Q"),
