@@ -65,6 +65,7 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     save_w_npz(w_path, W)
     # Always write a simple meta snapshot for W
     meta_path = os.path.join(out_dir, "w.meta.json")
+    # Prefer nested mock seed when present
     _write_json(
         meta_path,
         {
@@ -73,7 +74,7 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
             "normalize": gcfg.get("normalize", "sym"),
             "format": W.meta.get("format"),
             "source": W.meta.get("source"),
-            "seed": gcfg.get("seed", 0),
+            "seed": gcfg.get("mock", {}).get("seed", gcfg.get("seed", 0)),
         },
     )
     # Write meta/ops json for PyTorch source
@@ -118,6 +119,9 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         }
         _write_json(meta_path, _meta_doc)
         _write_json(ops_path, ops_doc)
+
+    # Prepare transform meta placeholder early (used in cache keys below)
+    transform_meta: Dict[str, Any] = {"delta_layout": False, "metas": [], "triggers": []}
 
     # Optional transforms (S/Q/K): aggregate metas; keep mock no-op by default
     tcfg = cfg.get("transform", {})

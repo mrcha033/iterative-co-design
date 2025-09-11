@@ -31,5 +31,5 @@ Invariants (from Pass Design Doc)
 - `layout_perm` length = tensor rank; tag is idempotent; verification emits metrics marker.
 
 Links
-- docs/pass_design_doc.md: pass DAG and invariants
+- docs/Pass_Doc.md: pass DAG and invariants
 - tests/README.md: CI gates and layering

@@ -17,7 +17,7 @@ Present
 - SBOM & Contributing: `docs/SBOM_Contrib.md`, `CONTRIBUTING.md`
 - USAGE: `docs/USAGE.md`
 - Config Schema: `docs/schema/run_config.schema.json`
-- Repro Plan: `docs/repro_plan.md`
+- Repro Plan: `docs/Repro_Plan.md`
 
 Planned / Optional
 - Native IR Pass build & toolchain notes
@@ -25,4 +25,3 @@ Planned / Optional
 - Packaging guidelines and release checklist
 
 Cross‑links should remain valid after any change. When behavior changes, update the relevant spec(s) and USAGE.
-

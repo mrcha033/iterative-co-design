@@ -58,7 +58,9 @@ def main(argv: list[str] | None = None) -> int:
 
     def _print_schema() -> None:
         import json as _json, os as _os
-        schema_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "docs", "schema", "run_config.schema.json")
+        # project root (../.. from icd/cli/main.py)
+        _root = _os.path.dirname(_os.path.dirname(_os.path.dirname(__file__)))
+        schema_path = _os.path.join(_root, "docs", "schema", "run_config.schema.json")
         if _os.path.exists(schema_path):
             with open(schema_path, "r", encoding="utf-8") as f:
                 print(f.read())

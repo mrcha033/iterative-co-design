@@ -2,6 +2,13 @@
 
 This guide shows how to run the iterative layout optimization pipeline from source, what it produces, and common options. It reflects the current repository behavior and tests.
 
+## Reproduction Quick Guide
+- Smoke (linear vs iterative): `bash scripts/repro_smoke.sh` → writes `runs/smoke/{linear,iter}`
+- Pair mode (baseline+trial+verdict): `python -m icd.cli.main pair -c configs/mock.json --out runs/pair01`
+- Iterative single run: `python -m icd.cli.main run -c configs/mock.json --override pipeline.mode=iterative --out runs/iter`
+- Enable cache: add `--override cache.enable=true --override cache.cache_dir=.icd_cache`
+- Optional profiling/power: set `ICD_NCU_CMD=...` and add `--override measure.ncu_enable=true`, `--override measure.power_enable=true`
+
 ## Requirements
 - Python 3.10+
 - No GPU is required for the mock pipeline; Nsight/NVML are optional for profiling/power.
@@ -74,6 +81,15 @@ Run the smoke scenario and write outputs under `runs/smoke/`:
 
 ```bash
 bash scripts/repro_smoke.sh
+```
+
+Makefile shortcuts (optional):
+
+```bash
+make repro-smoke         # bash scripts/repro_smoke.sh
+make pair                # pair run to runs/pair01
+make test                # quick unit+integration+ir sweep
+make schema              # print input JSON Schema
 ```
 
 ## Reuse an Existing Permutation
