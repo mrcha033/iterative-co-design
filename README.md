@@ -59,6 +59,9 @@ PyPI (planned):
 pip install repermute
 ```
 
+Why “repermute”?
+- The project centers on re‑permutation after state transforms (S/Q/K) to improve memory locality. The distribution name `repermute` is descriptive and discoverable on PyPI, while the import package and CLI remain the short, memorable `icd` to reflect the broader “Iterative HW–SW Co‑Design” scope.
+
 ## Reproducing Results (End‑to‑End)
 
 This section shows how to reproduce the core experiment (linear vs iterative) from a fresh checkout, what artifacts to expect, and how to enable optional profiling and power logging.
