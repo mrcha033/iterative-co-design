@@ -123,6 +123,29 @@ def _normalize_sym(csr: CSRMatrix) -> CSRMatrix:
     return csr
 
 
+def _normalize_row(csr: CSRMatrix) -> CSRMatrix:
+    """Row-stochastic normalization: scale each row to sum to 1.
+
+    We store only upper-triangular entries; approximate by computing row sums
+    over stored entries and re-scaling those entries. Symmetry is approximate.
+    """
+    n = csr.shape[0]
+    row_sums = [0.0] * n
+    for i in range(n):
+        s = 0.0
+        start, end = csr.indptr[i], csr.indptr[i + 1]
+        for k in range(start, end):
+            s += csr.data[k]
+        row_sums[i] = s if s > 0.0 else 1.0
+    for i in range(n):
+        start, end = csr.indptr[i], csr.indptr[i + 1]
+        s = row_sums[i]
+        for k in range(start, end):
+            csr.data[k] = csr.data[k] / s
+    csr.meta["normalize"] = "row"
+    return csr
+
+
 def _cap_and_prune(csr: CSRMatrix, nnz_cap: int) -> CSRMatrix:
     """If nnz exceeds cap, prune per-row by keeping top-k by weight proportional to cap.
 
@@ -173,8 +196,10 @@ def build_w(source: str = "mock", **cfg) -> CSRMatrix:
         seed = int(cfg.get("seed", 0))
         csr = _make_blocky_mock(d=d, blocks=blocks, noise=noise, seed=seed)
         normalize = cfg.get("normalize", "sym")
-        if normalize in ("sym", "row"):
+        if normalize == "sym":
             csr = _normalize_sym(csr)
+        elif normalize == "row":
+            csr = _normalize_row(csr)
         # nnz cap rule: min(0.05 * D^2, 50_000_000)
         cap = cfg.get("nnz_cap", None)
         if cap is None:
@@ -194,8 +219,10 @@ def build_w(source: str = "mock", **cfg) -> CSRMatrix:
         csr = build_w_from_pytorch(model, example_inputs, **pt_cfg)
         # normalize & cap as with mock
         normalize = cfg.get("normalize", "sym")
-        if normalize in ("sym", "row"):
+        if normalize == "sym":
             csr = _normalize_sym(csr)
+        elif normalize == "row":
+            csr = _normalize_row(csr)
         d = csr.shape[0]
         cap = cfg.get("nnz_cap", None)
         if cap is None:
@@ -203,8 +230,90 @@ def build_w(source: str = "mock", **cfg) -> CSRMatrix:
         csr = _cap_and_prune(csr, int(cap))
         return csr
     elif source == "trace":
-        # TODO: define trace schema in docs and implement parser/merger
-        raise NotImplementedError("trace source not yet implemented; see Graph Spec doc")
+        # Support two forms:
+        # 1) cfg["trace"]: Iterable of (i,j,w) triples
+        # 2) cfg["trace"]: str path to JSONL with objects having src,dst,w (t/op ignored)
+        import math
+        trace = cfg.get("trace")
+        edges: list[tuple[int, int, float]] = []
+        if trace is None:
+            raise ValueError("graph.source='trace' requires 'trace' (list or path)")
+        if isinstance(trace, str):
+            path = trace
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if line.startswith("{"):
+                            obj = json.loads(line)
+                            i = int(obj.get("src"))
+                            j = int(obj.get("dst"))
+                            w = float(obj.get("w", 1.0))
+                            edges.append((i, j, w))
+                        else:
+                            # Fallback: CSV-ish i,j,w
+                            parts = [p.strip() for p in line.split(",")]
+                            if len(parts) >= 3:
+                                i, j = int(parts[0]), int(parts[1])
+                                w = float(parts[2])
+                                edges.append((i, j, w))
+            except Exception as e:
+                raise ValueError(f"failed to read trace path: {e}")
+        else:
+            # assume iterable of triples
+            for t in trace:
+                try:
+                    i, j, w = int(t[0]), int(t[1]), float(t[2])
+                    edges.append((i, j, w))
+                except Exception:
+                    continue
+        if not edges:
+            raise ValueError("empty trace edges")
+        # derive D either from cfg or edges
+        D = int(cfg.get("D", cfg.get("d", -1)))
+        if D <= 0:
+            D = max(max(i, j) for (i, j, _) in edges) + 1
+        # aggregate symmetric upper triangle weights
+        acc: Dict[tuple[int, int], float] = {}
+        for (i, j, w) in edges:
+            if i == j:
+                continue
+            if not (math.isfinite(w) and w > 0.0):
+                continue
+            a, b = (i, j) if i < j else (j, i)
+            if a < 0 or b < 0 or a >= D or b >= D:
+                continue
+            acc[(a, b)] = acc.get((a, b), 0.0) + w
+        # build CSR (upper triangle only)
+        indptr: List[int] = [0]
+        indices: List[int] = []
+        data: List[float] = []
+        for i in range(D):
+            row_items = [(j, acc[(i, j)]) for (ii, j) in acc.keys() if ii == i]
+            row_items.sort(key=lambda t: t[0])
+            for j, w in row_items:
+                indices.append(j)
+                data.append(w)
+            indptr.append(len(indices))
+        csr = CSRMatrix(indptr=indptr, indices=indices, data=data, shape=(D, D), meta={
+            "shape": D,
+            "format": "csr",
+            "nnz": len(data),
+            "source": "trace",
+        })
+        # normalization and cap/prune similar to mock
+        normalize = cfg.get("normalize", "sym")
+        if normalize == "sym":
+            csr = _normalize_sym(csr)
+        elif normalize == "row":
+            csr = _normalize_row(csr)
+        cap = cfg.get("nnz_cap", None)
+        if cap is None:
+            cap = int(min(0.05 * D * D, 50_000_000))
+        csr = _cap_and_prune(csr, int(cap))
+        return csr
     else:
         raise ValueError(f"Unknown source: {source}")
 

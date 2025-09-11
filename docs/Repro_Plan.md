@@ -7,6 +7,17 @@
 
 ## 1) 가정·제약
 
+주의: 현재 리포지토리는 모의(Mock) 파이프라인 중심으로 구성되어 있습니다. 아래 Mamba/BERT·Makefile·보조 스크립트는 계획/예시이며, 우선은 다음의 간단한 스모크 경로를 권장합니다:
+
+```bash
+bash scripts/repro_smoke.sh
+# 또는
+python -m icd.cli.main run -c configs/mock.json --override pipeline.mode=linear   --out runs/mock_linear
+python -m icd.cli.main run -c configs/mock.json --override pipeline.mode=iterative --out runs/mock_iter
+```
+
+자세한 실행 방법은 `docs/USAGE.md` 를 참고하세요. 향후 native 모델/IR/프로파일링이 준비되면 본 문서의 확장 시나리오를 활성화합니다.
+
 * **목표**: PRD 목표(Latency −20%, L2 +10%p, EpT −15%)를 대표 2 워크로드(SSM/Mamba-3B, Transformer/BERT-base)에서 재현.
 * **환경**: Python 3.10, CUDA 11.x+, A100/H100 1대 권장(ncu/NVML 가능). 로컬 Mock 재현 경로 포함(무GPU 가능).
 * **데이터/모델**: 공개 체크포인트 사용(Hugging Face 등). 상용/비공개 데이터 없음.
@@ -64,11 +75,7 @@ make fetch_models   # 내부 스크립트가 공개 체크포인트/데이터셋
 ### 4.1 Repro 0 — Mock 스모크(10분 내, 무GPU 가능)
 
 ```bash
-make repro_smoke
-# 또는:
-icd run -c configs/mock.yaml --override pipeline.mode=linear  --out runs/mock_linear
-icd run -c configs/mock.yaml --override pipeline.mode=iterative --out runs/mock_iter
-python scripts/collect_artifacts.py runs/mock_*
+bash scripts/repro_smoke.sh
 ```
 
 **판정**: `ΔC≤-10%` & `ΔQ≥0`(Cost Spec 기준). `report.html`에 상관 플롯 생성.

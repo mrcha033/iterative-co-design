@@ -21,6 +21,8 @@
 
 ## 3) 산출물(인터페이스 규격)
 
+참고: 실행 방법과 산출물 예시는 docs/USAGE.md 를 참고하세요.
+
 ### 3.1 용어·기본 타입
 
 * `D`: 상태/특징 차원(int).
@@ -116,6 +118,7 @@ def measure_power_nvml(*, sample_hz:int=10, duration_s:int) -> dict: ...
 ```yaml
 pipeline:
   mode: iterative              # linear | iterative
+  repermute_on_delta: false    # if true, perform re-permute when transform_meta.delta_layout=true (even in linear)
   repeats: 1000
   warmup_iter: 50
   fixed_clock: true
@@ -141,10 +144,13 @@ measure:
 report:
   out_dir: "runs/exp001"
   formats: ["html","csv"]
+  # 지정 시 해당 포맷만 생성. 미지정 시 html/csv 모두 생성.
+cache: {enable: false, cache_dir: ".icd_cache"}
 ```
 
-* **계약**: `pipeline.mode=linear`인 경우 4단계(re-permute) 생략.
+* **계약**: `pipeline.mode=linear`인 경우 4단계(re-permute) 생략. 단, `repermute_on_delta=true`이고 변환 메타에 `delta_layout=true`인 경우에는 재퍼뮤트 1회 수행.
 * **기본값**: 명시 없으면 PRD/SAS의 디폴트 사용.
+* **캐시**: `cache.enable=true`이고 `cache.cache_dir`가 설정된 경우에만 활성화.
 * **검증**: 스키마 위배 → `ConfigError`.
 
 ---
@@ -206,9 +212,10 @@ python -m icd.cli.main run -c config.json
 
 옵션:
 
-* (Planned) `--dry-run`: 스키마 검증·계약 체크만 수행.
-* (Planned) `--print-schema`: 현재 버전의 입력/출력 스키마 덤프.
-* (Planned) `--reuse-perm RUN_ID|PATH`: 이전 π 재사용(캐시 미스 시 무시).
+* `--dry-run`: 스키마 검증·계약 체크만 수행.
+* `--print-schema`: 현재 버전의 입력 스키마 골격 덤프.
+* `--no-measure`: 측정/리포트 단계를 건너뛰고 솔버만 실행.
+* `--reuse-perm PATH`: 이전 π 재사용(perm_before.json 형식, 캐시/재사용 경로).
 * (Planned) `--no-measure`: 솔버만 실행(벤치 제외).
 
 **종료 코드**

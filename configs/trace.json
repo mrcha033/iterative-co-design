@@ -1,0 +1,8 @@
+{
+  "pipeline": {"mode": "iterative", "repeats": 100, "warmup_iter": 10, "fixed_clock": true},
+  "graph": {"source": "trace", "trace": "tests/data/trace_demo.jsonl", "normalize": "row"},
+  "solver": {"time_budget_s": 1.0, "refine_steps": 200, "k_blocks": 4, "rng_seed": 0},
+  "measure": {"ncu_enable": false, "power_enable": false},
+  "report": {"out_dir": "runs/trace_iter"}
+}
+

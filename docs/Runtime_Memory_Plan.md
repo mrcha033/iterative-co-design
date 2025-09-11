@@ -10,6 +10,7 @@
 **Caching Policy**
 - **Key:** hash of `(graph.meta, cost cfg, solver cfg, adapter metas)`.
 - **Artifacts:** cache `perm.json`, `stats.json` keyed by hash; on hit, skip solver (I‑02).
+- **Status:** implementation optional/off by default in current repo to keep CI deterministic.
 - **Invalidation:** any `delta_layout=true` or cfg change invalidates.
 
 **KV Cache & Memory**
@@ -31,4 +32,3 @@
 
 **Self‑Review**
 - Extends current mock orchestrator by specifying cache keys, memory pools, and capture policy. Compatible with tests expecting artifacts/logs without enforcing GPU features in CI.
-

@@ -3,7 +3,7 @@
 - **Scope:** Co-access weight matrix `W` construction for iterative layout optimization. Covers inputs, normalization, noise/filtering, CSR caps/validation, and determinism rules, aligned to current mock/PyTorch pathways.
 
 **Inputs**
-- **Source:** `graph.source in {mock, pytorch, trace}`; implemented: `mock`, `pytorch` (partial), `trace` planned.
+- **Source:** `graph.source in {mock, pytorch, trace}`; implemented: `mock`, `pytorch` (partial), `trace` (basic JSONL/tuples).
 - **Config Keys (common):**
   - **D/d:** target dimension (nodes) when synthetic.
   - **blocks:** block count for synthetic blockiness.
@@ -35,7 +35,7 @@
 
 **Normalization**
 - `sym`: scale `W <- D^{-1/2} W D^{-1/2}` using degree approximation (see `core/graph._normalize_sym`).
-- `row`: optional row‑stochastic variant (TBD; not currently implemented). If selected, fall back to `sym` with flag noted.
+- `row`: row‑stochastic normalization implemented (approximate with upper‑triangle storage; uses per‑row sums).
 - `none`: no normalization.
 
 **Noise & Filters**
@@ -65,11 +65,9 @@
   - Optional when pytorch: `w.meta.json`, `w.ops.json`.
 
 **Open Items / TODO**
-- Implement `row` normalization path and doc its math.
-- Add `trace` loader and schema validator.
+- Extend `trace` loader coverage and add stricter schema validator.
 - Emit standalone `meta.json` for mock to match artifact list in AGENTS.
 
 **Self‑Review**
 - Matches current code paths in `core/graph.py` and `core/graph_pytorch.py`.
 - Determinism and cap/prune behavior align with unit tests; row‑norm noted as TBD coherently.
-

@@ -29,11 +29,12 @@
 
 ## 4) 사용자 시나리오(대표 플로우)
 
-1. 사용자는 기존 추론 스크립트에서:
+1. 사용자는 기존 추론 스크립트에서(현재 리포지토리 기준):
 
    ```bash
-   icd run --model mamba-3b --task wikitext --transform sparsity:0.5 --repermute auto
+   python -m icd.cli.main run -c configs/mock.json --override pipeline.mode=iterative --out runs/iter
    ```
+   보다 많은 예시는 docs/USAGE.md 참고.
 2. 프레임워크가 `(permute → transform → re-permute)`를 실행하고, **전/후 비교 리포트**(L2 hit/Latency/EpT)를 저장.
 3. 사용자는 **개입 없이** 최적 permutation을 캐시하고 재사용.
 

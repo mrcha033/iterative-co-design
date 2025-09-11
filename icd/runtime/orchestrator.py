@@ -119,7 +119,49 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         _write_json(meta_path, _meta_doc)
         _write_json(ops_path, ops_doc)
 
-    # Baseline permute
+    # Optional transforms (S/Q/K): aggregate metas; keep mock no-op by default
+    tcfg = cfg.get("transform", {})
+    metas: list[Dict[str, Any]] = []
+    triggers: list[str] = []
+    delta_layout_any = False
+    transform_errors: list[Dict[str, str]] = []
+    try:
+        if isinstance(tcfg, dict):
+            # Sparsity
+            s = tcfg.get("sparsity", {}) if tcfg.get("sparsity", {}).get("enable") else None
+            if s:
+                from icd.adapters.sparsity import apply_sparsity
+
+                _, m = apply_sparsity(None, type=s.get("type", "2:4"), rate=float(s.get("rate", 0.0)))
+                metas.append(m)
+                if m.get("delta_layout"):
+                    triggers.append("S")
+                delta_layout_any = bool(delta_layout_any or m.get("delta_layout"))
+            # Quant
+            q = tcfg.get("quant", {}) if tcfg.get("quant", {}).get("enable") else None
+            if q:
+                from icd.adapters.quant import apply_quant
+
+                _, m = apply_quant(None, dtype=q.get("dtype", "int8"), method=q.get("method", "ptq-minmax"))
+                metas.append(m)
+                if m.get("delta_layout"):
+                    triggers.append("Q")
+                delta_layout_any = bool(delta_layout_any or m.get("delta_layout"))
+            # KV cache
+            k = tcfg.get("kv", {}) if tcfg.get("kv", {}).get("enable") else None
+            if k:
+                from icd.adapters.kv import apply_kvcache
+
+                _, m = apply_kvcache(None, block=int(k.get("block", 128)), drop=float(k.get("drop", 0.0)))
+                metas.append(m)
+                if m.get("delta_layout"):
+                    triggers.append("K")
+                delta_layout_any = bool(delta_layout_any or m.get("delta_layout"))
+    except Exception as e:
+        # Transform errors are non-fatal in mock path
+        transform_errors.append({"stage": "transform", "kind": "error", "detail": str(e)})
+
+    # Baseline permute (with optional cache or reuse)
     scfg = cfg.get("solver", {})
     ccfg = CostConfig(
         alpha=cfg.get("cost", {}).get("alpha", 1.0),
@@ -135,13 +177,58 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         hysteresis=cfg.get("cost", {}).get("hysteresis", 2),
     )
 
-    pi0, stats0 = fit_permutation(
-        W,
-        time_budget_s=float(scfg.get("time_budget_s", 1.0)),
-        refine_steps=int(scfg.get("refine_steps", 1000)),
-        cfg=ccfg,
-        seed=int(scfg.get("rng_seed", 0)),
-    )
+    # Optional cache: off by default unless cache.enable=true and cache_dir set
+    cache_cfg = cfg.get("cache", {})
+    pi0 = None
+    stats0: Dict[str, Any] | None = None
+    cache_hit = False
+    if cache_cfg.get("enable") and cache_cfg.get("cache_dir"):
+        try:
+            import hashlib
+
+            cache_dir = str(cache_cfg.get("cache_dir"))
+            _ensure_dir(cache_dir)
+            wmeta = _read_json(meta_path)
+            sig = json.dumps({
+                "graph": wmeta,
+                "solver": scfg,
+                "cost": cfg.get("cost", {}),
+                "transform": transform_meta,
+            }, sort_keys=True, ensure_ascii=False)
+            key = hashlib.sha256(sig.encode("utf-8")).hexdigest()[:16]
+            perm_cache_path = os.path.join(cache_dir, f"{key}.perm_before.json")
+            stats_cache_path = os.path.join(cache_dir, f"{key}.stats_before.json")
+            if os.path.exists(perm_cache_path) and os.path.exists(stats_cache_path):
+                doc = _read_json(perm_cache_path)
+                pi0 = list(map(int, doc.get("pi", [])))
+                stats0 = _read_json(stats_cache_path)
+                cache_hit = True
+        except Exception as e:
+            transform_errors.append({"stage": "cache", "kind": "error", "detail": str(e)})
+
+    # Reuse permutation if provided
+    reuse_path = cfg.get("pipeline", {}).get("reuse_perm")
+    if (pi0 is None or stats0 is None) and reuse_path:
+        try:
+            rp = str(reuse_path)
+            if os.path.isdir(rp):
+                rp = os.path.join(rp, "perm_before.json")
+            reuse_doc = _read_json(rp)
+            pi0 = list(map(int, reuse_doc.get("pi", [])))
+            # Evaluate stats for reused permutation
+            stats0 = eval_cost(W, pi0, pi0, ccfg)
+            cache_hit = True
+        except Exception as e:
+            transform_errors.append({"stage": "reuse", "kind": "error", "detail": str(e)})
+
+    if pi0 is None or stats0 is None:
+        pi0, stats0 = fit_permutation(
+            W,
+            time_budget_s=float(scfg.get("time_budget_s", 1.0)),
+            refine_steps=int(scfg.get("refine_steps", 1000)),
+            cfg=ccfg,
+            seed=int(scfg.get("rng_seed", 0)),
+        )
     emit("PERMUTED", True, {"J": stats0.get("J"), "C": stats0.get("C"), "Q": stats0.get("Q")})
     # persist baseline perm/stats
     def _hash_pi(pi: list[int]) -> str:
@@ -157,16 +244,36 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         {"D": len(pi0), "pi": list(map(int, pi0)), "hash": _hash_pi(pi0)},
     )
     _write_json(os.path.join(out_dir, "stats_before.json"), stats0)
+    # Update cache on miss
+    if cache_cfg.get("enable") and cache_cfg.get("cache_dir") and not cache_hit:
+        try:
+            import hashlib
+
+            cache_dir = str(cache_cfg.get("cache_dir"))
+            _ensure_dir(cache_dir)
+            wmeta = _read_json(meta_path)
+            sig = json.dumps({
+                "graph": wmeta,
+                "solver": scfg,
+                "cost": cfg.get("cost", {}),
+                "transform": transform_meta,
+            }, sort_keys=True, ensure_ascii=False)
+            key = hashlib.sha256(sig.encode("utf-8")).hexdigest()[:16]
+            _write_json(os.path.join(cache_dir, f"{key}.perm_before.json"), {"D": len(pi0), "pi": list(map(int, pi0)), "hash": _hash_pi(pi0)})
+            _write_json(os.path.join(cache_dir, f"{key}.stats_before.json"), stats0)
+        except Exception as e:
+            transform_errors.append({"stage": "cache", "kind": "error", "detail": str(e)})
 
     # Transform (mock: no-op + meta)
-    transform_meta = {"delta_layout": False}
+    transform_meta = {"delta_layout": bool(delta_layout_any), "metas": metas, "triggers": triggers}
     emit("TRANSFORMED", True, transform_meta)
 
-    # Re-permute if iterative
+    # Re-permute if iterative, or opt-in when transform triggers delta layout
     mode = cfg.get("pipeline", {}).get("mode", "iterative")
+    repermute_on_delta = bool(cfg.get("pipeline", {}).get("repermute_on_delta", False))
     pi1 = pi0
     stats1 = stats0
-    if mode == "iterative":
+    if (mode == "iterative") or (repermute_on_delta and transform_meta.get("delta_layout")):
         pi1, stats1 = fit_permutation(
             W,
             time_budget_s=float(scfg.get("time_budget_s", 1.0)),
@@ -221,14 +328,35 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     measure_cfg = cfg.get("measure", {})
     l2_hit = None
     errors: list[dict] = []
-    if measure_cfg.get("ncu_enable", False):
+    no_measure = bool(cfg.get("pipeline", {}).get("no_measure", False))
+    if measure_cfg.get("ncu_enable", False) and not no_measure:
         try:
-            l2_res = parse_l2_hit_from_section_json(os.path.join(out_dir, "ncu.json"))
+            # Optionally run external ncu if ICD_NCU_CMD is provided (must produce JSON)
+            ncu_path = os.path.join(out_dir, "ncu.json")
+            ncu_cmd = os.environ.get("ICD_NCU_CMD")
+            if ncu_cmd:
+                import subprocess
+
+                cmd = ncu_cmd.format(out=ncu_path)
+                try:
+                    out = subprocess.check_output(cmd, shell=True)
+                    # If command outputs JSON to stdout, save it
+                    if out:
+                        with open(ncu_path, "wb") as f:
+                            f.write(out)
+                except Exception as _e:
+                    errors.append({"stage": "ncu", "kind": "invoke_error", "detail": str(_e)})
+            # Ensure a stub exists so downstream parsing is consistent
+            if not os.path.exists(ncu_path):
+                from icd.measure.l2_ncu import collect_l2_section_stub
+                with open(ncu_path, "w", encoding="utf-8") as f:
+                    json.dump(collect_l2_section_stub(), f)
+            l2_res = parse_l2_hit_from_section_json(ncu_path)
             l2_hit = l2_res.get("l2_hit_pct")
         except Exception as e:
             errors.append({"stage": "ncu", "kind": "error", "detail": str(e)})
             l2_hit = None
-    power_enable = measure_cfg.get("power_enable", False)
+    power_enable = (measure_cfg.get("power_enable", False) and not no_measure)
     ept = None
     if power_enable:
         try:
@@ -243,7 +371,20 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
                 wcsv.writeheader()
                 for row in series:
                     wcsv.writerow(row)
-            ept = None  # energy/token requires integration + token count; left None
+            # naive EpT estimate: integrate power over sampled window and divide by repeats (as tokens)
+            ept = None
+            try:
+                if series and len(series) >= 2 and repeats > 0:
+                    # sort by time
+                    series_sorted = sorted(series, key=lambda r: r.get("t_s", 0.0))
+                    energy_j = 0.0
+                    for a, b in zip(series_sorted[:-1], series_sorted[1:]):
+                        dt = max(0.0, float(b.get("t_s", 0.0)) - float(a.get("t_s", 0.0)))
+                        pw = float(a.get("power_w", 0.0))
+                        energy_j += pw * dt
+                    ept = energy_j / float(repeats)
+            except Exception:
+                ept = None
         except Exception as e:
             errors.append({"stage": "power", "kind": "error", "detail": str(e)})
 
@@ -252,7 +393,7 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         "latency_ms": {"mean": mean, "p50": p50, "p95": p95, "ci95": ci95},
         "l2_hit_pct": l2_hit,
         "ept_j_per_tok": ept,
-        "throughput_toks_s": None,
+        "throughput_toks_s": (None if (mean is None) else (1000.0 / mean) if mean > 0 else None),
         "mode": mode,
         "C": stats1.get("C"),
         "Q": stats1.get("Q"),
@@ -273,19 +414,35 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
             "after": None,
             "delta": None,
         },
-        "errors": errors,
+        "errors": errors + transform_errors,
+        "transform_meta": transform_meta,
     }
     # Optional quality hook (CI-safe): if eval.enable is true, include quality field (None by default)
     if cfg.get("eval", {}).get("enable", False):
         metrics["quality"] = None
+    # Compute a simple run_id hash and attach
+    try:
+        import hashlib
+
+        _cfg_blob = json.dumps(cfg, sort_keys=True, ensure_ascii=False)
+        _wmeta_blob = json.dumps(_read_json(meta_path), sort_keys=True, ensure_ascii=False)
+        _sig = f"{_cfg_blob}|{_wmeta_blob}|{mode}|J={stats1.get('J')}"
+        metrics["run_id"] = hashlib.sha256(_sig.encode("utf-8")).hexdigest()[:12]
+    except Exception:
+        metrics["run_id"] = None
+
     metrics_path = os.path.join(out_dir, "metrics.json")
     _write_json(metrics_path, metrics)
     emit("MEASURED", True, {})
 
-    # Simple CSV report
-    write_csv_report(out_dir, metrics)
-    write_html_report(out_dir, metrics)
-    emit("REPORTED", True, {})
+    # Simple CSV/HTML report (unless no_measure); honor optional report.formats
+    if not no_measure:
+        fmts = cfg.get("report", {}).get("formats")
+        if not fmts or "csv" in fmts:
+            write_csv_report(out_dir, metrics)
+        if not fmts or "html" in fmts:
+            write_html_report(out_dir, metrics)
+        emit("REPORTED", True, {})
 
     # Persist log
     with open(log_path, "w", encoding="utf-8") as f:
