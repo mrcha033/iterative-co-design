@@ -44,6 +44,21 @@ Notes
 - Most features are CI‑portable mocks with deterministic behavior; optional hooks enable real profiling/power.
 - See USAGE for flags like `--dry-run`, `--print-schema`, `--no-measure`, and `--reuse-perm`.
 
+## Install
+
+From source (development):
+
+```bash
+pip install -e .[dev]
+```
+
+PyPI (planned):
+
+```bash
+# distribution name: repermute ; import and CLI remain `icd`
+pip install repermute
+```
+
 ## Reproducing Results (End‑to‑End)
 
 This section shows how to reproduce the core experiment (linear vs iterative) from a fresh checkout, what artifacts to expect, and how to enable optional profiling and power logging.
@@ -126,3 +141,18 @@ If you prefer one-liners, a Makefile is provided:
 - `make test`: run unit, integration, and IR tests
 - `make schema`: print the input JSON Schema
 - `make clean-runs`: remove `runs/` and `.icd_cache/`
+
+## License
+
+Apache License 2.0 — see `LICENSE`.
+
+## Citation
+
+If you use this software, please cite:
+
+```
+Yunmin Cha. Iterative HW–SW Co-Design — Layout Re-Optimization (ICD), 2025.
+Software. https://github.com/mrcha033/iterative-co-design
+```
+
+See `CITATION.cff` for a citation file (CFF) that GitHub can render and export to BibTeX.

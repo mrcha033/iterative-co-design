@@ -13,6 +13,12 @@ This guide shows how to run the iterative layout optimization pipeline from sour
 - Python 3.10+
 - No GPU is required for the mock pipeline; Nsight/NVML are optional for profiling/power.
 
+Install (PyPI, planned):
+
+```bash
+pip install repermute   # distribution name; import and CLI are `icd`
+```
+
 ## Quick Start (Mock)
 
 Run linear vs iterative and compare metrics:

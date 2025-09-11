@@ -8,6 +8,7 @@ from typing import Any, Dict
 from icd.runtime.orchestrator import run as run_pipeline
 from icd.runtime.orchestrator import run_pair as run_pipeline_pair
 from icd.errors import ConfigError
+from icd import __version__
 
 
 def parse_override(override: str) -> Dict[str, Any]:
@@ -39,6 +40,7 @@ def deep_update(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="icd")
+    ap.add_argument("-V", "--version", action="version", version=f"icd {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True)
     runp = sub.add_parser("run", help="Run ICD pipeline")
     runp.add_argument("-c", "--config", required=True, help="JSON config path")
