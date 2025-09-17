@@ -1,0 +1,43 @@
+{
+  "pipeline": {
+    "mode": "iterative",
+    "repeats": 40,
+    "warmup_iter": 5,
+    "fixed_clock": true,
+    "runner": "icd.runtime.runners_hf.hf_causal_lm_runner",
+    "runner_context": {
+      "model_loader": "icd.experiments.hf.load_hf_causal_lm",
+      "model_loader_kwargs": {
+        "model_name": "state-spaces/mamba-130m-hf",
+        "sequence_length": 256,
+        "batch_size": 2,
+        "prompt": [
+          "The quick brown fox jumps over the lazy dog",
+          "In a distant galaxy, explorers uncovered"
+        ],
+        "device": "cpu"
+      }
+    }
+  },
+  "graph": {
+    "source": "pytorch",
+    "normalize": "sym",
+    "loader": "icd.experiments.hf.load_hf_causal_lm",
+    "loader_kwargs": {
+      "model_name": "state-spaces/mamba-130m-hf",
+      "sequence_length": 256,
+      "batch_size": 2,
+      "prompt": [
+        "The quick brown fox jumps over the lazy dog",
+        "In a distant galaxy, explorers uncovered"
+      ],
+      "device": "cpu"
+    },
+    "pytorch": {"hops": 2, "reuse_decay": 0.7, "max_len": 256, "byte_weight": true},
+    "nnz_cap": 1500000
+  },
+  "solver": {"time_budget_s": 120, "refine_steps": 800, "k_blocks": 4, "rng_seed": 0},
+  "transform": {"sparsity": {"enable": false}, "quant": {"enable": false}, "kv": {"enable": false}},
+  "measure": {"ncu_enable": false, "power_enable": false},
+  "report": {"out_dir": "runs/mamba_iter", "formats": ["html", "csv"]}
+}

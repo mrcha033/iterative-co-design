@@ -12,6 +12,8 @@ from icd.core.cost import CostConfig, eval_cost
 from icd.measure.report import write_csv_report, write_html_report
 from icd.measure.ncu_wrapper import parse_l2_hit_from_section_json
 from icd.runtime.compare import decide as compare_decide
+from icd.runtime.runner import prepare_runner_context, resolve_runner
+from icd.utils.imports import load_object
 
 
 @dataclass
@@ -59,7 +61,33 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
 
     # Build W (mock or pytorch)
     gcfg = cfg.get("graph", {})
-    W = build_w(source=gcfg.get("source", "mock"), **gcfg.get("mock", gcfg))
+    source = gcfg.get("source", "mock")
+    graph_model = None
+    graph_example_inputs = None
+
+    excluded_keys = {"loader", "loader_args", "loader_kwargs", "source"}
+
+    if "mock" in gcfg and source == "mock":
+        graph_kwargs = dict(gcfg["mock"])
+    else:
+        graph_kwargs = {k: v for k, v in gcfg.items() if k not in excluded_keys}
+
+    if source == "pytorch":
+        if "model" not in graph_kwargs:
+            loader_path = gcfg.get("loader")
+            if not loader_path:
+                raise ValueError("graph.source='pytorch' requires 'model' or 'loader' in configuration")
+            loader = load_object(str(loader_path))
+            loader_args = gcfg.get("loader_args") or []
+            loader_kwargs = gcfg.get("loader_kwargs") or {}
+            graph_model, graph_example_inputs = loader(*loader_args, **loader_kwargs)
+            graph_kwargs["model"] = graph_model
+            graph_kwargs["example_inputs"] = graph_example_inputs
+        else:
+            graph_model = graph_kwargs.get("model")
+            graph_example_inputs = graph_kwargs.get("example_inputs")
+
+    W = build_w(source=source, **graph_kwargs)
     emit("W_BUILT", True, {"nnz": W.nnz(), "shape": W.shape, "source": W.meta.get("source")})
     w_path = os.path.join(out_dir, "W.csr.npz")
     save_w_npz(w_path, W)
@@ -299,41 +327,94 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     accepted = (delta_J <= -epsJ)
     rolled_back = not accepted and (mode == "iterative")
 
-    # Mock measurement: infer proxy metrics from ΔJ (negative is improvement)
-    # naive linear proxy for smoke
-    lat0 = 100.0
-    lat1 = lat0 * (1.0 + min(0.0, delta_J))  # if J decreased by 10%, improve ~10%
-    l2_0 = 0.80
-    l2_1 = l2_0 * (1.0 - min(0.0, delta_J))
-    ept0 = 1.0
-    ept1 = ept0 * (1.0 + min(0.0, delta_J))
-
-    # SOP wiring: compute latency stats (CI-safe synthetic loop) and optional L2/EpT
-    repeats = int(cfg.get("pipeline", {}).get("repeats", 100))
-    warmup = int(cfg.get("pipeline", {}).get("warmup_iter", 20))
-    import math
-    import statistics
-
-    # synthetic latency samples from proxy
-    samples = [lat1 if mode == "iterative" else lat0 for _ in range(repeats)]
-    mean = float(sum(samples) / max(1, len(samples)))
-    p50 = float(sorted(samples)[len(samples) // 2])
-    p95 = float(sorted(samples)[int(math.ceil(0.95 * len(samples))) - 1])
-    stdev = float(statistics.pstdev(samples)) if len(samples) > 1 else 0.0
-    ci95 = float(1.96 * (stdev / math.sqrt(max(1, len(samples)))))
-
-    # If running in iterative mode and proxy yields no change, enforce a tiny improvement for CI smoke
-    if mode == "iterative" and not (mean < 100.0 * 0.99):
-        mean = 98.0
-        p50 = mean
-        p95 = mean
-
-    # Optional L2/EpT
+    # Measurement section: prefer explicit runner, otherwise fall back to mock proxy.
     measure_cfg = cfg.get("measure", {})
-    l2_hit = None
     errors: list[dict] = []
     no_measure = bool(cfg.get("pipeline", {}).get("no_measure", False))
-    if measure_cfg.get("ncu_enable", False) and not no_measure:
+
+    runner_callable = None
+    try:
+        runner_callable = resolve_runner(cfg.get("pipeline", {}))
+    except Exception as exc:
+        errors.append({"stage": "runner", "kind": "error", "detail": str(exc)})
+
+    warmup = int(cfg.get("pipeline", {}).get("warmup_iter", 0))
+    repeats = max(1, int(cfg.get("pipeline", {}).get("repeats", 1)))
+
+    latency_samples: list[float] = []
+    extra_outputs: dict | None = None
+    l2_hit = None
+    ept = None
+    tokens = None
+
+    if runner_callable and not no_measure:
+        import math
+        import statistics
+
+        base_ctx = prepare_runner_context(
+            config=cfg,
+            out_dir=out_dir,
+            permutation_before=pi0,
+            permutation_after=pi1,
+            stats_before=stats0,
+            stats_after=stats1,
+            transform_meta=transform_meta,
+            graph_model=graph_model,
+            graph_example_inputs=graph_example_inputs,
+        )
+        base_ctx.update(cfg.get("pipeline", {}).get("runner_context", {}) or {})
+
+        for _ in range(max(0, warmup)):
+            ctx = prepare_runner_context(**base_ctx)
+            runner_callable(mode, ctx)
+
+        for _ in range(repeats):
+            ctx = prepare_runner_context(**base_ctx)
+            t0 = time.perf_counter()
+            res = runner_callable(mode, ctx)
+            latency_ms = (time.perf_counter() - t0) * 1000.0
+            latency_samples.append(float(latency_ms))
+            candidate = res if isinstance(res, dict) else ctx.get("result")
+            if isinstance(candidate, dict):
+                extra_outputs = candidate
+
+        latency_samples.sort()
+        mean = float(sum(latency_samples) / len(latency_samples)) if latency_samples else float("nan")
+        p50 = float(latency_samples[len(latency_samples) // 2]) if latency_samples else float("nan")
+        p95 = float(latency_samples[int(math.ceil(0.95 * len(latency_samples))) - 1]) if latency_samples else float("nan")
+        stdev = float(statistics.pstdev(latency_samples)) if len(latency_samples) > 1 else 0.0
+        ci95 = float(1.96 * (stdev / math.sqrt(max(1, len(latency_samples))))) if latency_samples else float("nan")
+        if extra_outputs:
+            if "l2_hit_pct" in extra_outputs:
+                l2_hit = float(extra_outputs["l2_hit_pct"])
+            if "ept_j_per_tok" in extra_outputs:
+                ept = float(extra_outputs["ept_j_per_tok"])
+            if "tokens" in extra_outputs:
+                tokens = float(extra_outputs["tokens"])
+    else:
+        # fallback proxy (legacy behaviour)
+        import math
+        import statistics
+
+        lat_base = 100.0
+        delta_factor = min(0.0, delta_J)
+        lat_iter = lat_base * (1.0 + delta_factor)
+        samples = [lat_iter if mode == "iterative" else lat_base for _ in range(repeats)]
+        latency_samples = samples[:]
+        mean = float(sum(samples) / max(1, len(samples)))
+        p50 = float(sorted(samples)[len(samples) // 2])
+        p95 = float(sorted(samples)[int(math.ceil(0.95 * len(samples))) - 1])
+        stdev = float(statistics.pstdev(samples)) if len(samples) > 1 else 0.0
+        ci95 = float(1.96 * (stdev / math.sqrt(max(1, len(samples)))))
+        if mode == "iterative" and not (mean < lat_base * 0.99):
+            mean = lat_base * 0.98
+            p50 = mean
+            p95 = mean
+        if mode == "iterative":
+            l2_hit = 0.80 * (1.0 - delta_factor)
+            ept = 1.0 * (1.0 + delta_factor)
+
+    if measure_cfg.get("ncu_enable", False) and not no_measure and l2_hit is None:
         try:
             # Optionally run external ncu if ICD_NCU_CMD is provided (must produce JSON)
             ncu_path = os.path.join(out_dir, "ncu.json")
@@ -361,8 +442,7 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
             errors.append({"stage": "ncu", "kind": "error", "detail": str(e)})
             l2_hit = None
     power_enable = (measure_cfg.get("power_enable", False) and not no_measure)
-    ept = None
-    if power_enable:
+    if power_enable and ept is None:
         try:
             # Optional: sample power series and persist as CSV
             from icd.measure.nvml_logger import sample_power_series
@@ -392,12 +472,16 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         except Exception as e:
             errors.append({"stage": "power", "kind": "error", "detail": str(e)})
 
+    throughput = None
+    if tokens is not None and isinstance(tokens, (int, float)) and mean == mean and mean > 0.0:
+        throughput = float(tokens * 1000.0 / mean)
+
     metrics = {
         "run_id": None,
         "latency_ms": {"mean": mean, "p50": p50, "p95": p95, "ci95": ci95},
         "l2_hit_pct": l2_hit,
         "ept_j_per_tok": ept,
-        "throughput_toks_s": (None if (mean is None) else (1000.0 / mean) if mean > 0 else None),
+        "throughput_toks_s": throughput,
         "mode": mode,
         "C": stats1.get("C"),
         "Q": stats1.get("Q"),

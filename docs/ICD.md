@@ -122,11 +122,24 @@ pipeline:
   repeats: 1000
   warmup_iter: 50
   fixed_clock: true
+  runner: icd.runtime.runners.mock_inference   # dotted callable path (optional)
+  runner_context:
+    tokens: 1024
 graph:
   source: trace                # trace | mock
   trace: []                    # (i,j,weight) 리스트 또는 파일 경로
   mock: {D: 2560, blocks: 4, noise: 0.02, seed: 42}
   normalize: sym               # none|row|sym
+  loader: icd.experiments.hf.load_hf_sequence_classifier   # optional PyTorch loader
+  loader_kwargs:
+    model_name: bert-base-uncased
+    sequence_length: 128
+    batch_size: 4
+  loader: icd.experiments.hf.load_hf_sequence_classifier   # optional PyTorch loader
+  loader_kwargs:
+    model_name: bert-base-uncased
+    sequence_length: 128
+    batch_size: 4
 solver:
   time_budget_s: 300
   refine_steps: 2000
@@ -152,6 +165,16 @@ cache: {enable: false, cache_dir: ".icd_cache"}
 * **기본값**: 명시 없으면 PRD/SAS의 디폴트 사용.
 * **캐시**: `cache.enable=true`이고 `cache.cache_dir`가 설정된 경우에만 활성화.
 * **검증**: 스키마 위배 → `ConfigError`.
+* **Runner**: `pipeline.runner`에 `module:function` 형식(또는 dotted path)을 지정하면 해당 callable이 실제 추론/측정 루프를 실행한다. 반환 딕셔너리의 `l2_hit_pct`, `ept_j_per_tok`, `tokens` 키는 메트릭에 전파된다. 미지정 시 mock proxy가 사용된다.
+* **Runner 컨텍스트 필드**:
+
+  | 키 | 설명 |
+  | --- | --- |
+  | `model_loader` | dotted-path 함수. 호출 시 `(model, example_inputs)`을 반환해야 하며, runner/init dual 사용에 대비한다. |
+  | `model_loader_args` / `model_loader_kwargs` | `model_loader` 호출 시 사용할 위치/키워드 인자. |
+  | `graph_model` / `graph_example_inputs` | 그래프 단계에서 생성된 객체. orchestrator가 자동으로 runner 컨텍스트에 주입하여 재사용한다. |
+
+* **PyTorch 로더**: `graph.loader`가 지정되면 dotted-path 함수가 실행되어 `(model, example_inputs)`를 반환해야 한다. 동일한 함수를 `pipeline.runner_context.model_loader`에 재사용하면 그래프 구축과 측정이 같은 모델을 공유한다.
 
 ---
 

@@ -13,7 +13,9 @@
         "warmup_iter": {"type": "integer", "minimum": 0},
         "fixed_clock": {"type": "boolean"},
         "no_measure": {"type": "boolean"},
-        "reuse_perm": {"type": "string"}
+        "reuse_perm": {"type": "string"},
+        "runner": {"type": ["string", "object"]},
+        "runner_context": {"type": "object"}
       },
       "required": ["mode"]
     },
@@ -34,7 +36,10 @@
         "trace": {"oneOf": [
           {"type": "string"},
           {"type": "array", "items": {"type": "array", "minItems": 3, "maxItems": 3}}
-        ]}
+        ]},
+        "loader": {"type": "string"},
+        "loader_args": {"type": "array"},
+        "loader_kwargs": {"type": "object"}
       },
       "required": ["source"]
     },
@@ -77,4 +82,3 @@
   },
   "required": ["pipeline", "graph", "solver", "report"]
 }
-

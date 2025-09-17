@@ -18,6 +18,7 @@ Present
 - USAGE: `docs/USAGE.md`
 - Config Schema: `docs/schema/run_config.schema.json`
 - Repro Plan: `docs/Repro_Plan.md`
+- Executable configs: `configs/mock.json`, `configs/trace.json`, `configs/bert.json`, `configs/mamba.json`
 
 Planned / Optional
 - Native IR Pass build & toolchain notes

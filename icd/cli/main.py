@@ -101,6 +101,12 @@ def main(argv: list[str] | None = None) -> int:
         fixed_clock = cfg.get("pipeline", {}).get("fixed_clock")
         if fixed_clock is not None and not isinstance(fixed_clock, bool):
             errs.append("pipeline.fixed_clock must be boolean if set")
+        runner = cfg.get("pipeline", {}).get("runner")
+        if runner is not None and not isinstance(runner, (str, dict)) and not callable(runner):
+            errs.append("pipeline.runner must be a dotted path string or callable")
+        runner_ctx = cfg.get("pipeline", {}).get("runner_context")
+        if runner_ctx is not None and not isinstance(runner_ctx, dict):
+            errs.append("pipeline.runner_context must be an object if set")
         # Graph
         src = cfg.get("graph", {}).get("source")
         if src not in ("mock", "pytorch", "trace"):

@@ -1,5 +1,12 @@
 {
-  "pipeline": {"mode": "iterative", "repeats": 1000, "warmup_iter": 50, "fixed_clock": true},
+  "pipeline": {
+    "mode": "iterative",
+    "repeats": 200,
+    "warmup_iter": 20,
+    "fixed_clock": true,
+    "runner": "icd.runtime.runners.mock_inference",
+    "runner_context": {"tokens": 1024, "provide_l2": true, "provide_ept": true}
+  },
   "graph": {"source": "mock", "mock": {"d": 256, "blocks": 4, "noise": 0.02, "seed": 0, "normalize": "sym"}},
   "solver": {"time_budget_s": 1.0, "refine_steps": 500, "k_blocks": 4, "rng_seed": 0},
   "measure": {"ncu_enable": false, "power_enable": false, "power_sample_hz": 10},

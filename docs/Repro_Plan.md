@@ -7,16 +7,20 @@
 
 ## 1) 가정·제약
 
-주의: 현재 리포지토리는 모의(Mock) 파이프라인 중심으로 구성되어 있습니다. 아래 Mamba/BERT·Makefile·보조 스크립트는 계획/예시이며, 우선은 다음의 간단한 스모크 경로를 권장합니다:
+실험은 두 레벨로 제공됩니다.
+
+1. **Mock 스모크** — 의존성 없이 구조/파이프라인 검증 (`configs/mock.json`).
+2. **HuggingFace 기반 BERT/Mamba** — 실 모델 로딩 및 추론 실행 (`configs/bert.json`, `configs/mamba.json`).
+
+HuggingFace 실험을 실행하려면 다음을 설치하세요(예: CPU 환경):
 
 ```bash
-bash scripts/repro_smoke.sh
-# 또는
-python -m icd.cli.main run -c configs/mock.json --override pipeline.mode=linear   --out runs/mock_linear
-python -m icd.cli.main run -c configs/mock.json --override pipeline.mode=iterative --out runs/mock_iter
+pip install -e .[experiments]
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install mamba-ssm  # Mamba 실험 시 필요
 ```
 
-자세한 실행 방법은 `docs/USAGE.md` 를 참고하세요. 향후 native 모델/IR/프로파일링이 준비되면 본 문서의 확장 시나리오를 활성화합니다.
+GPU 사용 시에는 CUDA/cuDNN에 맞는 PyTorch 휠을 직접 설치해야 합니다. 자세한 옵션은 `docs/USAGE.md` 참고.
 
 * **목표**: PRD 목표(Latency −20%, L2 +10%p, EpT −15%)를 대표 2 워크로드(SSM/Mamba-3B, Transformer/BERT-base)에서 재현.
 * **환경**: Python 3.10, CUDA 11.x+, A100/H100 1대 권장(ncu/NVML 가능). 로컬 Mock 재현 경로 포함(무GPU 가능).
@@ -31,7 +35,7 @@ python -m icd.cli.main run -c configs/mock.json --override pipeline.mode=iterati
 
   * `Makefile`, `scripts/repro_{smoke,full,ae}.sh`, `scripts/collect_artifacts.py`
   * `env/environment.yml`(conda), `Dockerfile`(옵션)
-  * `configs/{mock.yaml,mamba.yaml,bert.yaml}`
+  * `configs/{mock.json,trace.json,bert.json,mamba.json}`
   * `docs/{SOP.md, TESTPLAN.md, PRD.md, SAS.md, ICD.md, PASS_DOC.md, COST_SPEC.md}`
 * **기대 결과**: `runs/*/metrics.json`, `report.{html,csv}`, `ncu.json`(가능 시), `power.csv`, `config.lock.json`.
 
@@ -44,9 +48,14 @@ python -m icd.cli.main run -c configs/mock.json --override pipeline.mode=iterati
 ```bash
 git clone <repo> && cd <repo>
 conda env create -f env/environment.yml && conda activate icd
+pip install -e .[experiments]
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install mamba-ssm  # Mamba 실험 시 필요
 # (옵션) Docker:
 # docker build -t icd-repro -f Dockerfile .
 ```
+
+> HuggingFace 모델 캐시를 제어하려면 `HF_HOME` 또는 `TRANSFORMERS_CACHE` 환경 변수를 설정하면 편리합니다.
 
 ### 3.2 하드웨어 점검
 
@@ -80,24 +89,26 @@ bash scripts/repro_smoke.sh
 
 **판정**: `ΔC≤-10%` & `ΔQ≥0`(Cost Spec 기준). `report.html`에 상관 플롯 생성.
 
-### 4.2 Repro 1 — Mamba-3B (SSM) 메인
+### 4.2 Repro 1 — BERT-base (Transformer, HuggingFace)
 
 ```bash
-icd run -c configs/mamba.yaml --override pipeline.mode=linear   --out runs/mamba_linear
-icd run -c configs/mamba.yaml --override pipeline.mode=iterative --out runs/mamba_iter
+python -m icd.cli.main run -c configs/bert.json --override pipeline.mode=linear    --out runs/bert_linear
+python -m icd.cli.main run -c configs/bert.json --override pipeline.mode=iterative --out runs/bert_iter
+python scripts/validate_results.py runs/bert_*
 ```
 
-**기대치**(스모크 게이트): Latency ≤ −10%, L2 ≥ +5%p, EpT ≤ −8%
+**스모크 게이트**: Latency ≤ −10%, L2 ≥ +5%p, EpT ≤ −8%
 **엄격 게이트**: PRD 기준(−20% / +10%p / −15%)
 
-### 4.3 Repro 2 — BERT-base (Transformer)
+### 4.3 Repro 2 — Mamba-130M (SSM, HuggingFace)
 
 ```bash
-icd run -c configs/bert.yaml --override pipeline.mode=linear    --out runs/bert_linear
-icd run -c configs/bert.yaml --override pipeline.mode=iterative  --out runs/bert_iter
+python -m icd.cli.main run -c configs/mamba.json --override pipeline.mode=linear    --out runs/mamba_linear
+python -m icd.cli.main run -c configs/mamba.json --override pipeline.mode=iterative --out runs/mamba_iter
+python scripts/validate_results.py runs/mamba_*
 ```
 
-**기대치** 동일(스모크/엄격 게이트 분리).
+**스모크/엄격 게이트** 동일.
 
 ### 4.4 Repro 3 — Ablation(선택, 2시간 내)
 
@@ -139,14 +150,46 @@ python scripts/collect_artifacts.py runs/mamba_* runs/bert_* -o artifacts/icd_ar
 
 ## 6) 구성 파일 예시(핵심 발췌)
 
-```yaml
-# configs/mamba.yaml
-pipeline: {mode: iterative, repeats: 1000, warmup_iter: 50, fixed_clock: true}
-graph: {source: trace, normalize: sym}
-solver: {time_budget_s: 300, refine_steps: 2000, k_blocks: 4, rng_seed: 0}
-transform: {sparsity: {enable: true, type: "2:4", rate: 0.5}, quant: {enable: false}}
-measure: {ncu_enable: true, ncu_metrics: ["l2_tex__t_sector_hit_rate.pct"], power_enable: true, power_sample_hz: 10}
-report: {out_dir: "runs/mamba_iter", formats: ["html","csv"]}
+```json
+{
+  "pipeline": {
+    "mode": "iterative",
+    "repeats": 40,
+    "warmup_iter": 5,
+    "fixed_clock": true,
+    "runner": "icd.runtime.runners_hf.hf_causal_lm_runner",
+    "runner_context": {
+      "model_loader": "icd.experiments.hf.load_hf_causal_lm",
+      "model_loader_kwargs": {
+        "model_name": "state-spaces/mamba-130m-hf",
+        "sequence_length": 256,
+        "batch_size": 2,
+        "prompt": [
+          "The quick brown fox jumps over the lazy dog",
+          "In a distant galaxy, explorers uncovered"
+        ],
+        "device": "cpu"
+      }
+    }
+  },
+  "graph": {
+    "source": "pytorch",
+    "normalize": "sym",
+    "loader": "icd.experiments.hf.load_hf_causal_lm",
+    "loader_kwargs": {
+      "model_name": "state-spaces/mamba-130m-hf",
+      "sequence_length": 256,
+      "batch_size": 2,
+      "prompt": [
+        "The quick brown fox jumps over the lazy dog",
+        "In a distant galaxy, explorers uncovered"
+      ],
+      "device": "cpu"
+    },
+    "pytorch": {"hops": 2, "reuse_decay": 0.7, "max_len": 256, "byte_weight": true},
+    "nnz_cap": 1500000
+  }
+}
 ```
 
 ---
@@ -154,29 +197,25 @@ report: {out_dir: "runs/mamba_iter", formats: ["html","csv"]}
 ## 7) Makefile 타깃(발췌)
 
 ```makefile
-.PHONY: env fetch_models repro_smoke repro_full repro_ae pack
+.PHONY: env repro_smoke repro_bert repro_mamba pack
 
 env:
 	conda env create -f env/environment.yml || true
 
-fetch_models:
-	python scripts/fetch_models.py --out $(HOME)/.cache/icd
-
 repro_smoke:
-	icd run -c configs/mock.yaml --override pipeline.mode=linear  --out runs/mock_linear
-	icd run -c configs/mock.yaml --override pipeline.mode=iterative --out runs/mock_iter
+	python -m icd.cli.main run -c configs/mock.json --override pipeline.mode=linear   --out runs/mock_linear
+	python -m icd.cli.main run -c configs/mock.json --override pipeline.mode=iterative --out runs/mock_iter
 	python scripts/validate_results.py runs/mock_*
 
-repro_full: repro_mamba repro_bert
-repro_mamba:
-	icd run -c configs/mamba.yaml --override pipeline.mode=linear   --out runs/mamba_linear
-	icd run -c configs/mamba.yaml --override pipeline.mode=iterative --out runs/mamba_iter
-	python scripts/validate_results.py runs/mamba_*
-
 repro_bert:
-	icd run -c configs/bert.yaml --override pipeline.mode=linear    --out runs/bert_linear
-	icd run -c configs/bert.yaml --override pipeline.mode=iterative  --out runs/bert_iter
+	python -m icd.cli.main run -c configs/bert.json --override pipeline.mode=linear    --out runs/bert_linear
+	python -m icd.cli.main run -c configs/bert.json --override pipeline.mode=iterative  --out runs/bert_iter
 	python scripts/validate_results.py runs/bert_*
+
+repro_mamba:
+	python -m icd.cli.main run -c configs/mamba.json --override pipeline.mode=linear    --out runs/mamba_linear
+	python -m icd.cli.main run -c configs/mamba.json --override pipeline.mode=iterative  --out runs/mamba_iter
+	python scripts/validate_results.py runs/mamba_*
 
 pack:
 	python scripts/collect_artifacts.py runs/* -o artifacts/icd_artifacts.zip

@@ -1,8 +1,42 @@
 {
-  "pipeline": {"mode": "iterative", "repeats": 100, "warmup_iter": 20, "fixed_clock": false},
+  "pipeline": {
+    "mode": "iterative",
+    "repeats": 40,
+    "warmup_iter": 5,
+    "fixed_clock": false,
+    "runner": "icd.runtime.runners_hf.hf_sequence_classifier_runner",
+    "runner_context": {
+      "model_loader": "icd.experiments.hf.load_hf_sequence_classifier",
+      "model_loader_kwargs": {
+        "model_name": "bert-base-uncased",
+        "sequence_length": 128,
+        "batch_size": 4,
+        "prompt": [
+          "This movie was wonderful!",
+          "The plot was painfully slow.",
+          "Performances were solid.",
+          "I would not watch it again."
+        ],
+        "device": "cpu"
+      }
+    }
+  },
   "graph": {
     "source": "pytorch",
     "normalize": "sym",
+    "loader": "icd.experiments.hf.load_hf_sequence_classifier",
+    "loader_kwargs": {
+      "model_name": "bert-base-uncased",
+      "sequence_length": 128,
+      "batch_size": 4,
+      "prompt": [
+        "This movie was wonderful!",
+        "The plot was painfully slow.",
+        "Performances were solid.",
+        "I would not watch it again."
+      ],
+      "device": "cpu"
+    },
     "pytorch": {"hops": 2, "byte_weight": true, "reuse_decay": 0.7, "max_len": 128},
     "nnz_cap": 1000000
   },
@@ -11,4 +45,3 @@
   "measure": {"ncu_enable": false, "power_enable": false},
   "report": {"out_dir": "runs/bert_smoke", "formats": ["html", "csv"]}
 }
-

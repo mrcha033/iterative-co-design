@@ -7,6 +7,7 @@ This repository implements a mock, testable pipeline for iterative layout optimi
 - Architecture and operating procedures: see `docs/SAS.md` and `docs/SOP.md`
 - Graph/Adapters/Kernel/Runtime specs: see `docs/Graph_Construction_Spec.md`, `docs/S_Q_K_Adapter_Spec.md`, `docs/Kernel_Contract.md`, `docs/Runtime_Memory_Plan.md`
 - Observability/Contrib/Schema: see `docs/Observability_Spec.md`, `docs/SBOM_Contrib.md`, `docs/schema/run_config.schema.json`
+- Executable experiments: `configs/mock.json` (mock), `configs/bert.json` (HF BERT-base), `configs/mamba.json` (HF Mamba-130M)
 - IR bridge PoC: see `bridge/README.md`
 - Contribution guidelines: see `CONTRIBUTING.md`
 
@@ -74,7 +75,7 @@ Prereqs
 - Run the prewired smoke script to generate linear and iterative runs:
   - `bash scripts/repro_smoke.sh`
 - Outputs: `runs/smoke/{linear,iter}/` with:
-  - `W.csr.npz`, `w.meta.json` — co‑access graph snapshot
+  - `W.csr.npz`, `w.meta.json` — co-access graph snapshot
   - `perm_before.json`, `stats_before.json` — baseline permutation + stats
   - `perm_after.json`, `stats_after.json` — iterative permutation + stats
   - `metrics.json` — latency/L2/EpT (nulls if disabled), acceptance gate info
@@ -92,6 +93,18 @@ Prereqs
   - `python -m icd.cli.main run -c configs/mock.json --override pipeline.mode=iterative --out runs/iter`
 - Linear baseline:
   - `python -m icd.cli.main run -c configs/mock.json --override pipeline.mode=linear --out runs/linear`
+- Replace the mock runner with your own inference loop by setting `--override pipeline.runner="my.module:runner"` (see USAGE for details).
+
+4) Executable Experiments (BERT / Mamba)
+- Install HuggingFace dependencies (CPU example):
+  - `pip install -e .[experiments]`
+  - `pip install torch --index-url https://download.pytorch.org/whl/cpu`
+- Run BERT-base sequence classification (library+runner load real model):
+  - `python -m icd.cli.main run -c configs/bert.json --out runs/bert_iter`
+- Run Mamba-130M causal LM experiment (requires `mamba-ssm` wheel):
+  - `pip install mamba-ssm`
+  - `python -m icd.cli.main run -c configs/mamba.json --out runs/mamba_iter`
+See `docs/USAGE.md` for GPU notes and runner customization.
 
 4) Trigger Re‑permute from Transforms in Linear Mode
 - Demonstrates adapter metadatas and delta‑layout trigger:

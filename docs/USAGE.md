@@ -8,10 +8,15 @@ This guide shows how to run the iterative layout optimization pipeline from sour
 - Iterative single run: `python -m icd.cli.main run -c configs/mock.json --override pipeline.mode=iterative --out runs/iter`
 - Enable cache: add `--override cache.enable=true --override cache.cache_dir=.icd_cache`
 - Optional profiling/power: set `ICD_NCU_CMD=...` and add `--override measure.ncu_enable=true`, `--override measure.power_enable=true`
+- Custom runner: provide a dotted path via `--override pipeline.runner="your.module:runner_fn"` and optional context with `--override pipeline.runner_context={"tokens":1024}`
 
 ## Requirements
 - Python 3.10+
 - No GPU is required for the mock pipeline; Nsight/NVML are optional for profiling/power.
+- For executable HuggingFace experiments install:
+  - `pip install -e .[experiments]`
+  - `pip install torch --index-url https://download.pytorch.org/whl/cpu` (pick the wheel that matches your CUDA/cuDNN stack if targeting GPU)
+  - `pip install mamba-ssm` (required for the Mamba configs)
 
 Install (PyPI, planned):
 
@@ -45,6 +50,26 @@ Pair mode (runs baseline+trial and writes a compare verdict):
 python -m icd.cli.main pair -c configs/mock.json --out runs/pair01
 ```
 
+## Real Model Experiments (HuggingFace)
+
+With the dependencies above installed you can run the executable configs that load real models:
+
+```bash
+# BERT base sequence classification (CPU defaults shown)
+python -m icd.cli.main run -c configs/bert.json --out runs/bert_iter
+
+# Mamba-130M causal LM (requires mamba-ssm wheel)
+python -m icd.cli.main run -c configs/mamba.json --out runs/mamba_iter
+```
+
+Both configs rely on two new fields:
+
+- `graph.loader` / `loader_kwargs`: dotted path + kwargs to instantiate a PyTorch model and example inputs for graph construction.
+- `pipeline.runner` / `runner_context`: dotted path + context for the measurement loop (reuses the same loader by default).
+
+Set `"device": "cuda"` in the loader kwargs to target a GPU (ensure the correct PyTorch wheel is installed).
+When running on shared machines consider setting `HF_HOME`/`TRANSFORMERS_CACHE` to control HuggingFace download paths.
+
 ## Validation & Schema
 
 Validate a config without running, or print the input schema skeleton/JSON Schema file:
@@ -60,6 +85,10 @@ Schema file lives at `docs/schema/run_config.schema.json` and mirrors ICD.md.
 - `pipeline.mode=linear|iterative`
 - `solver.time_budget_s=1.5`
 - `solver.refine_steps=500`
+- `pipeline.runner=icd.runtime.runners.mock_inference`
+- `pipeline.runner_context={"tokens":512}`
+- `graph.loader=icd.experiments.hf.load_hf_sequence_classifier`
+- `graph.loader_kwargs={"model_name":"bert-base-uncased","sequence_length":128}`
 - `transform.sparsity.enable=true` (and `transform.sparsity.rate=0.5`)
 - `transform.quant.enable=true` (and `transform.quant.dtype=int8`)
 - `pipeline.repermute_on_delta=true` (re-permute when transforms change layout, even in linear mode)
@@ -128,8 +157,8 @@ python -m scripts.icd_mlir_opt --icd-attach-metadata --icd-verify tests/ir/mlir/
 ```
 
 ## Configuration Notes
-- Configs are JSON in this repo (YAML planned). See `configs/mock.json` for a minimal example.
-- Graph sources: `mock` and basic `trace` (JSONL/tuples) are implemented; `pytorch` path is partial.
+- Configs are JSON in this repo (YAML planned). See `configs/mock.json` for a minimal example, `configs/bert.json` / `configs/mamba.json` for executable experiments.
+- Graph sources: `mock`, `trace` (JSONL/tuples), and `pytorch` (via dotted loaders) are supported.
 - Normalization: `sym` and `row` are implemented (`row` is approximate with upper-triangle storage).
 
 ## Troubleshooting

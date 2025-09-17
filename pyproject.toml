@@ -30,6 +30,10 @@ dev = [
   "ruff>=0.5",
   "black>=23",
 ]
+experiments = [
+  "transformers>=4.40",
+  "accelerate>=0.30",
+]
 
 [project.scripts]
 icd = "icd.cli.main:main"
