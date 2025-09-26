@@ -18,7 +18,11 @@ classifiers = [
   "Operating System :: OS Independent",
   "Topic :: Scientific/Engineering",
 ]
-dependencies = []
+dependencies = [
+  "datasets>=2.19",
+  "evaluate>=0.4.2",
+  "pynvml>=11.5",
+]
 
 [project.urls]
 Homepage = "https://github.com/mrcha033/iterative-co-design"
@@ -33,6 +37,8 @@ dev = [
 experiments = [
   "transformers>=4.40",
   "accelerate>=0.30",
+  "bitsandbytes>=0.43; platform_system == 'Linux'",
+  "torch>=2.1",
 ]
 
 [project.scripts]

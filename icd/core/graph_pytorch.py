@@ -21,6 +21,38 @@ except Exception:  # pragma: no cover - optional dependency
 from .graph import CSRMatrix
 
 
+def _fallback_w(
+    model: Any,
+    *,
+    hops: int,
+    seed: int,
+) -> CSRMatrix:
+    from .graph import _make_blocky_mock
+
+    try:
+        params = list(getattr(model, "parameters", lambda **_: [])(recurse=True))
+    except Exception:
+        params = []
+
+    d = max(16, min(4096, 256 if not params else sum(int(p.shape[-1]) if getattr(p, "ndim", 0) > 0 else 1 for p in params)))
+    W = _make_blocky_mock(d=d, blocks=4, noise=0.01, seed=seed + len(params))
+
+    import hashlib
+
+    W.meta.setdefault("pytorch", {})
+    W.meta["pytorch"].update(
+        {
+            "used_ops": [],
+            "skipped_ops_count": 0,
+            "hops": hops,
+            "notes": "v0.9 last-dim heuristic (fallback)",
+            "shapes": [],
+            "trace_hash": hashlib.sha256(f"fallback|params={len(params)}|D={d}".encode("utf-8")).hexdigest(),
+        }
+    )
+    return W
+
+
 def build_w_from_pytorch(
     model: Any,
     example_inputs: Any,
@@ -39,25 +71,7 @@ def build_w_from_pytorch(
     If torch is not available, returns a deterministic synthetic W from params.
     """
     if not TORCH_AVAILABLE:
-        params = []
-        try:
-            params = [p for p in getattr(model, 'parameters', lambda **k: [])(recurse=True)]
-        except Exception:
-            params = []
-        d = max(16, min(4096, 256 if not params else sum(int(p.shape[-1]) if getattr(p, 'ndim', 0) > 0 else 1 for p in params)))
-        from .graph import _make_blocky_mock
-        W = _make_blocky_mock(d=d, blocks=4, noise=0.01, seed=seed + len(params))
-        import hashlib
-        # minimal pytorch meta for downstream writers
-        W.meta["pytorch"] = {
-            "used_ops": [],
-            "skipped_ops_count": 0,
-            "hops": hops,
-            "notes": "v0.9 last-dim heuristic (fallback)",
-            "shapes": [],
-            "trace_hash": hashlib.sha256(f"fallback|params={len(params)}|D={d}".encode("utf-8")).hexdigest(),
-        }
-        return W
+        return _fallback_w(model, hops=hops, seed=seed)
 
     import torch  # type: ignore
     from torch import fx  # type: ignore
@@ -82,7 +96,11 @@ def build_w_from_pytorch(
         events = []
 
     # 2) FX graph
-    gm = fx.symbolic_trace(model_eval)
+    try:
+        gm = fx.symbolic_trace(model_eval)
+    except Exception:
+        return _fallback_w(model, hops=hops, seed=seed)
+
     try:
         from torch.fx.passes.shape_prop import ShapeProp  # type: ignore
 

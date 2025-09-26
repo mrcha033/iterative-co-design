@@ -1,9 +1,10 @@
 {
+  "task": "sst2",
   "pipeline": {
     "mode": "iterative",
-    "repeats": 40,
-    "warmup_iter": 5,
-    "fixed_clock": false,
+    "repeats": 1000,
+    "warmup_iter": 50,
+    "fixed_clock": true,
     "runner": "icd.runtime.runners_hf.hf_sequence_classifier_runner",
     "runner_context": {
       "model_loader": "icd.experiments.hf.load_hf_sequence_classifier",
@@ -17,7 +18,7 @@
           "Performances were solid.",
           "I would not watch it again."
         ],
-        "device": "cpu"
+        "device": "cuda"
       }
     }
   },
@@ -35,13 +36,28 @@
         "Performances were solid.",
         "I would not watch it again."
       ],
-      "device": "cpu"
+      "device": "cuda"
     },
     "pytorch": {"hops": 2, "byte_weight": true, "reuse_decay": 0.7, "max_len": 128},
     "nnz_cap": 1000000
   },
   "solver": {"time_budget_s": 60, "refine_steps": 500, "k_blocks": 4, "rng_seed": 0},
   "transform": {"sparsity": {"enable": false}, "quant": {"enable": false}, "kv": {"enable": false}},
-  "measure": {"ncu_enable": false, "power_enable": false},
+  "measure": {
+    "ncu_enable": false,
+    "power_enable": false,
+    "nvtx_enable": true
+  },
+  "quality": {
+    "enable": true,
+    "task": "sst2",
+    "batch_size": 64,
+    "max_length": 128,
+    "max_samples": 128
+  },
+  "gates": {
+    "sst2.acc_min": 0.90,
+    "iter_vs_linear_latency_factor": 0.90
+  },
   "report": {"out_dir": "runs/bert_smoke", "formats": ["html", "csv"]}
 }

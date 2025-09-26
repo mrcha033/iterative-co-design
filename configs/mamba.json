@@ -1,8 +1,9 @@
 {
+  "task": "wt103",
   "pipeline": {
     "mode": "iterative",
-    "repeats": 40,
-    "warmup_iter": 5,
+    "repeats": 1000,
+    "warmup_iter": 50,
     "fixed_clock": true,
     "runner": "icd.runtime.runners_hf.hf_causal_lm_runner",
     "runner_context": {
@@ -15,7 +16,7 @@
           "The quick brown fox jumps over the lazy dog",
           "In a distant galaxy, explorers uncovered"
         ],
-        "device": "cpu"
+        "device": "cuda"
       }
     }
   },
@@ -31,13 +32,27 @@
         "The quick brown fox jumps over the lazy dog",
         "In a distant galaxy, explorers uncovered"
       ],
-      "device": "cpu"
+      "device": "cuda"
     },
     "pytorch": {"hops": 2, "reuse_decay": 0.7, "max_len": 256, "byte_weight": true},
     "nnz_cap": 1500000
   },
   "solver": {"time_budget_s": 120, "refine_steps": 800, "k_blocks": 4, "rng_seed": 0},
   "transform": {"sparsity": {"enable": false}, "quant": {"enable": false}, "kv": {"enable": false}},
-  "measure": {"ncu_enable": false, "power_enable": false},
+  "measure": {
+    "ncu_enable": false,
+    "power_enable": false,
+    "nvtx_enable": true
+  },
+  "quality": {
+    "enable": true,
+    "task": "wt103",
+    "max_length": 1024,
+    "max_samples": 64
+  },
+  "gates": {
+    "wt103.ppl_factor": 1.01,
+    "iter_vs_linear_latency_factor": 0.90
+  },
   "report": {"out_dir": "runs/mamba_iter", "formats": ["html", "csv"]}
 }

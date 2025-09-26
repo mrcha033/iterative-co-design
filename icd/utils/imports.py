@@ -3,8 +3,32 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
+import sys
+from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Iterable
+
+
+def _candidate_module_paths(module_name: str) -> Iterable[Path]:
+    rel = Path(*module_name.split("."))
+    candidates = [rel.with_suffix(".py"), rel / "__init__.py"]
+    for base in [Path.cwd()] + [Path(p) for p in sys.path if p]:
+        for cand in candidates:
+            full = base / cand
+            if full.is_file():
+                yield full
+
+
+def _load_module_from_path(module_name: str) -> ModuleType | None:
+    for file_path in _candidate_module_paths(module_name):
+        spec = importlib.util.spec_from_file_location(module_name, file_path)
+        if spec and spec.loader:
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)  # type: ignore[arg-type]
+            return module
+    return None
 
 
 def load_object(path: str) -> Any:
@@ -34,7 +58,9 @@ def load_object(path: str) -> Any:
     try:
         module: ModuleType = importlib.import_module(module_name)
     except ModuleNotFoundError as exc:  # pragma: no cover - defensive
-        raise ValueError(f"module '{module_name}' could not be imported") from exc
+        module = _load_module_from_path(module_name)
+        if module is None:
+            raise ValueError(f"module '{module_name}' could not be imported") from exc
 
     try:
         return getattr(module, attr_name)
@@ -43,4 +69,3 @@ def load_object(path: str) -> Any:
 
 
 __all__ = ["load_object"]
-

@@ -4,16 +4,108 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
+from types import SimpleNamespace
 
 from icd.core.graph import build_w, save_w_npz
 from icd.core.solver import fit_permutation
 from icd.core.cost import CostConfig, eval_cost
 from icd.measure.report import write_csv_report, write_html_report
 from icd.measure.ncu_wrapper import parse_l2_hit_from_section_json
+from icd.measure.profiling import NVMLPowerLogger, energy_per_token_j, nvtx_range
+from icd.measure.quality import eval_sst2, eval_wt103_ppl
+from icd.measure.gates import make_pairwise_summary, verdict
 from icd.runtime.compare import decide as compare_decide
 from icd.runtime.runner import prepare_runner_context, resolve_runner
 from icd.utils.imports import load_object
+
+
+def _wrap_mamba_weight_holder(obj: Any) -> Any:
+    if hasattr(obj, "weight"):
+        return obj
+    try:
+        import torch
+
+        if isinstance(obj, torch.nn.Parameter) or isinstance(obj, torch.Tensor):  # type: ignore[attr-defined]
+            return SimpleNamespace(weight=obj)
+    except Exception:
+        pass
+    if hasattr(obj, "data"):
+        return SimpleNamespace(weight=obj)
+    raise TypeError("Unsupported Mamba weight holder; expected tensor-like with 'data'.")
+
+
+def _collect_mamba_modules(model: Any) -> List[Dict[str, Any]]:
+    modules: List[Dict[str, Any]] = []
+    if model is None or not hasattr(model, "named_modules"):
+        return modules
+    for name, module in model.named_modules():  # type: ignore[attr-defined]
+        if not all(hasattr(module, attr) for attr in ("A", "B", "C")):
+            continue
+        try:
+            entry: Dict[str, Any] = {
+                "A": _wrap_mamba_weight_holder(getattr(module, "A")),
+                "B": _wrap_mamba_weight_holder(getattr(module, "B")),
+                "C": _wrap_mamba_weight_holder(getattr(module, "C")),
+                "_module_name": name,
+            }
+            if hasattr(module, "x0"):
+                entry["x0"] = getattr(module, "x0")
+            modules.append(entry)
+        except Exception:
+            continue
+    return modules
+
+
+def _load_tokenizer(pipeline_cfg: Dict[str, Any], quality_cfg: Dict[str, Any]):
+    try:
+        from transformers import AutoTokenizer
+    except ImportError:
+        return None
+
+    runner_ctx = pipeline_cfg.get("runner_context", {}) or {}
+    loader_kwargs = runner_ctx.get("model_loader_kwargs") or {}
+    tokenizer_name = (
+        quality_cfg.get("tokenizer_name")
+        or loader_kwargs.get("tokenizer_name")
+        or loader_kwargs.get("model_name")
+    )
+    if not tokenizer_name:
+        return None
+    return AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
+
+
+def _evaluate_quality_metrics(
+    model: Any,
+    cfg: Dict[str, Any],
+    pipeline_cfg: Dict[str, Any],
+) -> Dict[str, float] | None:
+    quality_cfg = cfg.get("quality", {}) or {}
+    if not quality_cfg.get("enable"):
+        return None
+
+    tokenizer = _load_tokenizer(pipeline_cfg, quality_cfg)
+    if tokenizer is None:
+        return None
+
+    task = (quality_cfg.get("task") or cfg.get("task") or "").lower()
+    if task in {"sst2", "glue/sst2"}:
+        return eval_sst2(
+            model,
+            tokenizer,
+            batch_size=int(quality_cfg.get("batch_size", 64)),
+            max_length=int(quality_cfg.get("max_length", 128)),
+            max_samples=quality_cfg.get("max_samples"),
+        )
+    if task in {"wt103", "wikitext-103", "wikitext"}:
+        ppl = eval_wt103_ppl(
+            model,
+            tokenizer,
+            max_length=int(quality_cfg.get("max_length", 1024)),
+            max_samples=quality_cfg.get("max_samples"),
+        )
+        return {"ppl": ppl}
+    return None
 
 
 @dataclass
@@ -64,6 +156,7 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     source = gcfg.get("source", "mock")
     graph_model = None
     graph_example_inputs = None
+    mamba_modules: List[Dict[str, Any]] | None = None
 
     excluded_keys = {"loader", "loader_args", "loader_kwargs", "source"}
 
@@ -86,6 +179,10 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         else:
             graph_model = graph_kwargs.get("model")
             graph_example_inputs = graph_kwargs.get("example_inputs")
+        if graph_model is not None:
+            collected = _collect_mamba_modules(graph_model)
+            if collected:
+                mamba_modules = collected
 
     W = build_w(source=source, **graph_kwargs)
     emit("W_BUILT", True, {"nnz": W.nnz(), "shape": W.shape, "source": W.meta.get("source")})
@@ -341,6 +438,7 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     warmup = int(cfg.get("pipeline", {}).get("warmup_iter", 0))
     repeats = max(1, int(cfg.get("pipeline", {}).get("repeats", 1)))
 
+    hf_cache: Dict[str, Any] = {}
     latency_samples: list[float] = []
     extra_outputs: dict | None = None
     l2_hit = None
@@ -351,7 +449,7 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         import math
         import statistics
 
-        base_ctx = prepare_runner_context(
+        ctx_kwargs = dict(
             config=cfg,
             out_dir=out_dir,
             permutation_before=pi0,
@@ -361,29 +459,48 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
             transform_meta=transform_meta,
             graph_model=graph_model,
             graph_example_inputs=graph_example_inputs,
+            _hf_cache=hf_cache,
         )
+        if mamba_modules:
+            ctx_kwargs["mamba_modules"] = mamba_modules
+        base_ctx = prepare_runner_context(**ctx_kwargs)
         base_ctx.update(cfg.get("pipeline", {}).get("runner_context", {}) or {})
 
-        for _ in range(max(0, warmup)):
-            ctx = prepare_runner_context(**base_ctx)
-            runner_callable(mode, ctx)
+        power_logger = NVMLPowerLogger() if measure_cfg.get("power_enable") else None
+        power_energy = None
+        if power_logger:
+            power_logger.__enter__()
 
-        for _ in range(repeats):
-            ctx = prepare_runner_context(**base_ctx)
-            t0 = time.perf_counter()
-            res = runner_callable(mode, ctx)
-            latency_ms = (time.perf_counter() - t0) * 1000.0
-            latency_samples.append(float(latency_ms))
-            candidate = res if isinstance(res, dict) else ctx.get("result")
-            if isinstance(candidate, dict):
-                extra_outputs = candidate
+        try:
+            for _ in range(max(0, warmup)):
+                ctx = prepare_runner_context(**base_ctx)
+                runner_callable(mode, ctx)
 
-        latency_samples.sort()
-        mean = float(sum(latency_samples) / len(latency_samples)) if latency_samples else float("nan")
-        p50 = float(latency_samples[len(latency_samples) // 2]) if latency_samples else float("nan")
-        p95 = float(latency_samples[int(math.ceil(0.95 * len(latency_samples))) - 1]) if latency_samples else float("nan")
-        stdev = float(statistics.pstdev(latency_samples)) if len(latency_samples) > 1 else 0.0
-        ci95 = float(1.96 * (stdev / math.sqrt(max(1, len(latency_samples))))) if latency_samples else float("nan")
+            for _ in range(repeats):
+                ctx = prepare_runner_context(**base_ctx)
+                t0 = time.perf_counter()
+                with nvtx_range():
+                    res = runner_callable(mode, ctx)
+                latency_ms = (time.perf_counter() - t0) * 1000.0
+                latency_samples.append(float(latency_ms))
+                if power_logger:
+                    power_logger.tick()
+                candidate = res if isinstance(res, dict) else ctx.get("result")
+                if isinstance(candidate, dict):
+                    extra_outputs = candidate
+
+            latency_samples.sort()
+            mean = float(sum(latency_samples) / len(latency_samples)) if latency_samples else float("nan")
+            p50 = float(latency_samples[len(latency_samples) // 2]) if latency_samples else float("nan")
+            idx95 = int(math.ceil(0.95 * len(latency_samples))) - 1 if latency_samples else 0
+            p95 = float(latency_samples[idx95]) if latency_samples else float("nan")
+            stdev = float(statistics.pstdev(latency_samples)) if len(latency_samples) > 1 else 0.0
+            ci95 = float(1.96 * (stdev / math.sqrt(max(1, len(latency_samples))))) if latency_samples else float("nan")
+        finally:
+            if power_logger:
+                power_logger.__exit__(None, None, None)
+                power_energy = power_logger.energy_j()
+
         if extra_outputs:
             if "l2_hit_pct" in extra_outputs:
                 l2_hit = float(extra_outputs["l2_hit_pct"])
@@ -391,6 +508,8 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
                 ept = float(extra_outputs["ept_j_per_tok"])
             if "tokens" in extra_outputs:
                 tokens = float(extra_outputs["tokens"])
+        if power_energy and tokens:
+            ept = energy_per_token_j(power_energy, int(tokens))
     else:
         # fallback proxy (legacy behaviour)
         import math
@@ -475,40 +594,67 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     throughput = None
     if tokens is not None and isinstance(tokens, (int, float)) and mean == mean and mean > 0.0:
         throughput = float(tokens * 1000.0 / mean)
+    model_for_quality = hf_cache.get("model") or graph_model
+    quality_values = None
+    if model_for_quality is not None:
+        try:
+            quality_values = _evaluate_quality_metrics(
+                model_for_quality,
+                cfg,
+                cfg.get("pipeline", {}) or {},
+            )
+        except Exception as exc:
+            errors.append({"stage": "quality", "kind": "error", "detail": str(exc)})
+            quality_values = None
+
+    pipeline_cfg = cfg.get("pipeline", {}) or {}
+    runner_kwargs = pipeline_cfg.get("runner_context", {}) or {}
+    loader_kwargs = runner_kwargs.get("model_loader_kwargs") or {}
+    model_name = loader_kwargs.get("model_name") or cfg.get("model", {}).get("name")
 
     metrics = {
         "run_id": None,
+        "task": cfg.get("task"),
+        "mode": mode,
+        "model_name": model_name,
+        "repeat": repeats,
+        "warmup": warmup,
+        "latency_ms_mean": mean,
+        "latency_ms_p50": p50,
+        "latency_ms_p95": p95,
+        "latency_ms_ci95": ci95,
         "latency_ms": {"mean": mean, "p50": p50, "p95": p95, "ci95": ci95},
         "l2_hit_pct": l2_hit,
         "ept_j_per_tok": ept,
         "throughput_toks_s": throughput,
-        "mode": mode,
+        "tokens_processed": tokens,
         "C": stats1.get("C"),
         "Q": stats1.get("Q"),
         "J": stats1.get("J"),
-        "env": {"seed": scfg.get("rng_seed", 0), "fixed_clock": cfg.get("pipeline", {}).get("fixed_clock", True)},
+        "env": {"seed": scfg.get("rng_seed", 0), "fixed_clock": pipeline_cfg.get("fixed_clock", True)},
         "acceptance": {
             "epsilon_J": epsJ,
             "delta_J": delta_J,
             "accepted": accepted,
             "rolled_back": rolled_back,
-            "incomplete": True,  # single-run; baseline not present for deltas
+            "incomplete": True,
             "note": "HW gates evaluated only when both before/after exist",
         },
-        "quality": {
-            "task": None,
-            "metric": None,
-            "before": None,
-            "after": None,
-            "delta": None,
-        },
+        "quality": quality_values,
         "errors": errors + transform_errors,
         "transform_meta": transform_meta,
     }
+
+    if isinstance(quality_values, dict):
+        for key, value in quality_values.items():
+            metrics[key] = value
     # Optional quality hook (CI-safe): if eval.enable is true, include quality field (None by default)
     if cfg.get("eval", {}).get("enable", False):
         metrics["quality"] = None
     # Compute a simple run_id hash and attach
+    gates_cfg = cfg.get("gates") or {}
+    verdict(metrics, thresholds=gates_cfg)
+
     try:
         import hashlib
 
@@ -555,12 +701,25 @@ def run_pair(config: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
     trial_metrics = _read_json(trial_art.metrics_path)
     fixed_clock = bool(trial_metrics.get("env", {}).get("fixed_clock", True))
     epsJ = float(trial_metrics.get("acceptance", {}).get("epsilon_J", 0.01))
-    verdict = compare_decide(base_metrics, trial_metrics, fixed_clock=fixed_clock, eps_J=epsJ)
-    _write_json(os.path.join(out_dir, "compare.json"), verdict)
+    comparison = compare_decide(base_metrics, trial_metrics, fixed_clock=fixed_clock, eps_J=epsJ)
+    _write_json(os.path.join(out_dir, "compare.json"), comparison)
     # update acceptance in trial
-    trial_metrics.setdefault("acceptance", {}).update(verdict)
+    trial_metrics.setdefault("acceptance", {}).update(comparison)
+
+    gate_cfg = config.get("gates") or {}
+    base_mode = str(base_metrics.get("mode", "")).lower()
+    dense_ref = base_metrics if base_mode == "dense" else None
+    linear_ref = base_metrics if base_mode == "linear" else None
+
+    verdict(base_metrics, dense_metrics=dense_ref, linear_metrics=linear_ref, thresholds=gate_cfg)
+    verdict(trial_metrics, dense_metrics=dense_ref, linear_metrics=linear_ref, thresholds=gate_cfg)
+
+    _write_json(base_art.metrics_path, base_metrics)
     _write_json(trial_art.metrics_path, trial_metrics)
-    return verdict
+
+    summary = make_pairwise_summary([base_metrics, trial_metrics])
+    _write_json(os.path.join(out_dir, "pairwise_summary.json"), summary)
+    return comparison
 
 
 __all__ = ["RunArtifacts", "run", "run_pair"]
