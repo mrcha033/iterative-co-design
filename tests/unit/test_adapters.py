@@ -80,5 +80,29 @@ def test_structured_sparsity_converts_linears():
     assert meta["delta_layout"] is True
     assert meta["sparsity"]["type"] == "2:4"
     assert meta["sparsity"]["converted"] == nm_after
+    summary = meta["sparsity"].get("summary")
+    assert summary is not None
+    assert summary.get("converted") == meta["sparsity"]["converted"]
+    assert summary.get("skipped") == []
     lin_after = sum(isinstance(m, torch.nn.Linear) for m in model.modules())
     assert lin_after + nm_after >= converted_before
+
+
+def test_structured_sparsity_skips_incompatible_layer():
+    class Tiny(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.bad = torch.nn.Linear(3, 2)
+
+    model = Tiny()
+    result, meta = apply_sparsity(model, type="2:4", rate=1.0, modules=[model.bad])
+    assert result is model
+    assert meta["delta_layout"] is False
+    assert meta["sparsity"]["converted"] == 0
+    summary = meta["sparsity"].get("summary")
+    assert summary is not None
+    assert summary.get("converted") == 0
+    skipped = summary.get("skipped")
+    assert skipped and skipped[0]["reason"] == "incompatible_input_dims"
+    warnings_meta = meta.get("warnings", [])
+    assert warnings_meta and warnings_meta[0]["kind"] == "sparsity_skip"

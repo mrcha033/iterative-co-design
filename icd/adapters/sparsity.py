@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import warnings
 from dataclasses import dataclass
-from typing import Iterable, Sequence
+from typing import Iterable, Optional, Sequence, Tuple
 
 import torch
 from torch.nn import Linear
@@ -18,6 +19,9 @@ except Exception:  # pragma: no cover - fallback when HDS isnt available
     TopKMaskerConfig = None  # type: ignore[assignment]
 
 __all__ = ["SparsityConfig", "iter_prunable_linears", "apply_unstructured"]
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -124,7 +128,6 @@ def apply_sparsity_from_config(model: torch.nn.Module, cfg: SparsityConfig) -> N
 # -----------------------
 # Public sparsity wrapper
 # -----------------------
-from typing import Iterable, Optional, Sequence, Tuple
 from torch import nn
 
 
@@ -179,11 +182,20 @@ def apply_sparsity(
     target_modules = list(modules) if modules is not None else list(_default_prunable_modules(model))
 
     if typ in {"2:4", "structured", "nm", "hardware"}:
-        converted = _apply_structured_nm(model, target_modules)
+        converted, summary = _apply_structured_nm(model, target_modules)
         meta["sparsity"]["method"] = "nm_linear"
         meta["sparsity"]["group"] = {"active": 2, "group": 4}
         meta["sparsity"]["converted"] = converted
+        meta["sparsity"]["summary"] = summary
         meta["delta_layout"] = bool(converted > 0)
+        skipped = summary.get("skipped") or []
+        if skipped:
+            meta.setdefault("warnings", []).append(
+                {
+                    "kind": "sparsity_skip",
+                    "modules": skipped,
+                }
+            )
         if converted == 0:
             warnings.warn("structured sparsity requested but no linear layers were converted", RuntimeWarning)
         return model, meta
@@ -222,35 +234,90 @@ if "apply_sparsity" not in __all__:
     __all__.append("apply_sparsity")
 
 
-def _apply_structured_nm(model: nn.Module, target_modules: Iterable[nn.Module]) -> int:
+def _apply_structured_nm(
+    model: nn.Module,
+    target_modules: Iterable[nn.Module],
+    *,
+    active: int = 2,
+    group_size: int = 4,
+) -> Tuple[int, dict[str, object]]:
     if NMLinear is None or TopKMaskerConfig is None:
         warnings.warn("NMLinear not available; skipping structured sparsity", RuntimeWarning)
-        return 0
+        return 0, {
+            "converted": 0,
+            "eligible": 0,
+            "total_targets": 0,
+            "skipped": [],
+            "group_size": group_size,
+            "active": active,
+        }
 
-    converted = 0
+    summary: dict[str, object] = {
+        "converted": 0,
+        "eligible": 0,
+        "total_targets": 0,
+        "skipped": [],
+        "group_size": group_size,
+        "active": active,
+    }
+
     seen: set[int] = set()
     for module in target_modules:
         if not isinstance(module, nn.Linear):
             continue
+        summary["total_targets"] = int(summary.get("total_targets", 0)) + 1
         if id(module) in seen:
             continue
-        parent, name = _find_parent_module(model, module)
-        if parent is None or name is None:
+        name = _module_qualname(model, module) or "<unnamed>"
+        parent, attr = _find_parent_module(model, module)
+        if parent is None or attr is None:
+            summary.setdefault("skipped", []).append(
+                {
+                    "module": name,
+                    "reason": "parent_lookup_failed",
+                    "hint": "Ensure module is reachable via named_modules()",
+                }
+            )
             continue
+
+        if module.in_features % group_size != 0:
+            detail = (
+                f"in_features={module.in_features} not divisible by group_size={group_size}; "
+                "pad or regroup inputs before enabling 2:4 sparsity"
+            )
+            summary.setdefault("skipped", []).append(
+                {
+                    "module": name,
+                    "reason": "incompatible_input_dims",
+                    "detail": detail,
+                }
+            )
+            _LOGGER.warning("Skipping NMLinear conversion for %s: %s", name, detail)
+            continue
+
+        summary["eligible"] = int(summary.get("eligible", 0)) + 1
         nm = NMLinear(
             module.in_features,
             module.out_features,
             bias=module.bias is not None,
-            n_active=2,
-            m_group=4,
-            masker_config=TopKMaskerConfig(active=2, group_size=4),
+            n_active=active,
+            m_group=group_size,
+            masker_config=TopKMaskerConfig(active=active, group_size=group_size),
         )
         nm.load_from_linear(module)
         nm.to(module.weight.device)
-        setattr(parent, name, nm)
-        converted += 1
+        setattr(parent, attr, nm)
+        summary["converted"] = int(summary.get("converted", 0)) + 1
         seen.add(id(module))
-    return converted
+
+    return int(summary["converted"]), summary
+
+
+def _module_qualname(root: nn.Module, child: nn.Module) -> Optional[str]:
+    for qualname, module in root.named_modules():
+        if module is child:
+            return qualname or None
+    return None
 
 
 def _find_parent_module(root: nn.Module, child: nn.Module) -> tuple[nn.Module | None, str | None]:
