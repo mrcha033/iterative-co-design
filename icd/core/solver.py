@@ -99,7 +99,10 @@ def _modularity(W: CSRMatrix, clusters: Sequence[Sequence[int]]) -> float:
                 continue
             G.add_edge(i, j, weight=w)
     partition = [set(cluster) for cluster in clusters]
-    return float(nx.algorithms.community.quality.modularity(G, partition, weight="weight"))
+    try:
+        return float(nx.algorithms.community.quality.modularity(G, partition, weight="weight"))
+    except ZeroDivisionError:
+        return 0.0
 
 
 def _clusters_from_order(order: List[int], sizes: Sequence[int]) -> List[List[int]]:

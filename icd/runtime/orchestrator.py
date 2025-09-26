@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple, Optional
 from types import SimpleNamespace
 
+import torch
+
 from icd.core.graph import build_w, save_w_npz
 from icd.core.solver import fit_permutation
 from icd.core.cost import CostConfig, eval_cost
@@ -18,6 +20,14 @@ from icd.measure.gates import make_pairwise_summary, verdict
 from icd.runtime.compare import decide as compare_decide
 from icd.runtime.runner import prepare_runner_context, resolve_runner
 from icd.utils.imports import load_object
+from icd.graph import (
+    CorrelationConfig,
+    collect_correlations,
+    correlation_to_csr,
+    ClusteringConfig,
+    cluster_graph,
+    save_correlation_artifacts,
+)
 
 
 def _wrap_mamba_weight_holder(obj: Any) -> Any:
@@ -130,6 +140,47 @@ def _read_json(path: str) -> Dict[str, Any]:
         return json.load(f)
 
 
+def _parse_torch_dtype(value: Any) -> torch.dtype:
+    if isinstance(value, torch.dtype):
+        return value
+    if value is None:
+        return torch.float32
+    name = str(value).lower()
+    mapping = {
+        "float32": torch.float32,
+        "fp32": torch.float32,
+        "float": torch.float32,
+        "float64": torch.float64,
+        "double": torch.float64,
+        "fp16": torch.float16,
+        "float16": torch.float16,
+        "half": torch.float16,
+    }
+    return mapping.get(name, torch.float32)
+
+
+def _make_correlation_config(data: Dict[str, Any]) -> CorrelationConfig:
+    return CorrelationConfig(
+        mode=str(data.get("mode", "activation")).lower(),
+        layers=data.get("layers"),
+        samples=int(data.get("samples", 8)),
+        seed=data.get("seed"),
+        dtype=_parse_torch_dtype(data.get("dtype")),
+        device_guard=bool(data.get("device_guard", True)),
+        threshold=float(data.get("threshold", 0.0)),
+        normalize=str(data.get("normalize", "sym")).lower(),
+        nnz_cap=data.get("nnz_cap"),
+    )
+
+
+def _make_clustering_config(data: Dict[str, Any]) -> ClusteringConfig:
+    return ClusteringConfig(
+        method=str(data.get("method", "louvain")).lower(),
+        rng_seed=int(data.get("rng_seed", 0)),
+        resolution=float(data.get("resolution", 1.0)),
+    )
+
+
 def _resolve_transform_targets(
     cfg: Dict[str, Any],
     model: Any,
@@ -205,6 +256,8 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         events.append(ev)
 
     hf_cache: Dict[str, Any] = {}
+    correlation_meta: Dict[str, Any] | None = None
+    clustering_meta: Dict[str, Any] | None = None
 
 
     # Build W (mock or pytorch)
@@ -213,6 +266,10 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     graph_model = None
     graph_example_inputs = None
     mamba_modules: List[Dict[str, Any]] | None = None
+    corr_cfg_data = gcfg.get("correlation") or {}
+    correlation_enabled = bool(corr_cfg_data.get("enable"))
+    clustering_cfg_data = cfg.get("solver", {}).get("clustering")
+    clustering_enabled = clustering_cfg_data is None or bool(clustering_cfg_data.get("enable", True))
 
     excluded_keys = {"loader", "loader_args", "loader_kwargs", "source"}
 
@@ -495,6 +552,78 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     transform_meta = {"delta_layout": bool(delta_layout_any), "metas": metas, "triggers": triggers}
     emit("TRANSFORMED", True, transform_meta)
 
+    clusters: List[List[int]] | None = None
+    W_iter = W
+    if correlation_enabled:
+        model_for_corr = transform_model or graph_model
+        example_inputs_for_corr = graph_example_inputs or hf_cache.get("example_inputs")
+        if model_for_corr is None or example_inputs_for_corr is None:
+            try:
+                model_for_corr, example_inputs_for_corr = _resolve_transform_targets(
+                    cfg,
+                    model_for_corr,
+                    example_inputs_for_corr,
+                    hf_cache,
+                )
+                if model_for_corr is not None:
+                    graph_model = model_for_corr
+                    graph_example_inputs = example_inputs_for_corr
+            except Exception as exc:
+                transform_errors.append({
+                    "stage": "correlation",
+                    "kind": "error",
+                    "detail": str(exc),
+                })
+                model_for_corr = None
+
+        if model_for_corr is not None and example_inputs_for_corr is not None:
+            try:
+                corr_cfg_obj = _make_correlation_config(corr_cfg_data)
+                cov, correlation_meta = collect_correlations(
+                    model_for_corr,
+                    example_inputs_for_corr,
+                    cfg=corr_cfg_obj,
+                )
+                corr_dir = os.path.join(out_dir, "correlation")
+                _ensure_dir(corr_dir)
+                save_correlation_artifacts(corr_dir, cov, correlation_meta)
+                W_iter = correlation_to_csr(cov, cfg=corr_cfg_obj)
+                correlation_meta["nnz"] = W_iter.nnz()
+                correlation_meta["normalize"] = corr_cfg_obj.normalize
+                if clustering_enabled:
+                    cluster_cfg_obj = _make_clustering_config(clustering_cfg_data or {})
+                    clusters = cluster_graph(W_iter, cluster_cfg_obj)
+                    clustering_meta = {
+                        "method": cluster_cfg_obj.method,
+                        "count": len(clusters),
+                        "resolution": cluster_cfg_obj.resolution,
+                    }
+                    correlation_meta.setdefault("clusters", {})["count"] = len(clusters)
+            except Exception as e:
+                transform_errors.append({"stage": "correlation", "kind": "error", "detail": str(e)})
+                correlation_meta = None
+                clustering_meta = None
+                W_iter = W
+                clusters = None
+        else:
+            transform_errors.append({
+                "stage": "correlation",
+                "kind": "error",
+                "detail": "correlation collection requires model and example_inputs",
+            })
+    else:
+        W_iter = W
+
+    if correlation_meta:
+        emit("CORRELATION", True, correlation_meta)
+    elif correlation_enabled:
+        emit("CORRELATION", False, {})
+    if clustering_meta:
+        emit("CLUSTERING", True, clustering_meta)
+
+    if correlation_meta is not None and W_iter is not W:
+        save_w_npz(os.path.join(out_dir, "W_after.csr.npz"), W_iter)
+
     # Re-permute if iterative, or opt-in when transform triggers delta layout
     mode = cfg.get("pipeline", {}).get("mode", "iterative")
     repermute_on_delta = bool(cfg.get("pipeline", {}).get("repermute_on_delta", False))
@@ -502,14 +631,24 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     stats1 = stats0
     if (mode == "iterative") or (repermute_on_delta and transform_meta.get("delta_layout")):
         pi1, stats1 = fit_permutation(
-            W,
+            W_iter,
             time_budget_s=float(scfg.get("time_budget_s", 1.0)),
             refine_steps=int(scfg.get("refine_steps", 500)),
             cfg=ccfg,
             seed=int(scfg.get("rng_seed", 0)),
+            clusters=clusters,
         )
         improved = stats1.get("J", 0.0) < stats0.get("J", 0.0)
-        emit("REPERMUTED", True, {"improved": improved, "J1": stats1.get("J"), "J0": stats0.get("J")})
+        emit(
+            "REPERMUTED",
+            True,
+            {
+                "improved": improved,
+                "J1": stats1.get("J"),
+                "J0": stats0.get("J"),
+                "clusters": stats1.get("clusters"),
+            },
+        )
         _write_json(
             os.path.join(out_dir, "perm_after.json"),
             {"D": len(pi1), "pi": list(map(int, pi1)), "hash": _hash_pi(pi1)},
@@ -741,6 +880,11 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         "errors": errors + transform_errors,
         "transform_meta": transform_meta,
     }
+
+    if correlation_meta:
+        metrics["correlation"] = correlation_meta
+    if clustering_meta:
+        metrics["clustering"] = clustering_meta
 
     if isinstance(quality_values, dict):
         for key, value in quality_values.items():

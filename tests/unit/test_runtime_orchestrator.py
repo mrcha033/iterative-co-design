@@ -4,7 +4,9 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import pytest
+import torch
 
+from icd.core.graph import CSRMatrix
 from icd.runtime.orchestrator import RunArtifacts, run, run_pair
 
 
@@ -14,6 +16,21 @@ class DummyModel:
 
 def dummy_model_loader(*args, **kwargs):  # pragma: no cover - exercised via orchestrator
     return DummyModel(), ("example",)
+
+
+class ToyLinear(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.linear = torch.nn.Linear(4, 4)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.linear(x)
+
+
+def correlation_model_loader(*args, **kwargs):  # pragma: no cover - orchestrator usage
+    model = ToyLinear()
+    example = torch.zeros(1, 4)
+    return model, (example,)
 
 
 def dummy_runner(mode: str, context: Dict[str, Any]) -> Dict[str, float]:
@@ -48,7 +65,7 @@ def orchestrator_config(tmp_path: Path):
 def test_run_produces_artifacts(tmp_path: Path, monkeypatch, orchestrator_config: Dict[str, Any]) -> None:
     call_order: List[int] = []
 
-    def fake_fit_permutation(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0):
+    def fake_fit_permutation(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None):
         size = W.shape[0]
         if not call_order:
             call_order.append(0)
@@ -117,7 +134,7 @@ def test_run_pair_generates_comparison(tmp_path: Path, monkeypatch) -> None:
 def test_run_with_transforms_cache_and_measurements(tmp_path: Path, monkeypatch) -> None:
     call_order: List[int] = []
 
-    def fake_fit_permutation(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0):
+    def fake_fit_permutation(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None):
         size = W.shape[0]
         idx = len(call_order)
         call_order.append(idx)
@@ -216,3 +233,71 @@ def test_transform_stage_uses_loaded_model(tmp_path: Path, monkeypatch) -> None:
     model_obj = recorded.get("model")
     assert model_obj is not None
     assert model_obj.__class__.__name__ == "DummyModel"
+
+
+def test_run_with_correlation_and_clustering(tmp_path: Path, monkeypatch) -> None:
+    captured: Dict[str, Any] = {"clusters": []}
+
+    def fake_collect(model, inputs, cfg):
+        captured["collect_called"] = True
+        matrix = torch.tensor([[0.0, 1.0], [1.0, 0.0]], dtype=torch.float32)
+        return matrix, {"mode": "activation", "samples": cfg.samples}
+
+    def fake_to_csr(matrix, cfg):
+        return CSRMatrix(indptr=[0, 1, 2], indices=[1, 0], data=[1.0, 1.0], shape=(2, 2), meta={"source": "test"})
+
+    fake_clusters = [[0], [1]]
+
+    def fake_cluster(W, cfg):
+        captured["cluster_cfg"] = cfg
+        return fake_clusters
+
+    def fake_fit(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None):
+        captured["clusters"].append(clusters)
+        return list(range(W.shape[0])), {
+            "J": 1.0,
+            "C": 0.0,
+            "Q": 0.0,
+            "clusters": len(clusters or []),
+            "Q_cluster": 0.0,
+            "Q_final": 0.0,
+        }
+
+    monkeypatch.setattr("icd.runtime.orchestrator.collect_correlations", fake_collect)
+    monkeypatch.setattr("icd.runtime.orchestrator.correlation_to_csr", fake_to_csr)
+    monkeypatch.setattr("icd.runtime.orchestrator.cluster_graph", fake_cluster)
+    monkeypatch.setattr("icd.runtime.orchestrator.fit_permutation", fake_fit)
+
+    cfg = {
+        "report": {"out_dir": str(tmp_path / "corr")},
+        "pipeline": {
+            "mode": "iterative",
+            "runner": "tests.unit.test_runtime_orchestrator:runner_tokens_only",
+            "runner_context": {
+                "tokens": 8,
+                "model_loader": "tests.unit.test_runtime_orchestrator:correlation_model_loader",
+            },
+            "warmup_iter": 0,
+            "repeats": 1,
+        },
+        "graph": {
+            "source": "mock",
+            "mock": {"d": 2, "blocks": 1, "noise": 0.0, "seed": 0},
+            "correlation": {"enable": True, "samples": 1},
+            "loader": "tests.unit.test_runtime_orchestrator:correlation_model_loader",
+        },
+        "solver": {
+            "time_budget_s": 0.01,
+            "refine_steps": 1,
+            "rng_seed": 0,
+            "clustering": {"method": "louvain", "rng_seed": 0},
+        },
+    }
+
+    artifacts = run(cfg)
+    metrics = json.loads(Path(artifacts.metrics_path).read_text(encoding="utf-8"))
+
+    assert captured.get("collect_called") is True
+    assert captured["clusters"][-1] == fake_clusters
+    assert metrics.get("correlation", {}).get("mode") == "activation"
+    assert metrics.get("clustering", {}).get("count") == len(fake_clusters)
