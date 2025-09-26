@@ -672,6 +672,37 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     except Exception as exc:
         errors.append({"stage": "runner", "kind": "error", "detail": str(exc)})
 
+    if runner_callable is None:
+        builtin = measure_cfg.get("builtin")
+        if builtin in {"benchmark", "gpu"}:
+            if graph_model is None or graph_example_inputs is None:
+                try:
+                    graph_model, graph_example_inputs = _resolve_transform_targets(cfg, graph_model, graph_example_inputs, hf_cache)
+                except Exception as exc:  # pragma: no cover - defensive
+                    errors.append({"stage": "runner", "kind": "error", "detail": str(exc)})
+            if graph_model is not None and graph_example_inputs is not None:
+                from icd.measure.runner_gpu import benchmark_inference, BenchmarkConfig
+
+                bench_cfg = BenchmarkConfig(
+                    repeats=int(measure_cfg.get("repeats", 200)),
+                    warmup=int(measure_cfg.get("warmup", 20)),
+                    sync=bool(measure_cfg.get("sync", True)),
+                    use_cuda_events=bool(measure_cfg.get("use_cuda_events", True)),
+                    device=measure_cfg.get("device"),
+                    tokens_per_batch=measure_cfg.get("tokens_per_batch"),
+                )
+
+                def _builtin_runner(mode: str, context: Dict[str, Any]) -> Dict[str, Any]:
+                    return benchmark_inference(graph_model, graph_example_inputs, bench_cfg)
+
+                runner_callable = _builtin_runner
+            else:
+                errors.append({
+                    "stage": "runner",
+                    "kind": "error",
+                    "detail": "builtin benchmark requires model and example_inputs",
+                })
+
     warmup = int(cfg.get("pipeline", {}).get("warmup_iter", 0))
     repeats = max(1, int(cfg.get("pipeline", {}).get("repeats", 1)))
 
