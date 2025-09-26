@@ -11,7 +11,8 @@ from icd.adapters.quant import (
     apply_quant_from_config,
     repack_linear_after_permutation,
 )
-from icd.adapters.sparsity import SparsityConfig, apply_unstructured
+from icd.adapters.sparsity import SparsityConfig, apply_unstructured, apply_sparsity
+from icd.hds.layers import NMLinear
 
 
 def _mini_bert() -> BertForSequenceClassification:
@@ -65,3 +66,19 @@ def test_quant_config_routes_none():
     cfg = QuantConfig.from_dict(None)
     same = apply_quant_from_config(model, cfg)
     assert same is model
+
+
+def test_structured_sparsity_converts_linears():
+    model = _mini_bert()
+    converted_before = sum(isinstance(m, torch.nn.Linear) for m in model.modules())
+    nm_before = sum(isinstance(m, NMLinear) for m in model.modules())
+
+    result, meta = apply_sparsity(model, type="2:4", rate=0.5)
+    assert result is model
+    nm_after = sum(isinstance(m, NMLinear) for m in model.modules())
+    assert nm_after >= nm_before
+    assert meta["delta_layout"] is True
+    assert meta["sparsity"]["type"] == "2:4"
+    assert meta["sparsity"]["converted"] == nm_after
+    lin_after = sum(isinstance(m, torch.nn.Linear) for m in model.modules())
+    assert lin_after + nm_after >= converted_before

@@ -10,6 +10,13 @@ import torch
 from torch.nn import Linear
 from torch.nn.utils import prune
 
+try:  # pragma: no cover - HDS components are optional during bootstrap
+    from icd.hds.layers import NMLinear  # type: ignore
+    from icd.hds.topk import TopKMaskerConfig  # type: ignore
+except Exception:  # pragma: no cover - fallback when HDS isnt available
+    NMLinear = None  # type: ignore[assignment]
+    TopKMaskerConfig = None  # type: ignore[assignment]
+
 __all__ = ["SparsityConfig", "iter_prunable_linears", "apply_unstructured"]
 
 
@@ -170,6 +177,17 @@ def apply_sparsity(
         return model, meta
 
     target_modules = list(modules) if modules is not None else list(_default_prunable_modules(model))
+
+    if typ in {"2:4", "structured", "nm", "hardware"}:
+        converted = _apply_structured_nm(model, target_modules)
+        meta["sparsity"]["method"] = "nm_linear"
+        meta["sparsity"]["group"] = {"active": 2, "group": 4}
+        meta["sparsity"]["converted"] = converted
+        meta["delta_layout"] = bool(converted > 0)
+        if converted == 0:
+            warnings.warn("structured sparsity requested but no linear layers were converted", RuntimeWarning)
+        return model, meta
+
     params_to_prune: list[Tuple[nn.Module, str]] = [(m, param_name) for m in target_modules if hasattr(m, param_name)]
     if not params_to_prune:
         warnings.warn("no prunable modules found; sparsity skipped", RuntimeWarning)
@@ -202,3 +220,42 @@ def apply_sparsity(
 
 if "apply_sparsity" not in __all__:
     __all__.append("apply_sparsity")
+
+
+def _apply_structured_nm(model: nn.Module, target_modules: Iterable[nn.Module]) -> int:
+    if NMLinear is None or TopKMaskerConfig is None:
+        warnings.warn("NMLinear not available; skipping structured sparsity", RuntimeWarning)
+        return 0
+
+    converted = 0
+    seen: set[int] = set()
+    for module in target_modules:
+        if not isinstance(module, nn.Linear):
+            continue
+        if id(module) in seen:
+            continue
+        parent, name = _find_parent_module(model, module)
+        if parent is None or name is None:
+            continue
+        nm = NMLinear(
+            module.in_features,
+            module.out_features,
+            bias=module.bias is not None,
+            n_active=2,
+            m_group=4,
+            masker_config=TopKMaskerConfig(active=2, group_size=4),
+        )
+        nm.load_from_linear(module)
+        nm.to(module.weight.device)
+        setattr(parent, name, nm)
+        converted += 1
+        seen.add(id(module))
+    return converted
+
+
+def _find_parent_module(root: nn.Module, child: nn.Module) -> tuple[nn.Module | None, str | None]:
+    for parent in root.modules():
+        for name, module in parent.named_children():
+            if module is child:
+                return parent, name
+    return None, None
