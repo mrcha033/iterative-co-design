@@ -87,6 +87,16 @@ def apply_kvcache(
 ) -> tuple[Any, dict]:
     """meta = {"kind":"kv","block":128,"drop":0.10,"delta_layout":True}"""
 
+from icd.graph import CorrelationConfig, collect_correlations, correlation_to_csr
+from icd.graph import ClusteringConfig, cluster_graph
+
+corr_cfg = CorrelationConfig(mode="activation", samples=8, threshold=0.05)
+matrix, corr_meta = collect_correlations(model, example_inputs, cfg=corr_cfg)
+W_corr = correlation_to_csr(matrix, cfg=corr_cfg)
+
+cluster_cfg = ClusteringConfig(method="louvain", rng_seed=0)
+communities = cluster_graph(W_corr, cluster_cfg)
+
 # orchestrator
 @dataclass
 class RunArtifacts:
@@ -101,6 +111,11 @@ def run(config: dict) -> RunArtifacts:
     config 스키마는 3.3 참조."""
 
 # 측정 유틸(직접 사용 가능)
+from icd.measure.runner_gpu import BenchmarkConfig, benchmark_inference
+
+cfg = BenchmarkConfig(repeats=200, warmup=20, tokens_per_batch=1024)
+metrics = benchmark_inference(model, example_inputs, cfg)
+
 def measure_latency(fn, *, repeats:int=1000, warmup:int=50, fixed_clock:bool=True) -> dict: ...
 def measure_l2_hit(ncu_cmd: str, *, metrics: list[str]) -> dict: ...
 def measure_power_nvml(*, sample_hz:int=10, duration_s:int) -> dict: ...

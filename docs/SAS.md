@@ -92,8 +92,8 @@
 ### 5.2 core/solver
 
 * 입력: $W$, 시간상한(soft), 로컬탐색 단계수, k(블록 수, 선택).
-* 출력: permutation `π`, 보조지표 `C(π), Q(π)`.
-* 계약: 시간상한 내 최적화 종료. 개선 실패 시 초기해 반환(플래그 표시).
+* 출력: permutation `π`, 보조지표 `C(π), Q(π)`, 클러스터/모듈러리티 `Q_cluster/Q_final`.
+* 계약: 시간상한 내 최적화 종료. 개선 실패 시 초기해 반환(플래그 표시). Louvain/스펙트럴 클러스터 입력을 받아 초기 순서를 구성하고 모듈러리티를 추적한다.
 
 ### 5.3 adapters/S|Q|K
 
@@ -103,14 +103,15 @@
 
 ### 5.4 runtime/orchestrator
 
-* 기능: 파이프라인 스케줄, 재시도/백오프, 실패 롤백, 캐시(hit/miss), 시드/클럭 고정, 아티팩트 경로 관리.
-* 계약: 모든 스텝의 로깅/이벤트 발행(오버헤드 <1%).
+* 기능: 파이프라인 스케줄, 재시도/백오프, 실패 롤백, 캐시(hit/miss), 시드/클럭 고정, 아티팩트 경로 관리. transform 이후 activation 기반 correlation 수집 → Louvain/Spectral 클러스터링 → solver 전달.
+* 계약: 모든 스텝의 로깅/이벤트 발행(오버헤드 <1%). `correlation/` 아티팩트(`.pt/.json`)와 클러스터 메타데이터를 저장한다.
 
 ### 5.5 measure/
 
+* `benchmark_inference`: 내장 GPU 벤치마크(워밍업/반복, CUDA 이벤트, NVTX 태깅)로 Latency/Throughput/EpT 취합.
 * `ncu`: L2 hit 수집, 프로파일 키 세트 선택.
 * `nvml`: 전력 샘플링(주기), EpT 계산.
-* 계약: 워밍업 제외, 반복 횟수 N, 고정클럭/전력캡 옵션 준수.
+* 계약: 워밍업 제외, 반복 횟수 N, 고정클럭/전력캡 옵션 준수. Latency/L2/EpT 결과를 `metrics.json`에 기록하고 Acceptance 게이트(BRD 목표)를 자동 평가한다.
 
 ### 5.6 bridge/
 

@@ -278,6 +278,7 @@ pack:
 * [ ] `conda activate icd` / `Docker run` 완료
 * [ ] `make fetch_models` 성공(오프라인이면 캐시 경로 설정)
 * [ ] `repro_smoke` 통과(보고서 생성)
+* [ ] `repro_codesign` (correlation + benchmark) 실행 및 Latency/L2/EpT 목표 확인
 * [ ] `repro_full` 통과(스모크 게이트)
 * [ ] PRD 게이트 충족(최종)
 * [ ] `pack` 실행, `artifacts/icd_artifacts.zip` 제출

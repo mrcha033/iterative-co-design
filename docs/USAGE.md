@@ -4,6 +4,7 @@ This guide shows how to run the iterative layout optimization pipeline from sour
 
 ## Reproduction Quick Guide
 - Smoke (linear vs iterative): `bash scripts/repro_smoke.sh` → writes `runs/smoke/{linear,iter}`
+- Codesign repro (correlation + benchmark): `bash scripts/repro_codesign.sh` → writes `runs/codesign/{iterative,linear}`
 - Pair mode (baseline+trial+verdict): `python -m icd.cli.main pair -c configs/mock.json --out runs/pair01`
 - Iterative single run: `python -m icd.cli.main run -c configs/mock.json --override pipeline.mode=iterative --out runs/iter`
 - Enable cache: add `--override cache.enable=true --override cache.cache_dir=.icd_cache`
@@ -122,6 +123,7 @@ Makefile shortcuts (optional):
 
 ```bash
 make repro-smoke         # bash scripts/repro_smoke.sh
+make repro-codesign      # bash scripts/repro_codesign.sh
 make pair                # pair run to runs/pair01
 make test                # quick unit+integration+ir sweep
 make schema              # print input JSON Schema

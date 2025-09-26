@@ -59,6 +59,8 @@
 * `repermute.fit(W|trace)` : 공접근 가중치 W(또는 트레이스)로 permutation 도출.
 * `transform.apply({sparsity|quant|kv})` : 상태-변환 실행, 메타데이터 갱신.
 * `icd run …` : 파이프라인 오케스트레이션(로그/프로파일/리포트).
+* `collect_correlations/cluster_graph` : transform 이후 activation 기반 상관행렬 및 Louvain 클러스터로 재퍼뮤테이션 초기화.
+* `measure.builtin=benchmark` : 내장 GPU 벤치마크로 Latency/Throughput/EpT 자동 취합, Nsight/NVML 연동 옵션.
 * 캐시/재사용: 동일 조건에서 permutation 재사용 + 버전태깅.
 
 ### Non-functional
@@ -66,6 +68,7 @@
 * **성능**: D=2.5k 차원 기준 re-permute **≤ 5분**(오프라인), 오버헤드 << 누적 절감.
 * **재현성**: Docker/conda 환경 잠금, seed/클럭 고정 SOP.
 * **관측성**: 이벤트/지표 스키마, 오버헤드 < 1%.
+* **계측 자동화**: 벤치마크/클러스터링 결과가 `metrics.json` 및 `correlation/` 아티팩트로 저장되고, PRD 게이트(Lat −20%, L2 +10%p, EpT −15%) 자동 평가.
 * **안전성**: 실패 시 자동 롤백(기존 레이아웃), 로그에 원인 기록.
 
 ## 7) 아키텍처 개요(상위 블록)
