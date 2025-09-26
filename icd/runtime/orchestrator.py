@@ -4,7 +4,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 from types import SimpleNamespace
 
 from icd.core.graph import build_w, save_w_npz
@@ -130,6 +130,59 @@ def _read_json(path: str) -> Dict[str, Any]:
         return json.load(f)
 
 
+def _resolve_transform_targets(
+    cfg: Dict[str, Any],
+    model: Any,
+    example_inputs: Any,
+    hf_cache: Dict[str, Any],
+) -> tuple[Any, Any]:
+    """Return a model/example pair for transform application.
+
+    Preference order:
+    1. Existing model/example pair (already loaded earlier in the pipeline).
+    2. Cached model/example pair stored in ``hf_cache``.
+    3. Loader referenced in graph configuration (``graph.loader``).
+    4. Loader referenced in runner context (``pipeline.runner_context.model_loader``).
+
+    When a loader is invoked, the resulting model/example pair is cached so that
+    downstream stages (e.g., measurement) can reuse the same objects without
+    reloading.
+    """
+
+    if model is not None:
+        hf_cache.setdefault("model", model)
+        if example_inputs is not None:
+            hf_cache.setdefault("example_inputs", example_inputs)
+        return model, example_inputs
+
+    cached_model = hf_cache.get("model")
+    if cached_model is not None:
+        return cached_model, hf_cache.get("example_inputs")
+
+    graph_cfg = cfg.get("graph", {}) or {}
+    pipeline_ctx = cfg.get("pipeline", {}).get("runner_context", {}) or {}
+
+    loader_path: Optional[str] = graph_cfg.get("loader") or pipeline_ctx.get("model_loader")
+    if not loader_path:
+        return model, example_inputs
+
+    loader_args = graph_cfg.get("loader_args")
+    loader_kwargs = graph_cfg.get("loader_kwargs")
+    if loader_args is None:
+        loader_args = pipeline_ctx.get("model_loader_args")
+    if loader_kwargs is None:
+        loader_kwargs = pipeline_ctx.get("model_loader_kwargs")
+
+    loader_args = list(loader_args or [])
+    loader_kwargs = dict(loader_kwargs or {})
+
+    loader = load_object(str(loader_path))
+    loaded_model, loaded_inputs = loader(*loader_args, **loader_kwargs)
+    hf_cache["model"] = loaded_model
+    hf_cache["example_inputs"] = loaded_inputs
+    return loaded_model, loaded_inputs
+
+
 def run(config: Dict[str, Any]) -> RunArtifacts:
     """Minimal orchestrator: builds W, solves, optionally re-permutes, and writes artifacts.
 
@@ -150,6 +203,9 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     def emit(stage: str, ok: bool, meta: Dict[str, Any] | None = None):
         ev = {"stage": stage, "t": time.time(), "ok": ok, "meta": (meta or {})}
         events.append(ev)
+
+    hf_cache: Dict[str, Any] = {}
+
 
     # Build W (mock or pytorch)
     gcfg = cfg.get("graph", {})
@@ -255,33 +311,70 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     delta_layout_any = False
     transform_errors: list[Dict[str, str]] = []
     try:
+        transform_model = graph_model
+        transform_inputs = graph_example_inputs
+
         if isinstance(tcfg, dict):
             # Sparsity
             s = tcfg.get("sparsity", {}) if tcfg.get("sparsity", {}).get("enable") else None
             if s:
                 from icd.adapters.sparsity import apply_sparsity
 
-                _, m = apply_sparsity(None, type=s.get("type", "2:4"), rate=float(s.get("rate", 0.0)))
+                if transform_model is None:
+                    try:
+                        transform_model, transform_inputs = _resolve_transform_targets(cfg, transform_model, transform_inputs, hf_cache)
+                        if transform_model is not None:
+                            graph_model = transform_model
+                            graph_example_inputs = transform_inputs
+                    except Exception as e:  # pragma: no cover - defensive
+                        transform_errors.append({"stage": "transform", "kind": "error", "detail": str(e)})
+                        transform_model = None
+
+                transform_model, m = apply_sparsity(
+                    transform_model,
+                    type=s.get("type", "2:4"),
+                    rate=float(s.get("rate", 0.0)),
+                )
                 metas.append(m)
                 if m.get("delta_layout"):
                     triggers.append("S")
                 delta_layout_any = bool(delta_layout_any or m.get("delta_layout"))
+                if transform_model is not None:
+                    hf_cache["model"] = transform_model
+                    hf_cache["sparsity_applied"] = True
             # Quant
             q = tcfg.get("quant", {}) if tcfg.get("quant", {}).get("enable") else None
             if q:
                 from icd.adapters.quant import apply_quant
 
-                _, m = apply_quant(None, dtype=q.get("dtype", "int8"), method=q.get("method", "ptq-minmax"))
+                if transform_model is None:
+                    try:
+                        transform_model, transform_inputs = _resolve_transform_targets(cfg, transform_model, transform_inputs, hf_cache)
+                        if transform_model is not None:
+                            graph_model = transform_model
+                            graph_example_inputs = transform_inputs
+                    except Exception as e:  # pragma: no cover - defensive
+                        transform_errors.append({"stage": "transform", "kind": "error", "detail": str(e)})
+                        transform_model = None
+
+                transform_model, m = apply_quant(
+                    transform_model,
+                    dtype=q.get("dtype", "int8"),
+                    method=q.get("method", "ptq-minmax"),
+                )
                 metas.append(m)
                 if m.get("delta_layout"):
                     triggers.append("Q")
                 delta_layout_any = bool(delta_layout_any or m.get("delta_layout"))
+                if transform_model is not None:
+                    hf_cache["model"] = transform_model
+                    hf_cache["quant_applied"] = True
             # KV cache
             k = tcfg.get("kv", {}) if tcfg.get("kv", {}).get("enable") else None
             if k:
                 from icd.adapters.kv import apply_kvcache
 
-                _, m = apply_kvcache(None, block=int(k.get("block", 128)), drop=float(k.get("drop", 0.0)))
+                _, m = apply_kvcache(transform_model, block=int(k.get("block", 128)), drop=float(k.get("drop", 0.0)))
                 metas.append(m)
                 if m.get("delta_layout"):
                     triggers.append("K")
@@ -289,6 +382,11 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     except Exception as e:
         # Transform errors are non-fatal in mock path
         transform_errors.append({"stage": "transform", "kind": "error", "detail": str(e)})
+
+    if transform_model is not None:
+        graph_model = transform_model
+        if transform_inputs is not None:
+            graph_example_inputs = transform_inputs
 
     # Baseline permute (with optional cache or reuse)
     scfg = cfg.get("solver", {})
@@ -438,7 +536,6 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     warmup = int(cfg.get("pipeline", {}).get("warmup_iter", 0))
     repeats = max(1, int(cfg.get("pipeline", {}).get("repeats", 1)))
 
-    hf_cache: Dict[str, Any] = {}
     latency_samples: list[float] = []
     extra_outputs: dict | None = None
     l2_hit = None

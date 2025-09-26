@@ -8,6 +8,14 @@ import pytest
 from icd.runtime.orchestrator import RunArtifacts, run, run_pair
 
 
+class DummyModel:
+    pass
+
+
+def dummy_model_loader(*args, **kwargs):  # pragma: no cover - exercised via orchestrator
+    return DummyModel(), ("example",)
+
+
 def dummy_runner(mode: str, context: Dict[str, Any]) -> Dict[str, float]:
     context.setdefault("calls", 0)
     context["calls"] += 1
@@ -162,3 +170,49 @@ def test_run_with_transforms_cache_and_measurements(tmp_path: Path, monkeypatch)
     metrics2 = json.loads(Path(artifacts2.metrics_path).read_text(encoding="utf-8"))
     assert metrics2["acceptance"]["delta_J"] <= 0
     assert len(call_order) == 3
+
+
+def test_transform_stage_uses_loaded_model(tmp_path: Path, monkeypatch) -> None:
+    recorded: Dict[str, Any] = {}
+
+    def fake_apply_sparsity(model, **kwargs):
+        recorded["model"] = model
+        meta = {
+            "delta_layout": True,
+            "sparsity": {
+                "type": kwargs.get("type"),
+                "rate": kwargs.get("rate"),
+                "method": kwargs.get("method", "l1_unstructured"),
+            },
+        }
+        return model, meta
+
+    monkeypatch.setattr("icd.adapters.sparsity.apply_sparsity", fake_apply_sparsity)
+
+    cfg = {
+        "report": {"out_dir": str(tmp_path / "transform_model")},
+        "pipeline": {
+            "mode": "iterative",
+            "runner": "tests.unit.test_runtime_orchestrator:runner_tokens_only",
+            "runner_context": {
+                "tokens": 8,
+                "model_loader": "tests.unit.test_runtime_orchestrator:dummy_model_loader",
+            },
+            "warmup_iter": 0,
+            "repeats": 1,
+        },
+        "graph": {
+            "source": "mock",
+            "mock": {"d": 4, "blocks": 2, "noise": 0.0, "seed": 3},
+            "normalize": "sym",
+            "loader": "tests.unit.test_runtime_orchestrator:dummy_model_loader",
+        },
+        "solver": {"time_budget_s": 0.01, "refine_steps": 1, "rng_seed": 0},
+        "transform": {"sparsity": {"enable": True, "rate": 0.5, "type": "unstructured"}},
+    }
+
+    run(cfg)
+
+    model_obj = recorded.get("model")
+    assert model_obj is not None
+    assert model_obj.__class__.__name__ == "DummyModel"
