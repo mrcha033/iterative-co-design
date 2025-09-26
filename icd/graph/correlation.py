@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 import json
+import random
+from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, List, MutableMapping, Optional, Sequence, Tuple
 
+try:  # pragma: no cover - numpy optional for seeding
+    import numpy as np
+except Exception:  # pragma: no cover
+    np = None  # type: ignore[assignment]
 import torch
 
-from icd.core.graph import CSRMatrix
 from icd.core import graph as graph_mod
+from icd.core.graph import CSRMatrix
 
-__all__ = ["CorrelationConfig", "collect_correlations", "correlation_to_csr"]
+__all__ = [
+    "CorrelationConfig",
+    "collect_correlations",
+    "correlation_to_csr",
+    "save_correlation_artifacts",
+]
 
 
 @dataclass
@@ -25,18 +36,26 @@ class CorrelationConfig:
     threshold: float = 0.0
     normalize: str = "sym"
     nnz_cap: Optional[int] = None
+    whiten: bool = False
+    transfer_batch_size: Optional[int] = None
 
 
 class _ActivationStats:
+    """Running statistics for a single layer's activations."""
+
     def __init__(self, feature_dim: int, dtype: torch.dtype, device: torch.device) -> None:
-        self.sum = torch.zeros(feature_dim, dtype=dtype, device=device)
-        self.sum_outer = torch.zeros(feature_dim, feature_dim, dtype=dtype, device=device)
+        self.device = torch.device(device)
+        self.dtype = dtype
+        self.sum = torch.zeros(feature_dim, dtype=dtype, device=self.device)
+        self.sum_outer = torch.zeros(feature_dim, feature_dim, dtype=dtype, device=self.device)
         self.count = 0
 
     def update(self, activations: torch.Tensor) -> None:
-        # activations: (batch, features)
+        if activations.ndim != 2:
+            raise ValueError("expected 2-D activations (batch, features)")
         if activations.numel() == 0:
             return
+        activations = activations.to(device=self.device, dtype=self.dtype)
         self.count += activations.shape[0]
         self.sum += activations.sum(dim=0)
         self.sum_outer += activations.t().mm(activations)
@@ -51,11 +70,24 @@ class _ActivationStats:
 
 
 class ActivationCollector:
-    def __init__(self, model: torch.nn.Module, targets: Sequence[str], dtype: torch.dtype) -> None:
+    """Hook-based activation statistics collector with optional CPU staging."""
+
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        targets: Sequence[str],
+        dtype: torch.dtype,
+        *,
+        device_guard: bool = True,
+        transfer_batch_size: Optional[int] = None,
+    ) -> None:
         self.model = model
         self.targets = list(targets)
         self.dtype = dtype
-        self._stats: Dict[str, _ActivationStats] = {}
+        self.device_guard = device_guard
+        self.transfer_batch_size = int(transfer_batch_size) if transfer_batch_size else None
+        self._stats: "OrderedDict[str, _ActivationStats]" = OrderedDict()
+        self._layer_meta: "OrderedDict[str, MutableMapping[str, object]]" = OrderedDict()
         self._handles: List[torch.utils.hooks.RemovableHandle] = []
 
         for name, module in model.named_modules():
@@ -63,37 +95,72 @@ class ActivationCollector:
                 handle = module.register_forward_hook(self._hook(name))
                 self._handles.append(handle)
 
+    def _get_stats(self, name: str, feature_dim: int, device: torch.device) -> _ActivationStats:
+        stats = self._stats.get(name)
+        if stats is None:
+            stats_device = torch.device("cpu") if self.device_guard else device
+            stats = _ActivationStats(feature_dim, self.dtype, stats_device)
+            self._stats[name] = stats
+            layer_meta = self._layer_meta.setdefault(
+                name,
+                {
+                    "name": name,
+                    "feature_dim": feature_dim,
+                    "samples": 0,
+                    "capture_device": str(device),
+                },
+            )
+            layer_meta["storage_device"] = str(stats.device)
+        else:
+            layer_meta = self._layer_meta[name]
+            layer_meta.setdefault("capture_device", str(device))
+        return stats
+
     def _hook(self, name: str):
-        def _capture(module, inputs, output):
+        def _capture(module, inputs, output):  # type: ignore[unused-argument]
             tensor = output[0] if isinstance(output, (tuple, list)) else output
             if not isinstance(tensor, torch.Tensor):
                 return
-            tensor = tensor.detach().to(dtype=self.dtype)
+            tensor = tensor.detach()
+            if tensor.ndim == 0:
+                return
+            tensor = tensor.to(dtype=self.dtype)
+            if tensor.ndim == 1:
+                tensor = tensor.unsqueeze(0)
             tensor = tensor.reshape(tensor.shape[0], -1)
-            stats = self._stats.get(name)
-            if stats is None:
-                stats = _ActivationStats(tensor.shape[1], self.dtype, tensor.device)
-                self._stats[name] = stats
-            stats.update(tensor)
+            stats = self._get_stats(name, tensor.shape[1], tensor.device)
+            batch_size = self.transfer_batch_size or tensor.shape[0]
+            if batch_size <= 0:
+                batch_size = tensor.shape[0]
+            for chunk in tensor.split(batch_size, dim=0):
+                stats.update(chunk)
+                self._layer_meta[name]["samples"] = int(self._layer_meta[name].get("samples", 0)) + chunk.shape[0]
+
         return _capture
 
     def run(self, iterator: Iterator[Tuple], samples: int) -> None:
         self.model.eval()
-        with torch.no_grad():
-            for idx, inputs in zip(range(samples), iterator):
+        with torch.inference_mode():
+            for _, inputs in zip(range(samples), iterator):
                 if not isinstance(inputs, tuple):
                     inputs = (inputs,)
                 self.model(*inputs)
 
-    def covariance(self) -> torch.Tensor:
+    def covariance(self) -> Tuple[torch.Tensor, List[Dict[str, object]]]:
         if not self._stats:
             raise RuntimeError("No activations captured")
         covariances = [stats.covariance() for stats in self._stats.values()]
-        size = covariances[0].shape[0]
-        cov = torch.zeros_like(covariances[0])
-        for c in covariances:
-            cov += c
-        return cov / len(covariances)
+        base = covariances[0].clone()
+        for cov in covariances[1:]:
+            base += cov
+        cov = base / len(covariances)
+        layers_meta: List[Dict[str, object]] = []
+        for name, stats in self._stats.items():
+            layer_meta = dict(self._layer_meta.get(name, {}))
+            layer_meta.setdefault("name", name)
+            layer_meta["count"] = stats.count
+            layers_meta.append(layer_meta)
+        return cov, layers_meta
 
     def close(self) -> None:
         for handle in self._handles:
@@ -134,6 +201,27 @@ def _input_iterator(example_inputs: object, samples: int) -> Iterator[Tuple]:
     return default_iter()
 
 
+def _set_deterministic_seed(seed: int) -> None:
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():  # pragma: no cover - CUDA optional in CI
+        torch.cuda.manual_seed_all(seed)
+    random.seed(seed)
+    if np is not None:
+        np.random.seed(seed)
+
+
+def _whiten_covariance(matrix: torch.Tensor) -> torch.Tensor:
+    diag = matrix.diagonal()
+    eps = torch.finfo(matrix.dtype).eps if matrix.is_floating_point() else 1e-12
+    denom = torch.sqrt(torch.clamp(diag, min=eps))
+    inv = torch.zeros_like(denom)
+    mask = denom > 0
+    inv[mask] = 1.0 / denom[mask]
+    whitened = matrix * inv.unsqueeze(0) * inv.unsqueeze(1)
+    whitened.fill_diagonal_(1.0)
+    return whitened
+
+
 def collect_correlations(
     model: torch.nn.Module,
     example_inputs: object,
@@ -141,25 +229,43 @@ def collect_correlations(
     cfg: CorrelationConfig,
 ) -> Tuple[torch.Tensor, Dict[str, object]]:
     if cfg.seed is not None:
-        torch.manual_seed(cfg.seed)
+        _set_deterministic_seed(int(cfg.seed))
+
+    if cfg.samples <= 0:
+        raise ValueError("cfg.samples must be positive")
+
     inputs_iter = _input_iterator(example_inputs, cfg.samples)
 
     if cfg.mode != "activation":
         raise NotImplementedError("Only activation-based correlation is supported currently")
 
     targets = list(cfg.layers or [])
-    collector = ActivationCollector(model, targets, dtype=cfg.dtype)
+    collector = ActivationCollector(
+        model,
+        targets,
+        dtype=cfg.dtype,
+        device_guard=cfg.device_guard,
+        transfer_batch_size=cfg.transfer_batch_size,
+    )
     try:
         collector.run(inputs_iter, cfg.samples)
-        matrix = collector.covariance()
+        matrix, layers_meta = collector.covariance()
     finally:
         collector.close()
+
+    if cfg.whiten:
+        matrix = _whiten_covariance(matrix)
 
     meta = {
         "mode": cfg.mode,
         "targets": targets or "auto",
         "samples": cfg.samples,
         "dtype": str(cfg.dtype),
+        "device_guard": cfg.device_guard,
+        "transfer_batch_size": cfg.transfer_batch_size,
+        "seed": cfg.seed,
+        "whiten": cfg.whiten,
+        "layers": layers_meta,
     }
     return matrix.cpu(), meta
 
