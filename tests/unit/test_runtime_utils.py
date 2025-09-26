@@ -63,18 +63,21 @@ def test_compare_decide_applies_latency_and_quality_gates() -> None:
     baseline = {
         "latency_ms": {"mean": 100.0},
         "l2_hit_pct": 0.8,
+        "ept_j_per_tok": 1.0,
         "quality": {"metric": "perplexity", "after": 10.0},
         "acceptance": {"delta_J": -0.01},
     }
     trial = {
         "latency_ms": {"mean": 70.0},
-        "l2_hit_pct": 0.85,
+        "l2_hit_pct": 0.9,
+        "ept_j_per_tok": 0.8,
         "quality": {"metric": "perplexity", "after": 10.01},
         "acceptance": {"delta_J": -0.02},
     }
     verdict = compare.decide(baseline, trial, fixed_clock=True, eps_J=0.01)
     assert verdict["accepted"] is True
     assert verdict["rolled_back"] is False
+    assert verdict.get("missing") == []
 
     # Quality regression should flip acceptance
     trial_quality = trial.copy()

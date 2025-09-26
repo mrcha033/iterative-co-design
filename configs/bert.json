@@ -62,7 +62,10 @@
   },
   "gates": {
     "sst2.acc_min": 0.90,
-    "iter_vs_linear_latency_factor": 0.90
+    "iter.latency_rel_max": -0.20,
+    "iter.l2_pp_min": 10.0,
+    "iter.ept_rel_max": -0.15,
+    "quality.acc_drop_pp_max": 0.1
   },
   "report": {"out_dir": "runs/bert_smoke", "formats": ["html", "csv"]}
 }
