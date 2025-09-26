@@ -38,6 +38,11 @@
       ],
       "device": "cuda"
     },
+    "correlation": {
+      "enable": true,
+      "samples": 8,
+      "normalize": "sym"
+    },
     "pytorch": {"hops": 2, "byte_weight": true, "reuse_decay": 0.7, "max_len": 128},
     "nnz_cap": 1000000
   },

@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 from icd.core.graph import CSRMatrix
 from icd.runtime.orchestrator import RunArtifacts, run, run_pair
@@ -59,6 +60,7 @@ def orchestrator_config(tmp_path: Path):
         },
         "graph": {"source": "mock", "mock": {"d": 6, "blocks": 2, "noise": 0.0, "seed": 1}},
         "solver": {"time_budget_s": 0.01, "refine_steps": 2, "rng_seed": 0},
+        "transform": {"sparsity": {"enable": True, "rate": 0.0}},
     }
 
 
@@ -90,6 +92,22 @@ def test_run_produces_artifacts(tmp_path: Path, monkeypatch, orchestrator_config
     assert (Path(artifacts.out_dir) / "report.csv").exists()
     assert (Path(artifacts.out_dir) / "report.html").exists()
     assert call_order == [0, 1]
+
+
+def test_iterative_requires_transform_or_correlation(tmp_path: Path) -> None:
+    cfg = {
+        "report": {"out_dir": str(tmp_path / "guard")},
+        "pipeline": {
+            "mode": "iterative",
+            "runner": "tests.unit.test_runtime_orchestrator:dummy_runner",
+            "runner_context": {"tokens": 4},
+        },
+        "graph": {"source": "mock", "mock": {"d": 4, "blocks": 2, "noise": 0.0, "seed": 3}},
+        "solver": {"time_budget_s": 0.01, "refine_steps": 1, "rng_seed": 0},
+    }
+
+    with pytest.raises(ValueError, match="pipeline.mode='iterative'"):
+        run(cfg)
 
 
 def test_run_pair_generates_comparison(tmp_path: Path, monkeypatch) -> None:
@@ -187,6 +205,50 @@ def test_run_with_transforms_cache_and_measurements(tmp_path: Path, monkeypatch)
     metrics2 = json.loads(Path(artifacts2.metrics_path).read_text(encoding="utf-8"))
     assert metrics2["acceptance"]["delta_J"] <= 0
     assert len(call_order) == 3
+
+
+def test_iterative_auto_enables_correlation(monkeypatch, tmp_path: Path) -> None:
+    captured: Dict[str, Any] = {}
+
+    def fake_collect(model, inputs, cfg):
+        captured["collect"] = True
+        matrix = torch.tensor([[0.0, 0.5], [0.5, 0.0]], dtype=torch.float32)
+        return matrix, {"mode": "activation", "samples": cfg.samples}
+
+    def fake_to_csr(matrix, cfg):
+        return CSRMatrix(indptr=[0, 1, 2], indices=[1, 0], data=[0.5, 0.5], shape=(2, 2), meta={"source": "auto"})
+
+    monkeypatch.setattr("icd.runtime.orchestrator.collect_correlations", fake_collect)
+    monkeypatch.setattr("icd.runtime.orchestrator.correlation_to_csr", fake_to_csr)
+
+    cfg = {
+        "report": {"out_dir": str(tmp_path / "auto_corr")},
+        "pipeline": {
+            "mode": "iterative",
+            "runner": "tests.unit.test_runtime_orchestrator:runner_tokens_only",
+            "runner_context": {
+                "tokens": 8,
+                "model_loader": "tests.unit.test_runtime_orchestrator:correlation_model_loader",
+            },
+            "warmup_iter": 0,
+            "repeats": 1,
+        },
+        "graph": {
+            "source": "mock",
+            "mock": {"d": 2, "blocks": 1, "noise": 0.0, "seed": 0},
+            "loader": "tests.unit.test_runtime_orchestrator:correlation_model_loader",
+        },
+        "solver": {"time_budget_s": 0.01, "refine_steps": 1, "rng_seed": 0},
+        "transform": {"sparsity": {"enable": True, "rate": 0.0}},
+    }
+
+    artifacts = run(cfg)
+    metrics = json.loads(Path(artifacts.metrics_path).read_text(encoding="utf-8"))
+
+    assert captured.get("collect") is True
+    assert metrics.get("correlation", {}).get("auto_enabled") is True
+    triggers = metrics.get("transform_meta", {}).get("triggers", [])
+    assert "CORR-auto" in triggers
 
 
 def test_transform_stage_uses_loaded_model(tmp_path: Path, monkeypatch) -> None:
@@ -301,3 +363,71 @@ def test_run_with_correlation_and_clustering(tmp_path: Path, monkeypatch) -> Non
     assert captured["clusters"][-1] == fake_clusters
     assert metrics.get("correlation", {}).get("mode") == "activation"
     assert metrics.get("clustering", {}).get("count") == len(fake_clusters)
+
+
+def test_reference_configs_pass_iterative_guard(tmp_path: Path, monkeypatch) -> None:
+    def fake_collect(model, inputs, cfg):
+        matrix = torch.tensor([[0.0, 0.4], [0.4, 0.0]], dtype=torch.float32)
+        return matrix, {"mode": cfg.mode, "samples": cfg.samples}
+
+    def fake_to_csr(matrix, cfg):
+        return CSRMatrix(indptr=[0, 1, 2], indices=[1, 0], data=[1.0, 1.0], shape=(2, 2), meta={"source": "fake"})
+
+    def fake_fit(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None):
+        size = W.shape[0]
+        return list(range(size)), {"J": 1.0, "C": 0.0, "Q": 0.0, "clusters": len(clusters or [])}
+
+    monkeypatch.setattr("icd.runtime.orchestrator.collect_correlations", fake_collect)
+    monkeypatch.setattr("icd.runtime.orchestrator.correlation_to_csr", fake_to_csr)
+    monkeypatch.setattr("icd.runtime.orchestrator.fit_permutation", fake_fit)
+
+    repo_root = Path(__file__).resolve().parents[2]
+    configs = repo_root / "configs"
+    for name in ["bert.json", "mamba.json"]:
+        cfg_doc = json.loads((configs / name).read_text(encoding="utf-8"))
+        corr_cfg = cfg_doc.get("graph", {}).get("correlation")
+        assert corr_cfg and corr_cfg.get("enable") is True
+
+        out_dir = tmp_path / name.replace(".json", "")
+        cfg_doc.setdefault("report", {})["out_dir"] = str(out_dir)
+
+        pipeline = cfg_doc.setdefault("pipeline", {})
+        pipeline.update(
+            {
+                "mode": "iterative",
+                "runner": "tests.unit.test_runtime_orchestrator:runner_tokens_only",
+                "runner_context": {
+                    "tokens": 8,
+                    "model_loader": "tests.unit.test_runtime_orchestrator:correlation_model_loader",
+                },
+                "warmup_iter": 0,
+                "repeats": 1,
+            }
+        )
+
+        gcfg = cfg_doc.setdefault("graph", {})
+        gcfg["source"] = "mock"
+        gcfg["mock"] = {"d": 2, "blocks": 1, "noise": 0.0, "seed": 0}
+        gcfg["normalize"] = "sym"
+        gcfg["loader"] = "tests.unit.test_runtime_orchestrator:correlation_model_loader"
+        for key in ["loader_kwargs", "pytorch", "nnz_cap", "mock_kwargs"]:
+            gcfg.pop(key, None)
+        corr_cfg = gcfg.setdefault("correlation", corr_cfg or {})
+        corr_cfg["enable"] = True
+        corr_cfg.setdefault("samples", 1)
+
+        solver = cfg_doc.setdefault("solver", {})
+        solver.update(
+            {
+                "time_budget_s": 0.01,
+                "refine_steps": 1,
+                "rng_seed": 0,
+                "clustering": {"enable": False},
+            }
+        )
+
+        cfg_doc["measure"] = {"ncu_enable": False, "power_enable": False}
+
+        artifacts = run(cfg_doc)
+        metrics = json.loads(Path(artifacts.metrics_path).read_text(encoding="utf-8"))
+        assert metrics.get("correlation", {}).get("mode") == "activation"

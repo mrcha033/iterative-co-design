@@ -178,6 +178,7 @@ cache: {enable: false, cache_dir: ".icd_cache"}
 
 * **계약**: `pipeline.mode=linear`인 경우 4단계(re-permute) 생략. 단, `repermute_on_delta=true`이고 변환 메타에 `delta_layout=true`인 경우에는 재퍼뮤트 1회 수행.
 * **기본값**: 명시 없으면 PRD/SAS의 디폴트 사용.
+* **Iterative guard**: `pipeline.mode=iterative`일 때는 `transform.*.enable=true` 중 하나 또는 `graph.correlation.enable=true`가 설정되어야 한다.
 * **캐시**: `cache.enable=true`이고 `cache.cache_dir`가 설정된 경우에만 활성화.
 * **검증**: 스키마 위배 → `ConfigError`.
 * **Runner**: `pipeline.runner`에 `module:function` 형식(또는 dotted path)을 지정하면 해당 callable이 실제 추론/측정 루프를 실행한다. 반환 딕셔너리의 `l2_hit_pct`, `ept_j_per_tok`, `tokens` 키는 메트릭에 전파된다. 미지정 시 mock proxy가 사용된다.

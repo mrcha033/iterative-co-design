@@ -259,6 +259,18 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     correlation_meta: Dict[str, Any] | None = None
     clustering_meta: Dict[str, Any] | None = None
 
+    pipeline_cfg = cfg.get("pipeline", {}) or {}
+    mode = str(pipeline_cfg.get("mode", "iterative"))
+    mode_lower = mode.lower()
+
+    transform_cfg = cfg.get("transform", {}) or {}
+    transform_enabled = False
+    if isinstance(transform_cfg, dict):
+        for key in ("sparsity", "quant", "kv"):
+            opt = transform_cfg.get(key) or {}
+            if opt.get("enable"):
+                transform_enabled = True
+                break
 
     # Build W (mock or pytorch)
     gcfg = cfg.get("graph", {})
@@ -267,9 +279,19 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     graph_example_inputs = None
     mamba_modules: List[Dict[str, Any]] | None = None
     corr_cfg_data = gcfg.get("correlation") or {}
+    corr_explicit = "enable" in corr_cfg_data
     correlation_enabled = bool(corr_cfg_data.get("enable"))
+    auto_enable_correlation = False
+    if mode_lower == "iterative" and transform_enabled and not corr_explicit:
+        correlation_enabled = True
+        auto_enable_correlation = True
     clustering_cfg_data = cfg.get("solver", {}).get("clustering")
     clustering_enabled = clustering_cfg_data is None or bool(clustering_cfg_data.get("enable", True))
+
+    if mode_lower == "iterative" and not (transform_enabled or correlation_enabled):
+        raise ValueError(
+            "pipeline.mode='iterative' requires at least one enabled transform or graph.correlation.enable=true"
+        )
 
     excluded_keys = {"loader", "loader_args", "loader_kwargs", "source"}
 
@@ -392,6 +414,25 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
                     type=s.get("type", "2:4"),
                     rate=float(s.get("rate", 0.0)),
                 )
+                train_cfg = s.get("train")
+                if train_cfg and transform_model is not None:
+                    try:
+                        from icd.hds.training import MaskTrainingConfig, run_mask_training
+
+                        mask_cfg = MaskTrainingConfig.from_dict(train_cfg)
+                        training_meta = run_mask_training(transform_model, mask_cfg, context=hf_cache)
+                        m.setdefault("sparsity", {})["mask_training"] = training_meta
+                        if training_meta.get("steps", 0):
+                            transform_meta.setdefault("mask_training", []).append(training_meta)
+                            triggers.append("S-train")
+                    except Exception as exc:  # pragma: no cover - defensive
+                        transform_errors.append(
+                            {
+                                "stage": "sparsity_train",
+                                "kind": "error",
+                                "detail": str(exc),
+                            }
+                        )
                 metas.append(m)
                 if m.get("delta_layout"):
                     triggers.append("S")
@@ -491,7 +532,7 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
             transform_errors.append({"stage": "cache", "kind": "error", "detail": str(e)})
 
     # Reuse permutation if provided
-    reuse_path = cfg.get("pipeline", {}).get("reuse_perm")
+    reuse_path = pipeline_cfg.get("reuse_perm")
     if (pi0 is None or stats0 is None) and reuse_path:
         try:
             rp = str(reuse_path)
@@ -549,7 +590,9 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
             transform_errors.append({"stage": "cache", "kind": "error", "detail": str(e)})
 
     # Transform (mock: no-op + meta)
-    transform_meta = {"delta_layout": bool(delta_layout_any), "metas": metas, "triggers": triggers}
+    transform_meta = {"delta_layout": bool(delta_layout_any), "metas": metas, "triggers": list(triggers)}
+    if auto_enable_correlation and "CORR-auto" not in transform_meta["triggers"]:
+        transform_meta["triggers"].append("CORR-auto")
     emit("TRANSFORMED", True, transform_meta)
 
     clusters: List[List[int]] | None = None
@@ -590,6 +633,7 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
                 W_iter = correlation_to_csr(cov, cfg=corr_cfg_obj)
                 correlation_meta["nnz"] = W_iter.nnz()
                 correlation_meta["normalize"] = corr_cfg_obj.normalize
+                correlation_meta["auto_enabled"] = auto_enable_correlation
                 if clustering_enabled:
                     cluster_cfg_obj = _make_clustering_config(clustering_cfg_data or {})
                     clusters = cluster_graph(W_iter, cluster_cfg_obj)
@@ -625,11 +669,10 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         save_w_npz(os.path.join(out_dir, "W_after.csr.npz"), W_iter)
 
     # Re-permute if iterative, or opt-in when transform triggers delta layout
-    mode = cfg.get("pipeline", {}).get("mode", "iterative")
-    repermute_on_delta = bool(cfg.get("pipeline", {}).get("repermute_on_delta", False))
+    repermute_on_delta = bool(pipeline_cfg.get("repermute_on_delta", False))
     pi1 = pi0
     stats1 = stats0
-    if (mode == "iterative") or (repermute_on_delta and transform_meta.get("delta_layout")):
+    if (mode_lower == "iterative") or (repermute_on_delta and transform_meta.get("delta_layout")):
         pi1, stats1 = fit_permutation(
             W_iter,
             time_budget_s=float(scfg.get("time_budget_s", 1.0)),
@@ -659,16 +702,16 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     delta_J = stats1.get("J", 0.0) - stats0.get("J", 0.0)
     epsJ = float(cfg.get("rollback", {}).get("epsilon_J", 0.01))
     accepted = (delta_J <= -epsJ)
-    rolled_back = not accepted and (mode == "iterative")
+    rolled_back = not accepted and (mode_lower == "iterative")
 
     # Measurement section: prefer explicit runner, otherwise fall back to mock proxy.
     measure_cfg = cfg.get("measure", {})
     errors: list[dict] = []
-    no_measure = bool(cfg.get("pipeline", {}).get("no_measure", False))
+    no_measure = bool(pipeline_cfg.get("no_measure", False))
 
     runner_callable = None
     try:
-        runner_callable = resolve_runner(cfg.get("pipeline", {}))
+        runner_callable = resolve_runner(pipeline_cfg)
     except Exception as exc:
         errors.append({"stage": "runner", "kind": "error", "detail": str(exc)})
 
@@ -703,8 +746,8 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
                     "detail": "builtin benchmark requires model and example_inputs",
                 })
 
-    warmup = int(cfg.get("pipeline", {}).get("warmup_iter", 0))
-    repeats = max(1, int(cfg.get("pipeline", {}).get("repeats", 1)))
+    warmup = int(pipeline_cfg.get("warmup_iter", 0))
+    repeats = max(1, int(pipeline_cfg.get("repeats", 1)))
 
     latency_samples: list[float] = []
     extra_outputs: dict | None = None
@@ -731,7 +774,7 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         if mamba_modules:
             ctx_kwargs["mamba_modules"] = mamba_modules
         base_ctx = prepare_runner_context(**ctx_kwargs)
-        base_ctx.update(cfg.get("pipeline", {}).get("runner_context", {}) or {})
+        base_ctx.update(pipeline_cfg.get("runner_context", {}) or {})
 
         power_logger = NVMLPowerLogger() if measure_cfg.get("power_enable") else None
         power_energy = None
@@ -785,18 +828,18 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         lat_base = 100.0
         delta_factor = min(0.0, delta_J)
         lat_iter = lat_base * (1.0 + delta_factor)
-        samples = [lat_iter if mode == "iterative" else lat_base for _ in range(repeats)]
+        samples = [lat_iter if mode_lower == "iterative" else lat_base for _ in range(repeats)]
         latency_samples = samples[:]
         mean = float(sum(samples) / max(1, len(samples)))
         p50 = float(sorted(samples)[len(samples) // 2])
         p95 = float(sorted(samples)[int(math.ceil(0.95 * len(samples))) - 1])
         stdev = float(statistics.pstdev(samples)) if len(samples) > 1 else 0.0
         ci95 = float(1.96 * (stdev / math.sqrt(max(1, len(samples)))))
-        if mode == "iterative" and not (mean < lat_base * 0.99):
+        if mode_lower == "iterative" and not (mean < lat_base * 0.99):
             mean = lat_base * 0.98
             p50 = mean
             p95 = mean
-        if mode == "iterative":
+        if mode_lower == "iterative":
             l2_hit = 0.80 * (1.0 - delta_factor)
             ept = 1.0 * (1.0 + delta_factor)
 
@@ -868,13 +911,12 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
             quality_values = _evaluate_quality_metrics(
                 model_for_quality,
                 cfg,
-                cfg.get("pipeline", {}) or {},
+                pipeline_cfg,
             )
         except Exception as exc:
             errors.append({"stage": "quality", "kind": "error", "detail": str(exc)})
             quality_values = None
 
-    pipeline_cfg = cfg.get("pipeline", {}) or {}
     runner_kwargs = pipeline_cfg.get("runner_context", {}) or {}
     loader_kwargs = runner_kwargs.get("model_loader_kwargs") or {}
     model_name = loader_kwargs.get("model_name") or cfg.get("model", {}).get("name")

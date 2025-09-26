@@ -67,6 +67,7 @@ Both configs rely on two new fields:
 
 - `graph.loader` / `loader_kwargs`: dotted path + kwargs to instantiate a PyTorch model and example inputs for graph construction.
 - `pipeline.runner` / `runner_context`: dotted path + context for the measurement loop (reuses the same loader by default).
+- Iterative guard: enable at least one transform (S/Q/K) **or** opt into the correlation path via `graph.correlation.enable=true`. The reference configs ship with correlation enabled so they satisfy the guard out of the box.
 
 Set `"device": "cuda"` in the loader kwargs to target a GPU (ensure the correct PyTorch wheel is installed).
 When running on shared machines consider setting `HF_HOME`/`TRANSFORMERS_CACHE` to control HuggingFace download paths.
