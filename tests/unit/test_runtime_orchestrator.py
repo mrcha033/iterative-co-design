@@ -88,6 +88,8 @@ def test_run_produces_artifacts(tmp_path: Path, monkeypatch, orchestrator_config
     assert Path(artifacts.metrics_path).exists()
     metrics = json.loads(Path(artifacts.metrics_path).read_text(encoding="utf-8"))
     assert metrics["acceptance"]["accepted"] is True
+    assert metrics["acceptance"]["incomplete"] is False
+    assert metrics["acceptance"].get("missing") == []
     assert metrics["transform_meta"]["delta_layout"] is False
     assert (Path(artifacts.out_dir) / "report.csv").exists()
     assert (Path(artifacts.out_dir) / "report.html").exists()
@@ -198,6 +200,9 @@ def test_run_with_transforms_cache_and_measurements(tmp_path: Path, monkeypatch)
     l2_val = metrics1["l2_hit_pct"]
     assert l2_val is not None and math.isnan(l2_val)  # derived from ncu stub
     assert metrics1["throughput_toks_s"] is not None
+    assert metrics1["acceptance"]["incomplete"] is True
+    assert "l2_hit_pct" in metrics1["acceptance"]["note"]
+    assert "l2_hit_pct" in metrics1["acceptance"].get("missing", [])
 
     # Second run hits cache; expect another invocation for re-permutation only
     cfg_second = json.loads(json.dumps(cfg))

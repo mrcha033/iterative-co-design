@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -756,7 +757,6 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     tokens = None
 
     if runner_callable and not no_measure:
-        import math
         import statistics
 
         ctx_kwargs = dict(
@@ -822,7 +822,6 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
             ept = energy_per_token_j(power_energy, int(tokens))
     else:
         # fallback proxy (legacy behaviour)
-        import math
         import statistics
 
         lat_base = 100.0
@@ -918,6 +917,36 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
             quality_values = None
 
     runner_kwargs = pipeline_cfg.get("runner_context", {}) or {}
+
+    def _has_metric(value: object) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, float):
+            return not math.isnan(value)
+        return True
+
+    acceptance_missing: List[str] = []
+    if stats0 is None or stats0.get("J") is None:
+        acceptance_missing.append("stats_before.J")
+    if stats1 is None or stats1.get("J") is None:
+        acceptance_missing.append("stats_after.J")
+    if not latency_samples or math.isnan(mean):
+        acceptance_missing.append("latency")
+
+    require_l2 = bool(measure_cfg.get("ncu_enable", False)) and not no_measure
+    if require_l2 and not _has_metric(l2_hit):
+        acceptance_missing.append("l2_hit_pct")
+
+    require_power = bool(measure_cfg.get("power_enable", False)) and not no_measure
+    if require_power and not _has_metric(ept):
+        acceptance_missing.append("ept_j_per_tok")
+
+    quality_cfg = cfg.get("quality", {}) or {}
+    if quality_cfg.get("enable") and not quality_values:
+        acceptance_missing.append("quality")
+
+    acceptance_complete = not acceptance_missing
+    acceptance_note = "complete" if acceptance_complete else "missing: " + ", ".join(acceptance_missing)
     loader_kwargs = runner_kwargs.get("model_loader_kwargs") or {}
     model_name = loader_kwargs.get("model_name") or cfg.get("model", {}).get("name")
 
@@ -946,8 +975,9 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
             "delta_J": delta_J,
             "accepted": accepted,
             "rolled_back": rolled_back,
-            "incomplete": True,
-            "note": "HW gates evaluated only when both before/after exist",
+            "incomplete": not acceptance_complete,
+            "note": acceptance_note,
+            "missing": acceptance_missing,
         },
         "quality": quality_values,
         "errors": errors + transform_errors,
