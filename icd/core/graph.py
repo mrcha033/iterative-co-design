@@ -361,15 +361,12 @@ def make_band_of_blocks(d: int, section_size: int, hops: int = 2, reuse_decay: f
         indptr.append(indptr[-1] + added)
     # Add tiny cross-section links (upper triangle only)
     cross = cross_scale * (reuse_decay ** hops)
+    cross_edges: List[Tuple[int, int, float]] = []
     for s in range(nsec - 1):
         i = min(d - 1, s * section_size + section_size - 1)
         j = min(d - 1, (s + 1) * section_size)
         if i < j and j < d:
-            # attach to row i
-            indices.append(j)
-            data.append(cross)
-            # We cannot easily adjust indptr retrospectively per row; so we append to last row.
-            # For simplicity, rebuild CSR structures compactly.
+            cross_edges.append((i, j, cross))
     # Rebuild consistent CSR from COO-like lists
     rows: List[List[Tuple[int, float]]] = [[] for _ in range(d)]
     cursor = 0
@@ -378,10 +375,8 @@ def make_band_of_blocks(d: int, section_size: int, hops: int = 2, reuse_decay: f
         for k in range(start, end):
             j = indices[k]
             rows[i].append((j, data[k]))
-    if len(indices) > 0 and len(data) > 0 and len(rows) > 0:
-        # append cross edges to last row if any
-        # Already appended cross to end; ensure it belongs to a valid row
-        pass
+    for i, j, w in cross_edges:
+        rows[i].append((j, w))
     # Build final CSR
     f_indptr = [0]
     f_indices: List[int] = []

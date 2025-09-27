@@ -48,5 +48,14 @@ coverage.xml
 runs/
 reports/
 
+# LaTeX build outputs
+docs/*.aux
+docs/*.bbl
+docs/*.blg
+docs/*.log
+docs/*.out
+docs/*.pdf
+docs/*.toc
+
 # Jupyter
 .ipynb_checkpoints/
