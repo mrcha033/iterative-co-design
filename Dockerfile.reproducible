@@ -1,0 +1,17 @@
+FROM nvcr.io/nvidia/pytorch:24.04-py3
+
+ENV PYTHONUNBUFFERED=1 \
+    CUDA_VISIBLE_DEVICES=0 \
+    CUBLAS_WORKSPACE_CONFIG=:16:8 \
+    PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace/iterative-co-design
+COPY . .
+
+RUN pip install --no-cache-dir .[dev,experiments]
+
+CMD ["bash", "-lc", "python scripts/check_cuda_env.py && pytest"]

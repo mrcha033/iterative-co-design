@@ -1,0 +1,17 @@
+% Local compatibility shim for NeurIPS 2026 submissions.
+% This wrapper ensures that the manuscript can be compiled with the
+% official 2024 template while matching the interface of the expected
+% 2026 class. When the upstream style file is released the wrapper can
+% be removed.
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{neurips_2026}[2024/05/01 NeurIPS 2026 compatibility shim]
+
+% Forward all options to the 2024 package to preserve behavior.
+\RequirePackageWithOptions{neurips_2024}
+
+% Provide hooks for new checklist requirements referenced in the 2026 CFP.
+\newcommand{\neuripssubmissionyear}{2026}
+\newcommand{\neuripsChecklistVersion}{2026}
+
+% Backwards compatible alias for the broader impacts section used in 2026.
+\providecommand{\sectionbroaderimpact}{\section{Societal Impact}}

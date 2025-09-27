@@ -477,6 +477,11 @@ acceptance_gates = {
 - Uses correlation data to inform layout optimization
 - Supports transformer architectures with attention mechanisms
 
+**Streaming correlation for massive models**:
+- `icd.graph.streaming_correlation.compute_streaming_correlation` reduces peak memory to $O(D^2)$ statistics only.
+- Configurable batch staging keeps GPU utilization high while spilling intermediate tensors to CPU when required.
+- Integrates with the deterministic environment checker: run `python scripts/check_cuda_env.py` before capturing to ensure reproducible fingerprints.
+
 ```yaml
 # configs/iasp_defaults.yaml
 correlation:
@@ -503,6 +508,11 @@ structured_sparsity:
   type: "2:4"                    # N:M sparsity pattern
   rate: 0.5                      # Overall sparsity rate
 ```
+
+#### Learned Hardware Cost Model
+- Train a permutation-aware latency predictor with `icd.models.gnn_cost_model.train_cost_model`.
+- Accepts JSONL datasets where each line contains a correlation matrix, permutation, sparsity mask, and measured latency.
+- Produces a PyTorch checkpoint that can drive future co-design loops without expensive profiling.
 
 #### Caching & Persistence System
 **Intelligent permutation reuse**:

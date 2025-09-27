@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [
-  { name = "ICD Authors" }
+  { name = "Yunmin Cha" }
 ]
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -23,6 +23,8 @@ dependencies = [
   "evaluate>=0.4.2",
   "pynvml>=11.5",
   "jsonschema>=4.21",
+  "numpy>=1.24",
+  "scipy>=1.11",
 ]
 
 [project.urls]
@@ -34,6 +36,7 @@ dev = [
   "pytest>=7",
   "ruff>=0.5",
   "black>=23",
+  "hypothesis>=6.100",
 ]
 experiments = [
   "transformers>=4.40",

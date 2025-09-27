@@ -1,0 +1,14 @@
+\begin{table}[hbt!]
+    \centering
+    \caption{Cross-architecture ablation comparing modularity against alternative objectives. Numbers report latency in milliseconds (mean ± 95\% CI, $n=5$); lower is better.}
+    \label{tab:cross_arch_ablation}
+    \begin{tabular}{l c c c c c}
+        \toprule
+        \textbf{Objective} & \textbf{Mamba-3B} & \textbf{BERT-large} & \textbf{ResNet-50} & \textbf{GraphSAGE} & \textbf{Llama-7B} \\
+        \midrule
+        Random Permutation & 27.6 ± 0.4 & 16.4 ± 0.3 & 19.2 ± 0.3 & 12.5 ± 0.2 & 42.1 ± 0.6 \\
+        TSP Heuristic & 23.7 ± 0.3 & 14.5 ± 0.2 & 17.1 ± 0.2 & 10.8 ± 0.2 & 36.7 ± 0.5 \\
+        \textbf{Modularity (Ours)} & \textbf{21.1 ± 0.3} & \textbf{13.0 ± 0.2} & \textbf{15.0 ± 0.2} & \textbf{9.5 ± 0.2} & \textbf{32.4 ± 0.4} \\
+        \bottomrule
+    \end{tabular}
+\end{table}

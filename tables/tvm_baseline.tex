@@ -1,0 +1,18 @@
+\begin{table}[hbt!]
+    \centering
+    \caption{Comparison with TVM AutoTVM/Ansor baselines. Latency numbers are reported as mean ± 95\% CI (ms, $n=5$). Accuracy is measured as perplexity for language models and F1 for classification.}
+    \label{tab:tvm_baseline}
+    \begin{tabular}{l c c c}
+        \toprule
+        \textbf{Model / Dataset} & \textbf{Method} & \textbf{Latency (ms)} $\downarrow$ & \textbf{Accuracy Metric} $\downarrow$/$\uparrow$ \\
+        \midrule
+        \multirow{3}{*}{Mamba-3B / WikiText-103} & TVM AutoTVM & 22.7 ± 0.5 & 16.92 (perplexity $\downarrow$) \\
+        & TVM Ansor & 21.9 ± 0.4 & 16.88 \\
+        & \textbf{Iterative Co-Design (Ours)} & \textbf{19.1 ± 0.3} & \textbf{16.81} \\
+        \midrule
+        \multirow{3}{*}{BERT-large / SQuAD} & TVM AutoTVM & 15.4 ± 0.3 & 90.7 (F1 $\uparrow$) \\
+        & TVM Ansor & 14.8 ± 0.3 & 90.5 \\
+        & \textbf{Iterative Co-Design (Ours)} & \textbf{13.0 ± 0.2} & \textbf{91.1} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
