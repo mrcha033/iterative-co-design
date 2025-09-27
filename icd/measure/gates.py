@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from typing import Callable, Dict, Iterable, Optional
 
+from .significance import compute_prd_significance
+
 __all__ = ["verdict", "make_pairwise_summary", "PRD_GATE_DEFAULTS"]
 
 
@@ -244,4 +246,17 @@ def make_pairwise_summary(metrics_list: Iterable[Dict[str, object]]) -> list[Dic
                 m["delta_l2_hit_vs_linear"] = float(m.get("l2_hit_pct", 0.0)) - float(linear.get("l2_hit_pct", 0.0))
             if "ept_j_per_tok" in m and "ept_j_per_tok" in linear:
                 m["delta_ept_vs_linear"] = float(m.get("ept_j_per_tok", 0.0)) - float(linear.get("ept_j_per_tok", 0.0))
+        significance: dict[str, dict[str, float | int | str | None]] = {}
+        if dense and m is not dense:
+            significance["dense"] = compute_prd_significance(dense, m)
+        if mode == "iterative" and "linear" in by_mode:
+            linear = by_mode["linear"]
+            if linear is not m:
+                significance["linear"] = compute_prd_significance(linear, m)
+        if significance:
+            existing = m.get("significance")
+            if isinstance(existing, dict):
+                existing.update(significance)
+            else:
+                m["significance"] = significance
     return metrics

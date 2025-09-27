@@ -147,13 +147,14 @@ def test_run_pair_generates_comparison(tmp_path: Path, monkeypatch) -> None:
         "pipeline": {"mode": "iterative"},
     }
 
-    verdict = run_pair(cfg, str(tmp_path / "pair"))
+    verdicts = run_pair(cfg, str(tmp_path / "pair"))
     compare_path = Path(tmp_path / "pair" / "compare.json")
     assert compare_path.exists()
     compare_doc = json.loads(compare_path.read_text(encoding="utf-8"))
-    assert verdict["accepted"] is True
+    assert verdicts["linear"]["accepted"] is True
     trial_metrics = json.loads(Path(tmp_path / "pair" / "iter" / "metrics.json").read_text(encoding="utf-8"))
     assert trial_metrics["acceptance"]["accepted"] is True
+    assert "linear" in trial_metrics.get("comparisons", {})
 
 
 def test_run_with_transforms_cache_and_measurements(tmp_path: Path, monkeypatch) -> None:

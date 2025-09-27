@@ -14,3 +14,10 @@ structured_sparsity:
   type: 2:4
   rate: 0.5
   modules: null
+
+pair:
+  baseline_methods:
+    - linear
+    - louvain
+    - memory_aware
+    - hardware_aware

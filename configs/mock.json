@@ -12,6 +12,9 @@
   "transform": {
     "kv": {"enable": true, "block": 64, "drop": 0.0}
   },
+  "pair": {
+    "baseline_methods": ["linear", "louvain", "memory_aware", "hardware_aware"]
+  },
   "measure": {"ncu_enable": false, "power_enable": false, "power_sample_hz": 10},
   "report": {"out_dir": "runs/mock_iter"},
   "rollback": {"epsilon_J": 0.01}

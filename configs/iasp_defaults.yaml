@@ -11,3 +11,10 @@ clustering:
   modularity_floor: 0.35
   fallback_method: spectral
   runtime_budget: 0.5
+
+pair:
+  baseline_methods:
+    - linear
+    - louvain
+    - memory_aware
+    - hardware_aware

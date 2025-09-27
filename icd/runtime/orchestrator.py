@@ -596,6 +596,8 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         except Exception as e:
             transform_errors.append({"stage": "reuse", "kind": "error", "detail": str(e)})
 
+    solver_method = str(scfg.get("method", "spectral_refine"))
+
     if pi0 is None or stats0 is None:
         pi0, stats0 = fit_permutation(
             W,
@@ -603,6 +605,7 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
             refine_steps=int(scfg.get("refine_steps", 1000)),
             cfg=ccfg,
             seed=int(scfg.get("rng_seed", 0)),
+            method=solver_method,
         )
     emit("PERMUTED", True, {"J": stats0.get("J"), "C": stats0.get("C"), "Q": stats0.get("Q")})
     # persist baseline perm/stats
@@ -735,6 +738,7 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
             cfg=ccfg,
             seed=int(scfg.get("rng_seed", 0)),
             clusters=clusters,
+            method=solver_method,
         )
         improved = stats1.get("J", 0.0) < stats0.get("J", 0.0)
         emit(
@@ -1013,6 +1017,7 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         "run_id": None,
         "task": cfg.get("task"),
         "mode": mode,
+        "solver_method": solver_method,
         "model_name": model_name,
         "repeat": repeats,
         "warmup": warmup,
@@ -1020,7 +1025,13 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         "latency_ms_p50": p50,
         "latency_ms_p95": p95,
         "latency_ms_ci95": ci95,
-        "latency_ms": {"mean": mean, "p50": p50, "p95": p95, "ci95": ci95},
+        "latency_ms": {
+            "mean": mean,
+            "p50": p50,
+            "p95": p95,
+            "ci95": ci95,
+            "samples": latency_samples,
+        },
         "l2_hit_pct": l2_hit,
         "ept_j_per_tok": ept,
         "throughput_toks_s": throughput,
@@ -1140,41 +1151,98 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
 
 
 def run_pair(config: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
-    cfg_base = copy.deepcopy(config)
-    cfg_base.setdefault("report", {})["out_dir"] = os.path.join(out_dir, "linear")
-    cfg_base.setdefault("pipeline", {})["mode"] = "linear"
-    base_art = run(cfg_base)
+    pair_cfg = config.get("pair") or {}
+    baseline_methods = pair_cfg.get("baseline_methods") or ["linear"]
+
+    def _sanitize(name: str) -> str:
+        safe = "".join(ch if (ch.isalnum() or ch in {"-", "_"}) else "_" for ch in name.lower())
+        return safe or "baseline"
+
+    baseline_records: Dict[str, Tuple[RunArtifacts, Dict[str, Any]]] = {}
+    baseline_metrics_order: List[Dict[str, Any]] = []
+
+    for idx, method in enumerate(baseline_methods):
+        method_str = str(method)
+        method_key = method_str.lower()
+        cfg_base = copy.deepcopy(config)
+        pipeline_cfg = cfg_base.setdefault("pipeline", {})
+        solver_cfg = cfg_base.setdefault("solver", {})
+        report_cfg = cfg_base.setdefault("report", {})
+
+        if method_key in {"linear", "dense", "iterative"}:
+            pipeline_cfg["mode"] = method_key
+            solver_override = None
+        else:
+            baseline_mode = str(pair_cfg.get("baseline_pipeline_mode", "linear"))
+            pipeline_cfg["mode"] = baseline_mode
+            solver_override = method_key
+            solver_cfg["method"] = method_key
+
+        if method_key == "linear" and idx == 0:
+            subdir = "linear"
+        else:
+            subdir = f"baseline_{_sanitize(method_str)}"
+        report_cfg["out_dir"] = os.path.join(out_dir, subdir)
+
+        art = run(cfg_base)
+        metrics = _read_json(art.metrics_path)
+
+        mode_label = pipeline_cfg.get("mode", "")
+        if solver_override:
+            mode_label = f"{mode_label}:{solver_override}"
+        metrics.setdefault("mode", mode_label)
+        metrics["baseline_method"] = method_key
+        if solver_override:
+            metrics.setdefault("solver_method", solver_override)
+
+        baseline_records[method_key] = (art, metrics)
+        baseline_metrics_order.append(metrics)
 
     cfg_trial = copy.deepcopy(config)
     cfg_trial.setdefault("report", {})["out_dir"] = os.path.join(out_dir, "iter")
     cfg_trial.setdefault("pipeline", {})["mode"] = "iterative"
     trial_art = run(cfg_trial)
-
-    base_metrics = _read_json(base_art.metrics_path)
     trial_metrics = _read_json(trial_art.metrics_path)
-    base_metrics.setdefault("mode", cfg_base.get("pipeline", {}).get("mode", ""))
     trial_metrics.setdefault("mode", cfg_trial.get("pipeline", {}).get("mode", ""))
-    fixed_clock = bool(trial_metrics.get("env", {}).get("fixed_clock", True))
-    epsJ = float(trial_metrics.get("acceptance", {}).get("epsilon_J", 0.01))
-    comparison = compare_decide(base_metrics, trial_metrics, fixed_clock=fixed_clock, eps_J=epsJ)
-    _write_json(os.path.join(out_dir, "compare.json"), comparison)
-    # update acceptance in trial
-    trial_metrics.setdefault("acceptance", {}).update(comparison)
+    trial_metrics["baseline_methods"] = [str(m).lower() for m in baseline_methods]
+
+    dense_ref = next(
+        (m for m in baseline_metrics_order if str(m.get("mode", "")).lower().startswith("dense")),
+        None,
+    )
+    linear_ref = next(
+        (m for m in baseline_metrics_order if str(m.get("mode", "")).lower() == "linear"),
+        None,
+    )
 
     gate_cfg = config.get("gates") or {}
-    base_mode = str(base_metrics.get("mode", "")).lower()
-    dense_ref = base_metrics if base_mode == "dense" else None
-    linear_ref = base_metrics if base_mode == "linear" else None
+    for method_key, (art, metrics) in baseline_records.items():
+        verdict(metrics, dense_metrics=dense_ref, linear_metrics=linear_ref, thresholds=gate_cfg)
+        _write_json(art.metrics_path, metrics)
 
-    verdict(base_metrics, dense_metrics=dense_ref, linear_metrics=linear_ref, thresholds=gate_cfg)
+    fixed_clock = bool(trial_metrics.get("env", {}).get("fixed_clock", True))
+    epsJ = float(trial_metrics.get("acceptance", {}).get("epsilon_J", 0.01))
+
+    comparisons: Dict[str, Dict[str, Any]] = {}
+    for idx, method in enumerate(baseline_methods):
+        method_key = str(method).lower()
+        base_art, base_metrics = baseline_records[method_key]
+        comparison = compare_decide(base_metrics, trial_metrics, fixed_clock=fixed_clock, eps_J=epsJ)
+        comparisons[method_key] = comparison
+        comp_name = "compare.json" if idx == 0 else f"compare_{_sanitize(method_key)}.json"
+        _write_json(os.path.join(out_dir, comp_name), comparison)
+        trial_metrics.setdefault("comparisons", {})[method_key] = comparison
+        if idx == 0:
+            trial_metrics.setdefault("acceptance", {}).update(comparison)
+
     verdict(trial_metrics, dense_metrics=dense_ref, linear_metrics=linear_ref, thresholds=gate_cfg)
-
-    _write_json(base_art.metrics_path, base_metrics)
     _write_json(trial_art.metrics_path, trial_metrics)
 
-    summary = make_pairwise_summary([base_metrics, trial_metrics])
+    summary_inputs = [baseline_records[str(m).lower()][1] for m in baseline_methods]
+    summary_inputs.append(trial_metrics)
+    summary = make_pairwise_summary(summary_inputs)
     _write_json(os.path.join(out_dir, "pairwise_summary.json"), summary)
-    return comparison
+    return comparisons
 
 
 __all__ = ["RunArtifacts", "evaluate_acceptance", "run", "run_pair"]

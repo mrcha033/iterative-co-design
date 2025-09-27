@@ -49,6 +49,9 @@
     "nnz_cap": 1000000
   },
   "solver": {"time_budget_s": 60, "refine_steps": 500, "k_blocks": 4, "rng_seed": 0},
+  "pair": {
+    "baseline_methods": ["linear", "louvain", "memory_aware", "hardware_aware"]
+  },
   "transform": {"sparsity": {"enable": false}, "quant": {"enable": false}, "kv": {"enable": false}},
   "measure": {
     "ncu_enable": false,

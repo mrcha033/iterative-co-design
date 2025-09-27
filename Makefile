@@ -1,10 +1,13 @@
-.PHONY: repro-smoke repro-codesign pair test schema clean-runs
+.PHONY: repro-smoke repro-codesign repro-ablation pair test schema clean-runs
 
 repro-smoke:
 	bash scripts/repro_smoke.sh
 
 repro-codesign:
-	bash scripts/repro_codesign.sh
+        bash scripts/repro_codesign.sh
+
+repro-ablation:
+        bash scripts/repro_ablation.sh
 
 pair:
 	python3 -m icd.cli.main pair -c configs/mock.json --out runs/pair01

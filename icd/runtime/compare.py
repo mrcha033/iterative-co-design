@@ -4,6 +4,7 @@ import math
 from typing import Any, Dict
 
 from icd.measure.gates import PRD_GATE_DEFAULTS
+from icd.measure.significance import compute_prd_significance
 
 
 _REL_TOL = 1e-9
@@ -87,6 +88,9 @@ def decide(baseline: Dict[str, Any], trial: Dict[str, Any], fixed_clock: bool, e
         "incomplete": bool(missing),
         "missing": missing,
     }
+    significance = compute_prd_significance(baseline, trial)
+    if significance:
+        verdict["significance"] = significance
     # Optional quality gate: apply only when both baseline and trial include quality
     base_q = baseline.get("quality")
     trial_q = trial.get("quality")

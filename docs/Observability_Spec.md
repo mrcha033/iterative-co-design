@@ -8,13 +8,14 @@
 - **Overhead:** run logging ≤ 1% of wall time; avoid chatty per‑iteration logs.
 
 **Metrics (metrics.json)**
-- **latency_ms:** `{mean, p50, p95, ci95}` — sampled post‑warmup.
+- **latency_ms:** `{mean, p50, p95, ci95, samples}` — samples captured post‑warmup (`samples` may be omitted when unavailable).
 - **l2_hit_pct:** `float|null` — from Nsight Compute; null when disabled or unavailable.
 - **ept_j_per_tok:** `float|null` — energy per token; null when power disabled.
 - **mode:** `linear|iterative`.
 - **C,Q,J:** scalars from cost evaluation.
 - **env:** `{seed, fixed_clock}`.
 - **acceptance:** `{epsilon_J, delta_J, accepted, rolled_back, incomplete, note}`.
+- **significance:** Optional paired-test summary `{latency_ms, l2_hit_pct, ept_j_per_tok}` with each metric reporting `{sample_size, mean_baseline, mean_trial, mean_diff, ci_low, ci_high, statistic, p_value, effect_size, method}`.
 - **quality:** `null|{task, metric, before, after, delta}` when eval enabled.
 - **errors:** `[ {stage, kind, detail} ]` for non‑fatal issues.
 
