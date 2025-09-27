@@ -1,0 +1,93 @@
+{
+  "task": "wt103",
+  "pipeline": {
+    "mode": "iterative",
+    "repeats": 500,
+    "warmup_iter": 80,
+    "fixed_clock": true,
+    "runner": "icd.runtime.runners_hf.hf_causal_lm_runner",
+    "runner_context": {
+      "model_loader": "icd.experiments.hf.load_hf_causal_lm",
+      "model_loader_kwargs": {
+        "model_name": "state-spaces/mamba-2.8b-hf",
+        "sequence_length": 1024,
+        "batch_size": 1,
+        "prompt": [
+          "The quick brown fox jumps over the lazy dog",
+          "In a distant galaxy, explorers uncovered"
+        ],
+        "device": "cuda"
+      }
+    }
+  },
+  "graph": {
+    "source": "pytorch",
+    "normalize": "sym",
+    "loader": "icd.experiments.hf.load_hf_causal_lm",
+    "loader_kwargs": {
+      "model_name": "state-spaces/mamba-2.8b-hf",
+      "sequence_length": 1024,
+      "batch_size": 1,
+      "prompt": [
+        "The quick brown fox jumps over the lazy dog",
+        "In a distant galaxy, explorers uncovered"
+      ],
+      "device": "cuda"
+    },
+    "correlation": {
+      "enable": true,
+      "samples": 16,
+      "normalize": "sym",
+      "whiten": true,
+      "transfer_batch_size": 2
+    },
+    "pytorch": {
+      "hops": 2,
+      "reuse_decay": 0.6,
+      "max_len": 1024,
+      "byte_weight": true
+    },
+    "nnz_cap": 4000000
+  },
+  "solver": {
+    "time_budget_s": 300,
+    "refine_steps": 1200,
+    "k_blocks": 4,
+    "rng_seed": 0
+  },
+  "pair": {
+    "baseline_methods": [
+      "linear",
+      "louvain",
+      "memory_aware",
+      "hardware_aware"
+    ]
+  },
+  "transform": {
+    "sparsity": {"enable": false},
+    "quant": {"enable": false},
+    "kv": {"enable": false}
+  },
+  "measure": {
+    "ncu_enable": false,
+    "power_enable": false,
+    "nvtx_enable": true
+  },
+  "quality": {
+    "enable": true,
+    "task": "wt103",
+    "max_length": 2048,
+    "max_samples": 48
+  },
+  "gates": {
+    "wt103.ppl_factor": 1.01,
+    "iter.latency_rel": -0.20,
+    "iter.l2_pp": 10.0,
+    "iter.ept_rel": -0.15,
+    "quality.acc_drop_pp": -0.10
+  },
+  "report": {
+    "out_dir": "runs/mamba_2p8b",
+    "formats": ["html", "csv"]
+  }
+}

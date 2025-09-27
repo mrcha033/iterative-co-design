@@ -1,126 +1,126 @@
 # SAS — Iterative HW–SW Co-Design: Memory-Aware Layout Re-Optimization
 
-**한 줄 요약**
-`permute → transform(S/Q/K) → re-permute` 루프를 라이브러리/CLI 한 벌로 제공한다. 핵심은 공접근 가중치 $W$ 생성–모듈러리티 기반 재퍼뮤테이션–측정(NCU/NVML)–리포트 자동화. 실패 시 즉시 롤백.
+**One-line summary**
+Provide the `permute → transform(S/Q/K) → re-permute` loop as a unified library and CLI. The core workflow is to generate the shared-access weight matrix $W$, run the modularity-based re-permutation, instrument with NCU/NVML, and automate the reporting. If any step fails, roll back immediately.
 
 ---
 
-## 0) 가정·제약(Assumptions & Constraints)
+## 0) Assumptions & Constraints
 
-* **환경**: Python 3.10, CUDA 11.x+/MPS/CPU 가드. Nsight Compute(ncu), NVML 전력 읽기 가능. A100/H100 1대 이상.
-* **범위**: 추론(inference) 경로. 학습/분산 스케줄링/클러스터 오케스트레이션 불포함.
-* **목표(요약)**: 대표 2 워크로드(SSM-Mamba-3B, Transformer-BERT-base)에서 Latency −20%, L2 hit +10%p, EpT −15% 달성(MVP).
+* **Environment**: Python 3.10, CUDA 11.x+, with MPS/CPU guards. Nsight Compute (ncu) and NVML power sampling must be available. At least one A100 or H100 GPU.
+* **Scope**: Inference-only pathway. Training, distributed scheduling, and cluster orchestration are excluded.
+* **Goals (summary)**: Achieve Latency −20%, L2 hit +10%p, and EpT −15% on two representative workloads (SSM-Mamba-3B and Transformer-BERT-base) for the MVP.
 
 ---
 
-## 1) 시스템 목표·논외(Scope)
+## 1) Scope
 
 * **In-scope**
 
-  * $W$ 생성(실추적/모의), 재퍼뮤테이션 솔버(스펙트럴+로컬), S/Q/K 변환 어댑터, 파이프라인 러너, 계측/리포트, TVM/StableHLO 브리지 **PoC**.
+  * $W$ construction (from traces or mocks), the re-permutation solver (spectral + local search), S/Q/K transformation adapters, the pipeline runner, instrumentation/reporting, and the TVM/StableHLO bridge **PoC**.
 * **Out-of-scope**
 
-  * 모델 학습 파이프라인, 새 하드웨어 설계, 분산 추론, 상용 클러스터 운영 자동화.
+  * Model training pipelines, new hardware design, distributed inference, and automation for commercial cluster operations.
 
 ---
 
-## 2) 상위 아키텍처(Overview)
+## 2) Overview
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
 │                         icd CLI / Python API                   │
 ├────────────────────────────────────────────────────────────────┤
 │                        runtime/orchestrator                    │
-│  (파이프라인 스케줄·재시도·롤백·아티팩트 경로·캐시 관리)          │
+│  (pipeline scheduling, retries, rollback, artifact paths, cache)│
 ├───────────────┬─────────────────────┬─────────────────┬─────────┤
 │ core/graph    │ core/solver         │ adapters/       │ measure │
 │ (trace→W)     │ (spectral+local)    │  S | Q | K      │ (ncu,nvml,
-│               │                     │ (변환/메타데이터)│ timers, reporter)
+│               │                     │ (transform/meta)│ timers, reporter)
 ├───────────────┴───────────────┬─────┴─────────────────┴─────────┤
 │ bridge/ (TVM or StableHLO PoC)│     storage/ (perm/W/log/art)   │
 └───────────────────────────────┴─────────────────────────────────┘
 ```
 
-* **core/graph**: 공접근 가중치 행렬 $W$ 생성(실행 추적 or 모의).
-* **core/solver**: 스펙트럴 정렬(Fiedler) + 로컬 탐색(2-opt/adj-swap). 비용 $C(\pi)$/모듈러리티 $Q$ 계산.
-* **adapters/**: 상태-변환 3종(S: sparsity(2:4/HDS & unstructured), Q: PTQ/FP8 스텁, K: KV 캐시 압축). 변환 후 메타데이터 갱신·트리거.
-* **runtime/**: 파이프라인 오케스트레이터(컨트롤 플로, 캐시, 에러·롤백, 재시도, 시드/클럭 고정).
-* **measure/**: Nsight Compute, NVML, 벽시계 타이머 래퍼. HTML/CSV 리포터.
-* **bridge/**: IR(StableHLO/TVM) 상 삽입 지점과 변환·메타데이터 패스 **PoC**.
-* **storage/**: 아티팩트 디렉토리(perm.json, W\.npz, ncu.rep, power.csv, report.html).
+* **core/graph**: Generate the shared-access weight matrix $W$ from execution traces or mocks.
+* **core/solver**: Combine spectral ordering (Fiedler) and local search (2-opt/adj-swap). Compute the cost $C(\pi)$ and modularity $Q$.
+* **adapters/**: Three transformation families—S (sparsity: 2:4/HDS and unstructured), Q (PTQ/FP8 stubs), K (KV-cache compression). Update metadata and trigger actions after each transform.
+* **runtime/**: Pipeline orchestrator handling control flow, caching, errors/rollback, retries, and seed/clock pinning.
+* **measure/**: Wrappers for Nsight Compute, NVML, and wall-clock timers, plus HTML/CSV reporters.
+* **bridge/**: Define insertion points and metadata passes on StableHLO/TVM IR as a **PoC**.
+* **storage/**: Artifact directory containing `perm.json`, `W.npz`, `ncu.rep`, `power.csv`, and `report.html`.
 
 ---
 
-## 3) 데이터 모델(Data & Artifacts)
+## 3) Data & Artifacts
 
-* **W(n×n)**: float32, 대칭 희소 행렬(CSR/COO). 스키마: `{"shape": n, "format": "csr", "nnz": m, "source": "trace|mock", "seed": int}`
-* **π (Permutation)**: int32 배열 길이 n. 버전태그: hash(model+task+S/Q/K+seed).
+* **W(n×n)**: float32 symmetric sparse matrix (CSR/COO). Schema: `{"shape": n, "format": "csr", "nnz": m, "source": "trace|mock", "seed": int}`
+* **π (Permutation)**: int32 array of length n. Version tag: `hash(model+task+S/Q/K+seed)`.
 * **Transform Meta**: `{ sparsity: {type: "2:4|unstructured", rate}, quant: {dtype: "int8|fp8", method}, kv: {block: int, drop: float} }`
-* **Metrics Record**: `{lat_ms, toks_per_s, l2_hit_pct, ept_j_per_tok, hw, driver, seed, clock cap, repeats}`
-* **Reports**: `report.html|.csv`(전/후 비교, 표·그림), `ncu.json`, `power.csv`.
+* **Metrics Record**: `{lat_ms, toks_per_s, l2_hit_pct, ept_j_per_tok, hw, driver, seed, clock_cap, repeats}`
+* **Reports**: `report.html|.csv` (pre/post comparison with tables/figures), `ncu.json`, `power.csv`.
 
 ---
 
-## 4) 컨트롤 플로(파이프라인)
+## 4) Control Flow (Pipeline)
 
-### 기본 시퀀스(Linear vs Iterative)
+### Linear vs Iterative Sequence
 
-1. **BuildW**: 실행 추적 or 모의로 $W$ 생성/정규화.
-2. **Permute**: `π₀ ← solver.fit(W)`; 레이아웃 적용.
-3. **Transform**: S/Q/K 중 하나 이상 적용(메타 갱신).
-4. **Re-permute**: `π₁ ← solver.fit(W’)`; 상태 변화 반영.
-5. **Run/Measure**: 동일 입력 배치로 `lat/l2/EpT` 측정.
-6. **Report/Cache**: 전/후 비교, `π₁` 캐시. 실패 시 `π₀`로 롤백.
+1. **BuildW**: Generate and normalize $W$ from an execution trace or mock configuration.
+2. **Permute**: `π₀ ← solver.fit(W)`; apply the layout.
+3. **Transform**: Apply one or more of S/Q/K (metadata updates included).
+4. **Re-permute**: `π₁ ← solver.fit(W’)`; reflect state changes.
+5. **Run/Measure**: Measure `lat/l2/EpT` on the same input batch.
+6. **Report/Cache**: Produce pre/post comparisons and cache `π₁`. Roll back to `π₀` if anything fails.
 
-> **Baseline**은 4단계(Re-permute) 생략.
+> The **baseline** omits Step 4 (Re-permute).
 
-### 상태머신(State)
+### State Machine
 
 * `READY → W_BUILT → PERMUTED → TRANSFORMED → REPERMUTED → MEASURED → REPORTED`
-* 실패 시 `→ ROLLBACK(π_prev) → REPORTED`.
+* On failure: `→ ROLLBACK(π_prev) → REPORTED`.
 
 ---
 
-## 5) 컴포넌트 명세(Responsibilities & Contracts)
+## 5) Responsibilities & Contracts
 
 ### 5.1 core/graph
 
-* 입력: 실행 추적(trace events) 또는 모의 설정(seed, blocks, noise).
-* 출력: $W$ (CSR/COO).
-* 계약: 동일 입력→결정론적 $W$. `nnz/shape` 상한 검사, NaN 금지.
+* **Input**: Execution trace events or mock configuration (seed, blocks, noise).
+* **Output**: $W$ (CSR/COO).
+* **Contract**: Deterministic $W$ for the same input. Enforce `nnz/shape` limits and forbid NaNs.
 
 ### 5.2 core/solver
 
-* 입력: $W$, 시간상한(soft), 로컬탐색 단계수, k(블록 수, 선택).
-* 출력: permutation `π`, 보조지표 `C(π), Q(π)`, 클러스터/모듈러리티 `Q_cluster/Q_final`.
-* 계약: 시간상한 내 최적화 종료. 개선 실패 시 초기해 반환(플래그 표시). Louvain/스펙트럴 클러스터 입력을 받아 초기 순서를 구성하고 모듈러리티를 추적한다.
+* **Input**: $W$, soft time budget, number of local-search steps, optional k (number of blocks).
+* **Output**: Permutation `π`, secondary metrics `C(π), Q(π)`, and cluster/modularity summaries `Q_cluster/Q_final`.
+* **Contract**: Finish optimization within the time budget. If no improvement is found, return the initial solution with a flag. Accept Louvain/spectral cluster seeds, preserve their ordering, and track modularity progress.
 
 ### 5.3 adapters/S|Q|K
 
-* 입력: 텐서·레이아웃 메타.
-* 출력: 변경된 텐서/가중치와 **변환 메타데이터**.
-* 계약: 손실/정밀도 영향 범위 보고, 재퍼뮤테이션 트리거 조건 반환. 실패 시 no-op.
+* **Input**: Tensors and layout metadata.
+* **Output**: Updated tensors/weights plus **transformation metadata**.
+* **Contract**: Report the expected loss/precision impact range and return the trigger condition for re-permutation. On failure, fall back to a no-op.
 
 ### 5.4 runtime/orchestrator
 
-* 기능: 파이프라인 스케줄, 재시도/백오프, 실패 롤백, 캐시(hit/miss), 시드/클럭 고정, 아티팩트 경로 관리. transform 이후 activation 기반 correlation 수집 → Louvain/Spectral 클러스터링 → solver 전달.
-* 계약: 모든 스텝의 로깅/이벤트 발행(오버헤드 <1%). `correlation/` 아티팩트(`.pt/.json`)와 클러스터 메타데이터를 저장한다.
+* **Responsibilities**: Schedule pipeline stages, manage retries/backoff, handle rollback on failure, manage cache hit/miss, enforce seed/clock pinning, and maintain artifact paths. After each transform, collect activation-based correlations → run Louvain/spectral clustering → provide seeds to the solver.
+* **Contract**: Emit logs/events for all steps with <1% overhead. Persist `correlation/` artifacts (`.pt/.json`) and cluster metadata.
 
 ### 5.5 measure/
 
-* `benchmark_inference`: 내장 GPU 벤치마크(워밍업/반복, CUDA 이벤트, NVTX 태깅)로 Latency/Throughput/EpT 취합.
-* `ncu`: L2 hit 수집, 프로파일 키 세트 선택.
-* `nvml`: 전력 샘플링(주기), EpT 계산.
-* 계약: 워밍업 제외, 반복 횟수 N, 고정클럭/전력캡 옵션 준수. Latency/L2/EpT 결과를 `metrics.json`에 기록하고 Acceptance 게이트(BRD 목표)를 자동 평가한다.
+* `benchmark_inference`: Built-in GPU benchmark (warmup/loops, CUDA events, NVTX tagging) aggregating Latency/Throughput/EpT.
+* `ncu`: Collect L2 hit data and select profiler key sets.
+* `nvml`: Sample power (at a fixed cadence) and compute EpT.
+* **Contract**: Respect warmup exclusions, repeat count N, and fixed clock/power-cap options. Write Latency/L2/EpT results to `metrics.json` and automatically evaluate the acceptance gate (BRD goals).
 
 ### 5.6 bridge/
 
-* StableHLO or TVM Pass 파이프라인에 **삽입 지점** 정의(예: layout-tag attach → pass → lower).
-* 계약: PoC 단계는 **메타데이터 왕복**과 최소 변환만 수행.
+* Define **insertion points** in the StableHLO or TVM pass pipeline (e.g., layout-tag attach → pass → lower).
+* **Contract**: During the PoC, only round-trip metadata and perform minimal transformations.
 
 ---
 
-## 6) 인터페이스(ICD 요약·시그니처)
+## 6) Interfaces (ICD Summary & Signatures)
 
 ```python
 # graph
@@ -134,63 +134,63 @@ out, meta = apply_sparsity(tensor, type="2:4", rate=0.5)
 out, meta = apply_quant(tensor, dtype="int8", method="ptq-minmax")
 out, meta = apply_kvcache(cache, block=128, drop=0.1)
 
-# orchestrator (CLI 내부)
-run(config: Dict) -> RunArtifacts  # artifacts paths, metrics summary
+# orchestrator (within the CLI)
+run(config: Dict) -> RunArtifacts  # artifact paths, metrics summary
 ```
 
-(세부 타입/예외/에러코드는 ICD 문서에 확정. 여기서는 축약.)
+(Detailed types/exceptions/error codes are finalized in the ICD document. They are shortened here.)
 
 ---
 
-## 7) 성능·리소스 예산(Budgets)
+## 7) Performance & Resource Budgets
 
-* **Re-permute 오버헤드**: D≈2.5k 기준 ≤ 5분(오프라인). 대규모는 샘플링/부분고유값/블록 병렬.
-* **메모리 상한**: $W$ CSR nnz ≤ 0.05·D²(모의), 실추적은 nnz≤ trace-bound.
-* **계측 오버헤드**: ncu/NVML 포함 **< 5%**(프로파일 샘플링 비율 조절).
-* **보고 시간**: HTML/CSV 생성 < 30초.
-
----
-
-## 8) 동시성·실행모델(Concurrency)
-
-* 파이프라인 단계는 **동기**(determinism 우선).
-* 내부 병렬: 스펙트럴(부분 고유값)·로컬탐색(스레드-샘플) **데이터 병렬** 허용.
-* 계측은 **분리 프로세스**(ncu CLI)로 격리. 파일락으로 아티팩트 충돌 방지.
+* **Re-permute overhead**: ≤ 5 minutes for D≈2.5k (offline). For large graphs use sampling, partial eigenvectors, or block parallelism.
+* **Memory ceiling**: $W$ CSR `nnz` ≤ 0.05·D² for mocks; trace-based runs are limited by the trace itself.
+* **Instrumentation overhead**: < 5% including ncu/NVML (tune profiler sampling ratio as needed).
+* **Reporting time**: Generate HTML/CSV in under 30 seconds.
 
 ---
 
-## 9) 관측성/로깅(Observability)
+## 8) Concurrency Model
 
-* **이벤트 스키마**: `stage, t_start, t_end, ok, meta{…}`
-* **카운터**: `lat_ms, toks_s, l2_hit_pct, ept, Q, C, nnz(W)`
-* **샘플링**: ncu는 샘플/풀 프로파일 구분.
-* **오버헤드 가드**: 관측성 자체 오버헤드 측정·보고.
-
----
-
-## 10) 오류·장애 모델(Error Model) & 롤백
-
-* **그래프 실패**: trace 손상/빈도 0 → mock 대체 or 중단.
-* **솔버 타임아웃**: 초기해 반환(플래그) → 선택적 재시도.
-* **어댑터 실패**: no-op + 경고, 파이프라인 지속.
-* **계측 실패**: 대체 지표(벽시계)로 다운그레이드.
-* **품질 저하 탐지**: Latency/L2/EpT 악화 시 자동 롤백(직전 π).
+* Pipeline stages run **synchronously** (prioritize determinism).
+* Internal parallelism: Allow data-parallel execution for spectral (partial eigenvectors) and local search (thread-per-sample).
+* Instrumentation runs in a **separate process** (ncu CLI) for isolation. Use file locks to prevent artifact collisions.
 
 ---
 
-## 11) 보안·라이선스·컴플라이언스
+## 9) Observability
 
-* **SBOM** 자동 생성, 라이선스 스캔(CI).
-* 데이터셋/모델 카드 준수, 로그에 민감정보 저장 금지.
-* 프로파일 결과는 로컬 보관 기본, 업로드는 opt-in.
+* **Event schema**: `stage, t_start, t_end, ok, meta{…}`
+* **Counters**: `lat_ms, toks_s, l2_hit_pct, ept, Q, C, nnz(W)`
+* **Sampling**: Distinguish sampled vs. full ncu profiles.
+* **Overhead guard**: Measure and report observability overhead itself.
 
 ---
 
-## 12) 배포·환경(Deployment)
+## 10) Error Model & Rollback
 
-* 배포: PyPI 패키지 + `icd` CLI. `pip install icd-co`
-* **Dockerfile** 제공(드라이버 매칭 제외), conda env export 포함.
-* 장치 가드:
+* **Graph failure**: If the trace is corrupted or empty, substitute a mock or abort.
+* **Solver timeout**: Return the initial solution (flagged) and optionally retry.
+* **Adapter failure**: Emit a warning, perform a no-op, and continue the pipeline.
+* **Instrumentation failure**: Downgrade to alternate metrics (wall-clock timers).
+* **Quality regression**: Automatically roll back to the previous `π` when Latency/L2/EpT worsen.
+
+---
+
+## 11) Security, Licensing, Compliance
+
+* Automatically generate an **SBOM** and run license scans in CI.
+* Honor dataset/model cards and forbid storing sensitive information in logs.
+* Store profiler outputs locally by default; uploading is opt-in.
+
+---
+
+## 12) Deployment
+
+* Distribution: PyPI package plus the `icd` CLI (`pip install icd-co`).
+* Provide a **Dockerfile** (driver matching excluded) and include a conda environment export.
+* Device guard:
 
   ```python
   import torch
@@ -199,57 +199,57 @@ run(config: Dict) -> RunArtifacts  # artifacts paths, metrics summary
             else "cpu")
   ```
 
-  (PyTorch 사용 경로에 한정. TVM/StableHLO 경로는 별도 가드.)
+  (Applies only to the PyTorch pathway. TVM/StableHLO pathways have separate guards.)
 
 ---
 
-## 13) 테스트·CI(Testing Architecture)
+## 13) Testing Architecture
 
-* **유닛**: solver 단조성(블록 강도↑ → C↓, Q↑), 그래프 결정론, 어댑터 no-op 안전성.
-* **통합**: Linear vs Iterative 전/후 지표 동시 출력.
-* **E2E**: 대표 2 워크로드 자동 재현.
-* **회귀**: 마이크로벤치(지연/토큰/s) 허용 편차 게이트.
-* **결정론**: seed/클럭 고정, 반복 N≥30, CI에서 분산 95% CI 체크.
-
----
-
-## 14) 설계 선택(Design Decisions) — 요지
-
-* **모듈러리티 기반**: 캐시라인(블록) 현실 반영 → TSP-류 쌍최적화보다 목적함수 정합성 높음.
-* **스펙트럴+로컬**: 해석가능·안정적 초기해 + 경량 개선. 학습형 스케줄러는 2단계로 추후 옵션.
-* **IR 브리지 PoC**: 초기엔 메타 태그 왕복·최소 pass만. 본격 통합은 2단계 로드맵.
+* **Unit**: Solver monotonicity (stronger blocks → lower C, higher Q), graph determinism, adapter no-op safety.
+* **Integration**: Simultaneously emit pre/post metrics for linear vs. iterative flows.
+* **E2E**: Automatically reproduce the two representative workloads.
+* **Regression**: Gate microbenchmarks (latency/tokens per second) with tolerances.
+* **Determinism**: Pin seeds/clocks, run ≥30 repeats, and check the 95% CI in CI jobs.
 
 ---
 
-## 15) 리스크·완화
+## 14) Key Design Decisions
 
-* **계측 변동성**: 드라이버/온도/클럭 → SOP(고정클럭·워밍업·반복) 강제, 로그에 환경 해시.
-* **스케일**: D↑ 시 O(D³) → 랜치/부분고유값, 블록 독립 최적화.
-* **일반화**: 2 워크로드 편향 → Ablation 스윕(희소율/정밀도/길이), 추가 모델 1종 옵션.
-* **통합비용**: 프레임워크 다양성 → CLI 우선, IR 통합은 opt-in.
-
----
-
-## 16) 수용 기준(Acceptance)
-
-* 대표 2 워크로드에서 **Latency −20% / L2 +10%p / EpT −15%** 동시 달성(품질 저하 ≤ 0.1%p).
-* 실패 시 롤백·리포트·로그가 자동 생성되고 원인 역추적 가능.
-* 외부 검증자 기준 **24h 내** 재현 패키지 성공.
+* **Modularity objective**: Reflects cache-line (block) realities better than TSP-style pairwise optimizations, giving a more faithful objective.
+* **Spectral + local search**: Interpretable, stable initial solutions with lightweight refinements. Learned schedulers remain a phase-two option.
+* **IR bridge PoC**: Initially focus on metadata round-tripping and minimal passes; full integration is part of the phase-two roadmap.
 
 ---
 
-## 17) 실행 체크리스트(Owner 보기)
+## 15) Risks & Mitigations
 
-* [ ] SOP(고정클럭/워밍업/반복 N) 확정
-* [ ] ICD/Pass 포인트 초안 확정(브리지 PoC)
-* [ ] $W$ 스키마·압축 포맷 결재
-* [ ] 솔버 시간상한/스케일 전략 선택
-* [ ] 관측성 스키마/오버헤드 측정 케이스 통과
-* [ ] 회귀 게이트(threshold) CI에 적용
+* **Instrumentation variability**: Driver/thermal/clock drift → enforce the SOP (fixed clocks, warmup, repeats) and log an environment hash.
+* **Scale**: O(D³) when D grows → rely on Lanczos/partial eigenvectors and block-wise independent optimization.
+* **Generalization**: Two-workload bias → run ablation sweeps (sparsity/precision/sequence length) and optionally include one additional model.
+* **Integration cost**: Framework diversity → prioritize the CLI, keep IR integration opt-in.
 
 ---
 
-## 18) 구성 키(Config Keys) — 발췌
+## 16) Acceptance Criteria
+
+* Achieve **Latency −20% / L2 +10%p / EpT −15%** simultaneously on the two representative workloads with quality degradation ≤ 0.1%p.
+* On failure, automatically produce rollback artifacts, reports, and logs that support root-cause analysis.
+* Provide a reproducibility package that external reviewers can run successfully within **24 hours**.
+
+---
+
+## 17) Execution Checklist (Owner View)
+
+* [ ] Finalize the SOP (fixed clocks, warmup, repeat count)
+* [ ] Finalize the ICD/pass insertion points (bridge PoC)
+* [ ] Approve the $W$ schema and compression formats
+* [ ] Select solver time budgets and scaling strategy
+* [ ] Validate observability schema and overhead measurements
+* [ ] Apply regression gates (thresholds) in CI
+
+---
+
+## 18) Config Keys (Excerpt)
 
 ```yaml
 pipeline:
@@ -280,7 +280,7 @@ report:
 
 ---
 
-### 부록 — 간단 데이터플로(DFD)
+### Appendix — Simplified Dataflow (DFD)
 
 `trace/mock → W(CSR) → π₀ → S/Q/K → W' → π₁ → run → {lat, l2, ept} → report.html`
 

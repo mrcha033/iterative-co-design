@@ -1,110 +1,110 @@
-# SOP — 측정 표준작업서 (Latency / L2 Hit / Energy-per-Token)
+# SOP — Measurement Standard (Latency / L2 Hit / Energy-per-Token)
 
-**한 줄 요약**
-고정된 환경에서 `permute → transform(S/Q/K) → re-permute` 전·후를 동일 조건으로 재현 측정하고, Latency·L2 Hit·EpT(J/token)를 신뢰구간과 함께 산출·보관한다. 실패 시 즉시 롤백·재측정.
-
----
-
-## 0) 가정·제약
-
-* **범위**: 추론(inference) 측정. 학습/분산 제외.
-* **HW/툴**: A100/H100 1대↑, Python 3.10, Nsight Compute(ncu CLI), NVML 전력 읽기 가능(또는 동등 보드 전력계).
-* **연결 문서**: PRD(목표 지표) · SAS(블록/아키) · ICD(API/아티팩트) · Pass Doc(IR 경로) · Cost Spec(목적함수).
+**One-line summary**
+Reproduce pre/post measurements for `permute → transform(S/Q/K) → re-permute` under a fixed environment, and capture Latency, L2 Hit, and EpT (J/token) with confidence intervals. If any stage fails, roll back and rerun immediately.
 
 ---
 
-## 1) 산출물
+## 0) Assumptions & Constraints
 
-* **메트릭 요약** `metrics.json`: Latency(ms){mean,p50,p95}, tokens/s, L2\_hit(%), EpT(J/token), 품질 변화(Δacc 등), 환경 해시.
-* **원시 로그**: `ncu.json`(또는 section 보고서), `power.csv`(t, W), `run.log`(이벤트), `config.lock.json`.
-* **리포트**: `report.html|csv` 전·후 비교 표/그림.
-
----
-
-## 2) 환경 고정(필수 체크리스트)
-
-* [ ] **GPU 상태 잠금**: persistence-mode on, 가능 시 **application clocks/전력캡 고정**.
-* [ ] **드라이버/라이브러리 버전 스냅샷**: CUDA, cuDNN, 프레임워크 버전 기록.
-* [ ] **온도 안정화/워밍업**: 워밍업 N\_warmup(기본 50) 수행.
-* [ ] **RNG/Seed 고정**: 데이터 샘플·모델 초기화·샘플러 seed 통일.
-* [ ] **배경 부하 차단**: 전용 노드/고정 CPU governor 권장.
-* [ ] **입력 고정**: 동일 배치·시퀀스 길이·패딩 정책·KV 캐시 설정.
-
-> 실패 시 **측정 무효**. 재측정 전에 환경부터 재고정.
+* **Scope**: Inference-only measurements. Excludes training and distributed setups.
+* **HW/tools**: ≥1 A100/H100, Python 3.10, Nsight Compute (ncu CLI), NVML power sampling (or an equivalent board power meter).
+* **Related documents**: PRD (targets), SAS (components/architecture), ICD (APIs/artifacts), Pass Doc (IR flow), Cost Spec (objective).
 
 ---
 
-## 3) 파일/경로 규약
+## 1) Outputs
+
+* **Metrics summary** `metrics.json`: Latency (ms){mean,p50,p95}, tokens/s, L2_hit (%), EpT (J/token), quality deltas (Δacc, etc.), environment hash.
+* **Raw logs**: `ncu.json` (or section report), `power.csv` (t, W), `run.log` (events), `config.lock.json`.
+* **Reports**: `report.html|csv` with pre/post tables and figures.
+
+---
+
+## 2) Environment Lock (Required Checklist)
+
+* [ ] **Lock GPU state**: persistence mode on; fix application clocks/power cap when possible.
+* [ ] **Record driver/library versions**: CUDA, cuDNN, framework versions.
+* [ ] **Stabilize temperature & warm up**: Run N_warmup (default 50) iterations.
+* [ ] **Fix RNG/seed**: Align data sample, model init, and sampler seeds.
+* [ ] **Eliminate background load**: Prefer dedicated node / fixed CPU governor.
+* [ ] **Fix inputs**: Keep batch size, sequence length, padding policy, and KV-cache settings identical.
+
+> If this fails, the **measurement is invalid**. Re-lock the environment before retrying.
+
+---
+
+## 3) File & Path Layout
 
 ```
 {out}/
-  config.lock.json   # 실제 사용 설정 스냅샷
-  run.log            # 단계별 이벤트 로그
-  ncu.json           # L2 등 프로파일 결과(가능 시)
+  config.lock.json   # Snapshot of the effective configuration
+  run.log            # Stage-by-stage event log
+  ncu.json           # L2/profile results (when available)
   power.csv          # t(s), power_w
-  metrics.json       # 요약 메트릭
-  report.html|csv    # 전/후 비교
+  metrics.json       # Summary metrics
+  report.html|csv    # Pre/post comparison
 ```
 
 ---
 
-## 4) 단계별 절차
+## 4) Step-by-step Procedure
 
-### 4.1 환경 지문 수집(Fingerprint)
+### 4.1 Capture the Environment Fingerprint
 
-1. GPU·드라이버·클럭·전력캡·ECC·온도·UUID를 쿼리 → `run.log`에 저장.
-2. Git commit/브랜치, Docker/conda 환경, 패키지 버전, 모델/데이터셋 해시 기록.
-3. **고정**이 안 되는 항목(클럭/전력 등)은 “비고정”으로 명시.
+1. Query GPU, driver, clocks, power cap, ECC, temperature, and UUID → write to `run.log`.
+2. Record Git commit/branch, Docker/conda environment, package versions, model/dataset hashes.
+3. Mark any parameter that cannot be fixed (clock, power, etc.) explicitly as “unlocked”.
 
-### 4.2 워밍업 & 안정화
+### 4.2 Warmup & Stabilization
 
-1. 동일 입력으로 **워밍업 50회**(PRD 기본).
-2. 온도/전력 흔들림이 수렴하는지 간단 체크(rolling std).
+1. Run **50 warmup iterations** with the same input (PRD default).
+2. Check convergence of temperature/power fluctuations (e.g., rolling std).
 
-### 4.3 라틴시/스루풋 측정
+### 4.3 Measure Latency & Throughput
 
-1. `repeats=1000`으로 동일 입력 반복.
-2. **벽시계 시간**(high-res monotonic)으로 per-iter latency 수집 → p50/p95 계산.
-3. 총 토큰 처리량/시간으로 **tokens/s** 산출.
-4. 결과는 `{lat_ms, toks_per_s}`로 `metrics.json`에 반영.
+1. Repeat the same input with `repeats=1000`.
+2. Use **wall-clock time** (high-resolution monotonic clock) to collect per-iteration latency → compute p50/p95.
+3. Compute **tokens/s** from total tokens processed ÷ total time.
+4. Write `{lat_ms, toks_per_s}` into `metrics.json`.
 
-### 4.4 L2 Hit 측정
+### 4.4 Measure L2 Hit
 
-* **권장**: ncu **섹션 기반** 실행(예: Memory Workload/Cache 섹션)으로 L2 hit rate를 추출.
-* **대체**: 특정 메트릭 이름을 직접 지정(아키텍처별 이름 상이 가능).
-* 3회 이상 반복 실행해 평균값(±표준편차) 기록.
-* ncu 오버헤드로 Latency가 크게 변하면, **L2 전용 러너**와 **Latency 전용 러너**를 분리 측정.
+* **Preferred**: Run ncu with **section-based** collection (e.g., Memory Workload/Cache) to extract L2 hit rate.
+* **Alternative**: Provide explicit metric names (architecture-specific).
+* Run at least three repetitions and record the mean ± standard deviation.
+* If ncu overhead significantly alters latency, split into **L2-only** and **latency-only** runs.
 
-### 4.5 전력·EpT 측정
+### 4.5 Measure Power & EpT
 
-1. NVML(또는 보드 전력계)로 **고정 주기(기본 10Hz)** 샘플링.
-2. 측정 창을 Latency 측정 루프와 동기화(시작/끝 타임스탬프).
-3. 트라페zoidal 적분으로 **에너지\[J]** 계산 후 **EpT = 에너지 / 생성 토큰수**.
-4. 3회 이상 반복, 평균·신뢰구간 보고.
+1. Sample NVML (or a board power meter) at a **fixed cadence (default 10 Hz)**.
+2. Align the measurement window with the latency loop using start/end timestamps.
+3. Apply trapezoidal integration to compute **energy [J]**, then **EpT = energy / generated tokens**.
+4. Repeat at least three times and report mean + confidence interval.
 
-### 4.6 전·후 비교 및 수용판정
+### 4.6 Compare Results & Decide Acceptance
 
-1. **Baseline(Linear)** vs **Iterative** 를 **동일 조건**에서 각각 3회 이상 실행.
-2. 각 지표의 Δ(차이)와 95% CI, 효과크기(g/Hedges) 기록.
-3. PRD 기준 충족 여부 판단(예: Latency −20% / L2 +10%p / EpT −15%).
-4. 미충족 시 원인분석(§6) 후 1회 재시도. 재시도 실패 시 **롤백**.
+1. Run **Baseline (Linear)** and **Iterative** flows under **identical conditions**, ≥3 times each.
+2. Record Δ for each metric, the 95% CI, and the effect size (g/Hedges).
+3. Check whether PRD targets hold (e.g., Latency −20% / L2 +10%p / EpT −15%).
+4. If they fail, perform root-cause analysis (§6) and retry once. If the retry fails, **roll back**.
 
 ---
 
-## 5) 명령 예시(참고 스니펫)
+## 5) Command Examples (Reference Snippets)
 
-### 5.1 환경 잠금/기록(가능 시)
+### 5.1 Lock and Record the Environment (when permitted)
 
 ```bash
-# 고정은 권한/모델에 따라 제약 있음. 실패해도 '비고정'으로 로깅.
+# Locking depends on permissions/models. Log as "unlocked" if it fails.
 nvidia-smi -pm 1
 nvidia-smi --query-gpu=name,uuid,driver_version,pstate,clocks.gr,clocks.sm,clocks.mem,power.limit,temperature.gpu --format=csv -i 0
-# (옵션) 전력캡/클럭 설정: 권한 필요
+# (Optional) Power cap / clock settings: requires privileges
 # nvidia-smi -pl 250
 # nvidia-smi -ac <memMHz>,<smMHz>
 ```
 
-### 5.2 파이프라인 실행(전·후)
+### 5.2 Run the Pipeline (Before / After)
 
 ```bash
 # Baseline (linear)
@@ -114,16 +114,16 @@ icd run -c config.yaml --override pipeline.mode=linear --out runs/linear
 icd run -c config.yaml --override pipeline.mode=iterative --out runs/iter
 ```
 
-### 5.3 L2 측정(ncu)
+### 5.3 Collect L2 Metrics (ncu)
 
 ```bash
-# 섹션 기반(권장): Cache/Memory 섹션을 한 번에 수집
+# Preferred: collect Cache/Memory sections together
 nv-nsight-cu-cli --section "MemoryWorkloadAnalysis" --section "MemoryChart" \
   --nvtx --kernel-name <your_kernel_regex> --page raw ./runner --config config.lock.json \
   --export json --export-file runs/iter/ncu.json
 ```
 
-### 5.4 전력 샘플 로깅(파이썬 예시)
+### 5.4 Log Power Samples (Python example)
 
 ```python
 # measure/power_logger.py
@@ -132,7 +132,7 @@ from measure.power_stub import read_power_w  # NVML or NaN
 with open("runs/iter/power.csv","w",newline="") as f:
     w = csv.writer(f); w.writerow(["t_s","power_w"])
     t0 = time.perf_counter()
-    for _ in range(int(10*60)):   # 10Hz * 60s 예시
+    for _ in range(int(10*60)):   # 10Hz * 60s example
         t = time.perf_counter()-t0
         w.writerow([f"{t:.6f}", f"{read_power_w():.3f}"])
         time.sleep(0.1)
@@ -140,85 +140,85 @@ with open("runs/iter/power.csv","w",newline="") as f:
 
 ---
 
-## 6) 검증·품질관리(QA)
+## 6) Verification & Quality Assurance
 
-### 6.1 일관성·결정론
+### 6.1 Consistency & Determinism
 
-* 동일 입력/seed/클럭에서 **Latency 분산** CV ≤ 5% 권장.
-* π/메트릭 해시가 세션 간 일치(±ε)하는지 확인.
+* Aim for coefficient of variation ≤ 5% for latency under identical input/seed/clock.
+* Ensure π/metric hashes match between sessions within ±ε.
 
-### 6.2 신뢰구간·통계
+### 6.2 Confidence Intervals & Statistics
 
-* 반복 n≥3(권장 n≥5)로 평균·95% CI 산출.
-* 성능 주장은 **Δ와 CI**를 같이 표기(“−22% \[−19, −25]”).
+* Use at least n≥3 repetitions (n≥5 recommended) to compute mean and 95% CI.
+* Present performance claims as **Δ with CI** (e.g., “−22% [−19, −25]”).
 
-### 6.3 아웃라이어 처리
+### 6.3 Outlier Handling
 
-* IQR·MAD로 outlier 검출, 원인(스케줄링/jitter/열) 로그와 함께 **제외 여부 기록**.
+* Detect outliers via IQR/MAD, log root causes (scheduling/jitter/thermal), and **document whether they were excluded**.
 
-### 6.4 오버헤드 가드
+### 6.4 Overhead Guard
 
-* ncu를 켠 상태의 Latency가 baseline 대비 **>10% 악화**되면 **분리 러너**로 전환.
+* If latency with ncu enabled worsens by **>10%** vs. baseline, switch to **separate runners**.
 
-### 6.5 실패/롤백 정책
+### 6.5 Failure & Rollback Policy
 
-* Latency/L2/EpT 중 **2개 이상 악화** → 자동 롤백(직전 π).
-* 재측정 1회 후에도 악화 지속 → RCA 보고서 작성(§7).
-
----
-
-## 7) RCA(원인 분석) 절차
-
-1. **환경**: 드라이버/클럭/온도/전력 캡 변동?
-2. **입력**: 배치/시퀀스/kvcache 세팅 변화?
-3. **커널**: fused/unfused 차이? 다른 커널 경로로 바뀌었는가?
-4. **메모리**: L2 hit는 올랐지만 Latency가 정체? → DRAM 대역/NoC 혼잡 지표 재확인.
-5. **솔버**: 시간상한 타서 미개선? 초기해 품질? (Cost Spec의 ΔJ 확인)
-6. **통계**: 반복 수 부족 or outlier 영향? → n 재측정.
+* When **two or more** of Latency/L2/EpT regress, roll back to the previous `π` automatically.
+* If regression persists after one re-measurement, produce an RCA report (§7).
 
 ---
 
-## 8) 보안·윤리·컴플라이언스
+## 7) RCA (Root-Cause Analysis) Procedure
 
-* 프로파일/로그에 **데이터·자격증명·경로** 등 민감정보 금지.
-* 데이터셋/모델/라이선스 준수 표기.
-* 에너지 측정 보고 시 **측정 한계**(센서 샘플링, 계측 정확도) 명시.
-
----
-
-## 9) 수용 기준(Acceptance)
-
-* 대표 2 워크로드에서 **PRD 목표** 충족:
-
-  * Latency −20% 이상, L2 +10%p 이상, EpT −15% 이상(품질 저하 ≤ 0.1%p).
-* 아티팩트 완비: `metrics.json`, `ncu.json`(또는 동등), `power.csv`, `config.lock.json`, `report.*`
-* 외부 검증자가 문서·스크립트만으로 **24h 내 재현** 성공.
+1. **Environment**: Did driver/clock/temperature/power caps drift?
+2. **Inputs**: Any changes in batch/sequence/KV-cache settings?
+3. **Kernel**: Switched between fused/unfused paths or different kernels?
+4. **Memory**: L2 hit improved but latency stagnates? → Re-check DRAM bandwidth/NoC congestion metrics.
+5. **Solver**: Hit the time budget without improvement? Assess initial quality (see Cost Spec ΔJ).
+6. **Statistics**: Too few repetitions or outlier influence? → Rerun with larger n.
 
 ---
 
-## 10) 실패·대체 경로(Fallback)
+## 8) Security, Ethics, Compliance
 
-* **NVML 불가**: 외부 전력계(보드/소켓) 사용 또는 EpT **미보고**(N/A) 명시.
-* **ncu 불가**: L2 hit 미보고, Latency/Throughput만 보고(제한사항 명시).
-* **클럭 고정 불가**: `fixed_clock=false`로 기록, CI에서 결과 **비교 불가**로 태깅.
-
----
-
-## 11) 자동화 훅(ICD 연계)
-
-* `icd run` 종료 시 자동으로:
-
-  1. 환경 지문 저장 →
-  2. 워밍업/측정 루프 →
-  3. ncu/NVML 호출 →
-  4. EpT 적분 →
-  5. 전·후 비교 리포트 생성.
+* Never include sensitive data, credentials, or file paths in profiles/logs.
+* Document dataset/model/license compliance.
+* When reporting energy measurements, state **measurement limitations** (sensor sampling, instrument accuracy).
 
 ---
 
-## 12) 부록 — 결과 표준 포맷(발췌)
+## 9) Acceptance Criteria
 
-**metrics.json (예)**
+* Both representative workloads satisfy the **PRD targets**:
+
+  * Latency ≥ 20% reduction, L2 +10%p or higher, EpT −15% or better (quality drop ≤ 0.1%p).
+* Artifacts complete: `metrics.json`, `ncu.json` (or equivalent), `power.csv`, `config.lock.json`, `report.*`
+* External reviewers can reproduce the results within **24 hours** using documentation and scripts only.
+
+---
+
+## 10) Failure & Fallback Paths
+
+* **NVML unavailable**: Use an external power meter (board/socket) or report EpT as **N/A**.
+* **ncu unavailable**: Omit L2 hit, report only Latency/Throughput (state the limitation).
+* **Cannot fix clocks**: Record `fixed_clock=false` and tag results as **not comparable** in CI.
+
+---
+
+## 11) Automation Hooks (ICD Integration)
+
+* When `icd run` completes, automatically:
+
+  1. Save the environment fingerprint →
+  2. Execute warmup/measurement loops →
+  3. Invoke ncu/NVML →
+  4. Integrate EpT →
+  5. Generate the before/after report.
+
+---
+
+## 12) Appendix — Standard Output Formats (Excerpt)
+
+**metrics.json (example)**
 
 ```json
 {
@@ -233,7 +233,7 @@ with open("runs/iter/power.csv","w",newline="") as f:
 }
 ```
 
-**power.csv (예)**
+**power.csv (example)**
 
 ```
 t_s,power_w
@@ -244,22 +244,22 @@ t_s,power_w
 
 ---
 
-## 13) 실행 체크리스트(최종)
+## 13) Final Checklist
 
-* [ ] 환경 잠금/지문 수집 완료
-* [ ] 워밍업·반복 수 충족
-* [ ] Latency/Throughput 기록
-* [ ] L2 hit 수집(가능 시)
-* [ ] EpT 적분 계산(가능 시)
-* [ ] 전·후 비교 및 CI/효과크기 산출
-* [ ] 아티팩트·리포트 저장 및 커밋
+* [ ] Environment locked / fingerprint captured
+* [ ] Warmup and repetition counts satisfied
+* [ ] Latency / Throughput recorded
+* [ ] L2 hit captured (when available)
+* [ ] EpT integral computed (when available)
+* [ ] Pre/post comparison with CI and effect size produced
+* [ ] Artifacts and reports stored and versioned
 
 ---
 
-## 14) 리스크/대안
+## 14) Risks & Mitigations
 
-* **계측 노이즈**: 반복 수↑, 고정클럭, 프로파일 분리.
-* **메트릭 명칭 상이**: 섹션 기반 수집으로 호환성 확보, 장치별 맵 테이블 유지.
-* **오버헤드**: ncu 샘플링/범위 축소, 프로파일 전용 실행으로 분리.
+* **Measurement noise**: Increase repetitions, lock clocks, separate profiling runs.
+* **Metric name drift**: Use section-based collection for compatibility and maintain per-device mapping tables.
+* **Overhead**: Reduce ncu sampling/range or split into profiler-only executions.
 
 ---
