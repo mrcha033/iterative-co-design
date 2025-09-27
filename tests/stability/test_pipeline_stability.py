@@ -45,7 +45,7 @@ def test_missing_measurements_mark_acceptance_incomplete(tmp_path: Path, monkeyp
 
     calls: List[int] = []
 
-    def fake_fit_permutation(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None):
+    def fake_fit_permutation(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None, method=None):
         size = W.shape[0]
         idx = len(calls)
         calls.append(idx)
@@ -81,7 +81,7 @@ def test_retry_and_gate_failure_trigger_rollback(tmp_path: Path, monkeypatch) ->
 
     calls: List[int] = []
 
-    def fake_fit_permutation(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None):
+    def fake_fit_permutation(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None, method=None):
         size = W.shape[0]
         idx = len(calls)
         calls.append(idx)
@@ -99,8 +99,8 @@ def test_retry_and_gate_failure_trigger_rollback(tmp_path: Path, monkeypatch) ->
     comparison = run_pair(cfg, str(out_dir))
     trial_metrics = json.loads((out_dir / "iter" / "metrics.json").read_text(encoding="utf-8"))
 
-    assert comparison["accepted"] is False
-    assert comparison["rolled_back"] is True
+    assert comparison["linear"]["accepted"] is False
+    assert comparison["linear"]["rolled_back"] is True
 
     acceptance = trial_metrics["acceptance"]
     assert acceptance["rolled_back"] is True

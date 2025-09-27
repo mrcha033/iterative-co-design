@@ -320,6 +320,8 @@ def build_w(source: str = "mock", **cfg) -> CSRMatrix:
 
 def save_w_npz(path: str, W: CSRMatrix) -> None:
     """Save CSR matrix to .npz (json inside for simplicity, no numpy hard dep)."""
+    import os
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(W.to_npz_payload(), f)
 

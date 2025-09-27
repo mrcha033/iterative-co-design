@@ -79,6 +79,7 @@ def test_yaml_config_enables_whiten_and_transfer(monkeypatch):
     raw_cfg = yaml.safe_load(Path("configs/iasp_defaults.yaml").read_text(encoding="utf-8"))
     corr_data = dict(raw_cfg.get("correlation", {}))
     corr_data["samples"] = 1
+    corr_data["layers"] = ["linear"]
 
     updates: list[int] = []
     original_update = corr_mod._ActivationStats.update

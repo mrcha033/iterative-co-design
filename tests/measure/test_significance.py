@@ -21,7 +21,8 @@ def test_paired_statistics_zero_variance_delta():
     assert result["effect_size"] is None
 
 
-def test_paired_statistics_normal_approximation():
+def test_paired_statistics_normal_approximation(monkeypatch):
+    monkeypatch.setattr("icd.measure.significance._scipy_stats", None)
     baseline = [10.0, 12.0, 11.0, 13.0]
     trial = [9.0, 11.0, 11.0, 14.0]
     result = paired_statistics(baseline, trial)

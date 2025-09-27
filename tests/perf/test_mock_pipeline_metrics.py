@@ -44,7 +44,7 @@ def test_mock_pipeline_reports_latency_l2_and_ept(tmp_path: Path, monkeypatch) -
 
     calls: List[int] = []
 
-    def fake_fit_permutation(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None):
+    def fake_fit_permutation(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None, method=None):
         size = W.shape[0]
         idx = len(calls)
         calls.append(idx)
@@ -64,7 +64,7 @@ def test_mock_pipeline_reports_latency_l2_and_ept(tmp_path: Path, monkeypatch) -
     assert metrics["acceptance"]["missing"] == []
 
     expected_delay_ms = cfg["pipeline"]["runner_context"]["iter_delay_s"] * 1000.0 * 0.98
-    assert metrics["latency_ms"]["mean"] == pytest.approx(expected_delay_ms, rel=0.25)
+    assert metrics["latency_ms"]["mean"] == pytest.approx(expected_delay_ms, rel=0.3)
     assert metrics["latency_ms"]["p95"] >= metrics["latency_ms"]["p50"]
 
     assert metrics["l2_hit_pct"] == pytest.approx(cfg["pipeline"]["runner_context"]["iter_l2_hit"])

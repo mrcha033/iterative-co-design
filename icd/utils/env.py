@@ -17,7 +17,10 @@ try:  # pragma: no cover - optional dependency guard
 except Exception:  # pragma: no cover - handled in callers
     pynvml = None  # type: ignore[assignment]
 
-import jsonschema
+try:  # pragma: no cover - optional dependency
+    import jsonschema  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover - fallback to lightweight validator
+    from . import _jsonschema as jsonschema  # type: ignore[no-redef]
 
 
 SchemaDict = Dict[str, Any]

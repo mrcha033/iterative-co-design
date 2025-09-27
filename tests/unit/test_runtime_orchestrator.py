@@ -67,7 +67,7 @@ def orchestrator_config(tmp_path: Path):
 def test_run_produces_artifacts(tmp_path: Path, monkeypatch, orchestrator_config: Dict[str, Any]) -> None:
     call_order: List[int] = []
 
-    def fake_fit_permutation(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None):
+    def fake_fit_permutation(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None, method=None):
         size = W.shape[0]
         if not call_order:
             call_order.append(0)
@@ -160,7 +160,7 @@ def test_run_pair_generates_comparison(tmp_path: Path, monkeypatch) -> None:
 def test_run_with_transforms_cache_and_measurements(tmp_path: Path, monkeypatch) -> None:
     call_order: List[int] = []
 
-    def fake_fit_permutation(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None):
+    def fake_fit_permutation(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None, method=None):
         size = W.shape[0]
         idx = len(call_order)
         call_order.append(idx)
@@ -227,7 +227,7 @@ def test_rollback_restores_perm_and_notifies_cache(tmp_path: Path, monkeypatch, 
 
     calls: List[int] = []
 
-    def fake_fit(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None):
+    def fake_fit(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None, method=None):
         size = W.shape[0]
         idx = len(calls)
         calls.append(idx)
@@ -441,7 +441,7 @@ def test_run_with_correlation_and_clustering(tmp_path: Path, monkeypatch) -> Non
         }
         return fake_clusters
 
-    def fake_fit(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None):
+    def fake_fit(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None, method=None):
         captured["clusters"].append(clusters)
         return list(range(W.shape[0])), {
             "J": 1.0,
@@ -512,7 +512,7 @@ def test_reference_configs_pass_iterative_guard(tmp_path: Path, monkeypatch) -> 
     def fake_to_csr(matrix, cfg):
         return CSRMatrix(indptr=[0, 1, 2], indices=[1, 0], data=[1.0, 1.0], shape=(2, 2), meta={"source": "fake"})
 
-    def fake_fit(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None):
+    def fake_fit(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None, method=None):
         size = W.shape[0]
         return list(range(size)), {"J": 1.0, "C": 0.0, "Q": 0.0, "clusters": len(clusters or [])}
 
