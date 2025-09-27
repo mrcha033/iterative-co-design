@@ -23,6 +23,7 @@ from icd.measure.quality import eval_sst2, eval_wt103_ppl
 from icd.measure.gates import make_pairwise_summary, verdict
 from icd.runtime.compare import decide as compare_decide
 from icd.runtime.runner import prepare_runner_context, resolve_runner
+from icd.utils.env import collect_env_fingerprint
 from icd.utils.imports import load_object
 from icd.graph import (
     CorrelationConfig,
@@ -172,6 +173,16 @@ def _parse_torch_dtype(value: Any) -> torch.dtype:
 
 
 def _make_correlation_config(data: Dict[str, Any]) -> CorrelationConfig:
+    whiten_value = data.get("whiten", False)
+    if isinstance(whiten_value, str):
+        whiten = whiten_value.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        whiten = bool(whiten_value)
+
+    transfer_batch_size = data.get("transfer_batch_size")
+    if transfer_batch_size is not None:
+        transfer_batch_size = int(transfer_batch_size)
+
     return CorrelationConfig(
         mode=str(data.get("mode", "activation")).lower(),
         layers=data.get("layers"),
@@ -182,14 +193,36 @@ def _make_correlation_config(data: Dict[str, Any]) -> CorrelationConfig:
         threshold=float(data.get("threshold", 0.0)),
         normalize=str(data.get("normalize", "sym")).lower(),
         nnz_cap=data.get("nnz_cap"),
+        whiten=whiten,
+        transfer_batch_size=transfer_batch_size,
     )
 
 
 def _make_clustering_config(data: Dict[str, Any]) -> ClusteringConfig:
+    fallback_method = data.get(
+        "fallback_method",
+        ClusteringConfig.__dataclass_fields__["fallback_method"].default,
+    )
+    if fallback_method is not None:
+        fallback_method = str(fallback_method).lower()
+
+    modularity_floor = data.get("modularity_floor")
+    if modularity_floor is None:
+        modularity_floor = ClusteringConfig.__dataclass_fields__["modularity_floor"].default
+    else:
+        modularity_floor = float(modularity_floor)
+
+    runtime_budget = data.get("runtime_budget")
+    if runtime_budget is not None:
+        runtime_budget = float(runtime_budget)
+
     return ClusteringConfig(
         method=str(data.get("method", "louvain")).lower(),
         rng_seed=int(data.get("rng_seed", 0)),
         resolution=float(data.get("resolution", 1.0)),
+        fallback_method=fallback_method,
+        modularity_floor=modularity_floor,
+        runtime_budget=runtime_budget,
     )
 
 
@@ -266,6 +299,9 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     def emit(stage: str, ok: bool, meta: Dict[str, Any] | None = None):
         ev = {"stage": stage, "t": time.time(), "ok": ok, "meta": (meta or {})}
         events.append(ev)
+
+    env_fingerprint = collect_env_fingerprint()
+    emit("ENV_FINGERPRINT", True, {"fingerprint": env_fingerprint})
 
     hf_cache: Dict[str, Any] = {}
     correlation_meta: Dict[str, Any] | None = None
@@ -659,6 +695,8 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
                         "count": len(clusters),
                         "resolution": cluster_cfg_obj.resolution,
                     }
+                    if getattr(cluster_cfg_obj, "last_meta", None):
+                        clustering_meta.update(cluster_cfg_obj.last_meta)
                     correlation_meta.setdefault("clusters", {})["count"] = len(clusters)
             except Exception as e:
                 transform_errors.append({"stage": "correlation", "kind": "error", "detail": str(e)})
@@ -990,7 +1028,11 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         "C": stats1.get("C"),
         "Q": stats1.get("Q"),
         "J": stats1.get("J"),
-        "env": {"seed": scfg.get("rng_seed", 0), "fixed_clock": pipeline_cfg.get("fixed_clock", True)},
+        "env": {
+            "seed": scfg.get("rng_seed", 0),
+            "fixed_clock": pipeline_cfg.get("fixed_clock", True),
+            "fingerprint": env_fingerprint,
+        },
         "acceptance": {
             "epsilon_J": epsJ,
             "delta_J": delta_J,

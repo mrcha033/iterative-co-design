@@ -1,8 +1,13 @@
+from pathlib import Path
+
 import pytest
+import yaml
 
 torch = pytest.importorskip("torch")
 
+import icd.graph.correlation as corr_mod
 from icd.graph.correlation import CorrelationConfig, collect_correlations, correlation_to_csr
+from icd.runtime.orchestrator import _make_correlation_config
 
 
 class IdentityLinear(torch.nn.Module):
@@ -68,3 +73,32 @@ def test_whiten_option_sets_unit_diagonal():
     matrix, meta = collect_correlations(model, inputs, cfg=cfg)
     assert torch.allclose(matrix.diagonal(), torch.ones_like(matrix.diagonal()), atol=1e-6)
     assert meta["whiten"] is True
+
+
+def test_yaml_config_enables_whiten_and_transfer(monkeypatch):
+    raw_cfg = yaml.safe_load(Path("configs/iasp_defaults.yaml").read_text(encoding="utf-8"))
+    corr_data = dict(raw_cfg.get("correlation", {}))
+    corr_data["samples"] = 1
+
+    updates: list[int] = []
+    original_update = corr_mod._ActivationStats.update
+
+    def recording_update(self, activations):
+        updates.append(int(activations.shape[0]))
+        return original_update(self, activations)
+
+    monkeypatch.setattr(corr_mod._ActivationStats, "update", recording_update)
+
+    model = IdentityLinear(3)
+    inputs = [(torch.randn(9, 3),)]
+
+    cfg = _make_correlation_config(corr_data)
+    matrix, meta = collect_correlations(model, inputs, cfg=cfg)
+
+    assert cfg.whiten is True
+    assert cfg.transfer_batch_size == corr_data["transfer_batch_size"]
+    assert torch.allclose(matrix.diagonal(), torch.ones_like(matrix.diagonal()), atol=1e-6)
+    assert meta["whiten"] is True
+    assert meta["transfer_batch_size"] == cfg.transfer_batch_size
+    assert updates
+    assert max(updates) <= cfg.transfer_batch_size

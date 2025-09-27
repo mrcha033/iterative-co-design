@@ -356,6 +356,12 @@ def test_run_with_correlation_and_clustering(tmp_path: Path, monkeypatch) -> Non
 
     def fake_cluster(W, cfg):
         captured["cluster_cfg"] = cfg
+        cfg.last_meta = {
+            "method": "spectral",
+            "fallback_reason": "low_modularity",
+            "runtime_s": 0.123,
+            "modularity": 0.42,
+        }
         return fake_clusters
 
     def fake_fit(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None):
@@ -406,7 +412,19 @@ def test_run_with_correlation_and_clustering(tmp_path: Path, monkeypatch) -> Non
     assert captured.get("collect_called") is True
     assert captured["clusters"][-1] == fake_clusters
     assert metrics.get("correlation", {}).get("mode") == "activation"
-    assert metrics.get("clustering", {}).get("count") == len(fake_clusters)
+
+    last_meta = captured["cluster_cfg"].last_meta
+    assert last_meta["method"] == "spectral"
+    assert last_meta["fallback_reason"] == "low_modularity"
+    assert last_meta["modularity"] == pytest.approx(0.42)
+    assert last_meta["runtime_s"] == pytest.approx(0.123)
+
+    clustering_metrics = metrics.get("clustering", {})
+    assert clustering_metrics.get("count") == len(fake_clusters)
+    assert clustering_metrics.get("method") == "spectral"
+    assert clustering_metrics.get("fallback_reason") == "low_modularity"
+    assert clustering_metrics.get("modularity") == pytest.approx(0.42)
+    assert clustering_metrics.get("runtime_s") == pytest.approx(0.123)
 
 
 def test_reference_configs_pass_iterative_guard(tmp_path: Path, monkeypatch) -> None:

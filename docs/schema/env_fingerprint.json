@@ -17,7 +17,8 @@
       "type": "object",
       "properties": {
         "name": {"type": "string"},
-        "clocks": {"type": "object", "additionalProperties": {"type": "number"}}
+        "clocks": {"type": "object", "additionalProperties": {"type": "number"}},
+        "temperatures": {"type": "object", "additionalProperties": {"type": "number"}}
       },
       "required": ["name"],
       "additionalProperties": false

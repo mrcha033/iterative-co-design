@@ -55,6 +55,21 @@ jobs:
       - name: Run integration tests (mock)
         run: pytest -q tests/integration
 
+  perf:
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install test runner
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest torch
+      - name: Run performance smoke tests
+        run: pytest -q tests/perf
+
   ir-pass:
     needs: unit
     runs-on: ubuntu-latest
@@ -70,8 +85,23 @@ jobs:
       - name: Run IR FileCheck-like tests
         run: pytest -q tests/ir
 
+  stability:
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install test runner
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest torch
+      - name: Run stability regression tests
+        run: pytest -q tests/stability
+
   package:
-    needs: [unit, integration]
+    needs: [unit, integration, perf, stability]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
