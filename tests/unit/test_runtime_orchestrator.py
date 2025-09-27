@@ -90,9 +90,14 @@ def test_run_produces_artifacts(tmp_path: Path, monkeypatch, orchestrator_config
     assert metrics["acceptance"]["accepted"] is True
     assert metrics["acceptance"]["incomplete"] is False
     assert metrics["acceptance"].get("missing") == []
+    assert metrics["acceptance"]["retry_budget"] == 0
+    assert metrics["acceptance"]["cache_notified"] is False
+    assert metrics["acceptance"]["rca"]["status"] == "not_required"
+    assert metrics["acceptance"]["active_perm"] == "perm_after.json"
     assert metrics["transform_meta"]["delta_layout"] is False
     assert (Path(artifacts.out_dir) / "report.csv").exists()
     assert (Path(artifacts.out_dir) / "report.html").exists()
+    assert (Path(artifacts.out_dir) / "perm_active.json").exists()
     assert call_order == [0, 1]
 
 
@@ -203,6 +208,8 @@ def test_run_with_transforms_cache_and_measurements(tmp_path: Path, monkeypatch)
     assert metrics1["acceptance"]["incomplete"] is True
     assert "l2_hit_pct" in metrics1["acceptance"]["note"]
     assert "l2_hit_pct" in metrics1["acceptance"].get("missing", [])
+    assert metrics1["acceptance"]["active_perm"] == "perm_after.json"
+    assert Path(artifacts1.out_dir, "perm_active.json").exists()
 
     # Second run hits cache; expect another invocation for re-permutation only
     cfg_second = json.loads(json.dumps(cfg))
@@ -212,6 +219,38 @@ def test_run_with_transforms_cache_and_measurements(tmp_path: Path, monkeypatch)
     assert len(call_order) == 3
 
 
+def test_rollback_restores_perm_and_notifies_cache(tmp_path: Path, monkeypatch, orchestrator_config: Dict[str, Any]) -> None:
+    cfg = json.loads(json.dumps(orchestrator_config))
+    cfg["cache"] = {"enable": True, "cache_dir": str(tmp_path / "cache")}
+    cfg["pipeline"]["no_measure"] = True
+
+    calls: List[int] = []
+
+    def fake_fit(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None):
+        size = W.shape[0]
+        idx = len(calls)
+        calls.append(idx)
+        stats = {"J": 5.0, "C": 1.0, "Q": 1.0}
+        if idx >= 1:
+            stats = {"J": 5.0, "C": 1.1, "Q": 1.0}
+        return list(range(size)), stats
+
+    monkeypatch.setattr("icd.runtime.orchestrator.fit_permutation", fake_fit)
+
+    artifacts = run(cfg)
+    out_dir = Path(artifacts.out_dir)
+    metrics = json.loads(Path(artifacts.metrics_path).read_text(encoding="utf-8"))
+
+    assert metrics["acceptance"]["rolled_back"] is True
+    assert metrics["acceptance"]["rca"]["status"] == "pending"
+    assert metrics["acceptance"]["active_perm"] == "perm_before.json"
+    assert metrics["acceptance"]["cache_notified"] is True
+    before = json.loads((out_dir / "perm_before.json").read_text(encoding="utf-8"))
+    active = json.loads((out_dir / "perm_active.json").read_text(encoding="utf-8"))
+    assert before["pi"] == active["pi"]
+    cache_dir = Path(cfg["cache"]["cache_dir"])
+    rollback_files = list(cache_dir.glob("*.rollback.json"))
+    assert rollback_files, "expected rollback notice in cache"
 def test_iterative_auto_enables_correlation(monkeypatch, tmp_path: Path) -> None:
     captured: Dict[str, Any] = {}
 

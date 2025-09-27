@@ -4,7 +4,7 @@
 
 **Events (run.log)**
 - **Format:** one JSON per line: `{stage, t, ok, meta}`.
-- **Stages:** `W_BUILT`, `PERMUTED`, `TRANSFORMED`, `REPERMUTED`, `MEASURED`, `REPORTED`.
+- **Stages:** `W_BUILT`, `PERMUTED`, `TRANSFORMED`, `REPERMUTED`, `ROLLBACK`, `MEASURED`, `REPORTED`.
 - **Overhead:** run logging ≤ 1% of wall time; avoid chatty per‑iteration logs.
 
 **Metrics (metrics.json)**

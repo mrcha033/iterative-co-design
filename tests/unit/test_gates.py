@@ -50,7 +50,7 @@ def test_verdict_iterative_latency_gate():
     observed = gates["observed"]
     missing = gates.get("missing", [])
 
-    assert thresholds["iter.latency_rel_max"] == pytest.approx(-0.20)
+    assert thresholds["iter.latency_rel"] == pytest.approx(-0.20)
     assert status["iter.latency_rel"] is True
     assert observed["iter.latency_rel"] == pytest.approx(-0.2)
     assert status["iter.l2_pp"] is True

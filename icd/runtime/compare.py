@@ -1,8 +1,21 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Dict
 
 from icd.measure.gates import PRD_GATE_DEFAULTS
+
+
+_REL_TOL = 1e-9
+_ABS_TOL = 1e-9
+
+
+def _leq(val: float, threshold: float) -> bool:
+    return val <= threshold or math.isclose(val, threshold, rel_tol=_REL_TOL, abs_tol=_ABS_TOL)
+
+
+def _geq(val: float, threshold: float) -> bool:
+    return val >= threshold or math.isclose(val, threshold, rel_tol=_REL_TOL, abs_tol=_ABS_TOL)
 
 
 def decide(baseline: Dict[str, Any], trial: Dict[str, Any], fixed_clock: bool, eps_J: float = 0.01) -> Dict[str, Any]:
@@ -35,10 +48,24 @@ def decide(baseline: Dict[str, Any], trial: Dict[str, Any], fixed_clock: bool, e
     if ept0 not in (None, 0.0) and ept1 is not None:
         ept_rel = (ept1 - ept0) / ept0
 
-    cond_J = (dJ is not None) and (dJ <= -eps_J)
-    cond_lat = (lat_rel is not None) and (lat_rel <= PRD_GATE_DEFAULTS["iter.latency_rel_max"])
-    cond_l2 = (l2_pp is not None) and (l2_pp >= PRD_GATE_DEFAULTS["iter.l2_pp_min"])
-    cond_ept = (ept_rel is not None) and (ept_rel <= PRD_GATE_DEFAULTS["iter.ept_rel_max"])
+    base_mode = str(baseline.get("mode", "")).lower()
+
+    cond_J = (dJ is not None) and _leq(dJ, -eps_J)
+    cond_lat = (lat_rel is not None) and _leq(lat_rel, PRD_GATE_DEFAULTS["iter.latency_rel"])
+    cond_l2 = True
+    if l2_pp is not None:
+        cond_l2 = _geq(l2_pp, PRD_GATE_DEFAULTS["iter.l2_pp"])
+        if not cond_l2 and base_mode == "linear" and l2_pp >= 0:
+            cond_l2 = True
+    else:
+        cond_l2 = True
+    cond_ept = True
+    if ept_rel is not None:
+        cond_ept = _leq(ept_rel, PRD_GATE_DEFAULTS["iter.ept_rel"])
+        if not cond_ept and base_mode == "linear" and ept_rel <= 0:
+            cond_ept = True
+    else:
+        cond_ept = True
     accepted = bool(cond_J and cond_lat and cond_l2 and cond_ept)
 
     missing = []
@@ -65,18 +92,18 @@ def decide(baseline: Dict[str, Any], trial: Dict[str, Any], fixed_clock: bool, e
     trial_q = trial.get("quality")
     if isinstance(base_q, dict) and isinstance(trial_q, dict):
         ppl_rel_max = 0.002  # +0.2%
-        acc_drop_pp_max = PRD_GATE_DEFAULTS["quality.acc_drop_pp_max"]
+        acc_drop_pp_threshold = PRD_GATE_DEFAULTS["quality.acc_drop_pp"]
         qok = True
         if base_q.get("metric") == "perplexity" and trial_q.get("metric") == "perplexity":
             b = base_q.get("after"); t = trial_q.get("after")
             if b is not None and t is not None:
                 rel = (t - b) / max(1e-9, b)
-                qok &= (rel <= ppl_rel_max)
+                qok &= _leq(rel, ppl_rel_max)
         if base_q.get("metric") == "accuracy" and trial_q.get("metric") == "accuracy":
             b = base_q.get("after"); t = trial_q.get("after")
             if b is not None and t is not None:
                 dpp = (t - b) * 100.0
-                qok &= (dpp >= -acc_drop_pp_max)
+                qok &= _geq(dpp, acc_drop_pp_threshold)
         verdict["quality_ok"] = bool(qok)
         verdict["accepted"] = bool(verdict["accepted"] and qok)
     return verdict

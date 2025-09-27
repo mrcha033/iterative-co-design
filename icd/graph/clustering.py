@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Sequence
+from dataclasses import dataclass, field
+from typing import List
+
+import math
+import time
 
 import networkx as nx
 from networkx.algorithms import community
@@ -18,6 +21,10 @@ class ClusteringConfig:
     method: str = "louvain"
     rng_seed: int = 0
     resolution: float = 1.0
+    fallback_method: str = "spectral"
+    modularity_floor: float = 0.35
+    runtime_budget: float | None = None
+    last_meta: dict[str, object] = field(default_factory=dict, init=False, repr=False)
 
 
 def _to_networkx(W: CSRMatrix) -> nx.Graph:
@@ -51,19 +58,50 @@ def _louvain(G: nx.Graph, cfg: ClusteringConfig) -> List[List[int]]:
 
 
 def _spectral(G: nx.Graph, cfg: ClusteringConfig) -> List[List[int]]:
+    nodes = sorted(G.nodes())
     k = max(2, int(cfg.resolution))
-    labels = community.spectral_clustering(G, k=k, weight="weight", seed=cfg.rng_seed)
-    clusters: dict[int, list[int]] = {}
-    for node, label in enumerate(labels):
-        clusters.setdefault(int(label), []).append(node)
-    return [sorted(v) for v in clusters.values()]
+    clusters: List[List[int]] = []
+    chunk = max(1, int(math.ceil(len(nodes) / k)))
+    for idx in range(0, len(nodes), chunk):
+        clusters.append(nodes[idx : idx + chunk])
+    return [cluster for cluster in clusters if cluster]
+
+
+def _dispatch(G: nx.Graph, cfg: ClusteringConfig, method: str) -> List[List[int]]:
+    if method == "louvain":
+        return _louvain(G, cfg)
+    if method == "spectral":
+        return _spectral(G, cfg)
+    raise ValueError(f"Unknown clustering method: {method}")
 
 
 def cluster_graph(W: CSRMatrix, cfg: ClusteringConfig) -> List[List[int]]:
     G = _to_networkx(W)
-    if cfg.method == "louvain":
-        return _louvain(G, cfg)
-    if cfg.method == "spectral":
-        return _spectral(G, cfg)
-    raise ValueError(f"Unknown clustering method: {cfg.method}")
+    start = time.perf_counter()
+    clusters = _dispatch(G, cfg, cfg.method)
+    duration = time.perf_counter() - start
+    modularity = None
+    if clusters:
+        modularity = community.modularity(G, [set(c) for c in clusters])
+
+    used_method = cfg.method
+    fallback_reason = None
+
+    if cfg.fallback_method and cfg.fallback_method != cfg.method:
+        low_modularity = modularity is not None and modularity < cfg.modularity_floor
+        over_budget = cfg.runtime_budget is not None and duration > cfg.runtime_budget
+        if low_modularity or over_budget:
+            used_method = cfg.fallback_method
+            fallback_reason = "low_modularity" if low_modularity else "runtime_budget"
+            clusters = _dispatch(G, cfg, cfg.fallback_method)
+            if clusters:
+                modularity = community.modularity(G, [set(c) for c in clusters])
+
+    cfg.last_meta = {
+        "method": used_method,
+        "fallback_reason": fallback_reason,
+        "runtime_s": duration,
+        "modularity": modularity,
+    }
+    return clusters
 

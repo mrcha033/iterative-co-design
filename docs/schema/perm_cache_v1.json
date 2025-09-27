@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Permutation Cache v1",
+  "type": "object",
+  "required": ["version", "pi", "hash", "signature", "updated_at"],
+  "properties": {
+    "version": {"type": "integer", "const": 1},
+    "pi": {
+      "type": "array",
+      "items": {"type": "integer"}
+    },
+    "hash": {"type": "string"},
+    "signature": {"type": "string"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "meta": {"type": "object"}
+  },
+  "additionalProperties": false
+}

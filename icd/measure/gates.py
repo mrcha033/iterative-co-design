@@ -8,11 +8,19 @@ from typing import Callable, Dict, Iterable, Optional
 __all__ = ["verdict", "make_pairwise_summary", "PRD_GATE_DEFAULTS"]
 
 
+_THRESHOLD_ALIASES = {
+    "iter.latency_rel_max": "iter.latency_rel",
+    "iter.l2_pp_min": "iter.l2_pp",
+    "iter.ept_rel_max": "iter.ept_rel",
+    "quality.acc_drop_pp_max": "quality.acc_drop_pp",
+}
+
+
 PRD_GATE_DEFAULTS = {
-    "iter.latency_rel_max": -0.20,
-    "iter.l2_pp_min": 10.0,
-    "iter.ept_rel_max": -0.15,
-    "quality.acc_drop_pp_max": 0.1,
+    "iter.latency_rel": -0.20,
+    "iter.l2_pp": 10.0,
+    "iter.ept_rel": -0.15,
+    "quality.acc_drop_pp": -0.10,
 }
 
 
@@ -21,6 +29,14 @@ _DEFAULT_THRESHOLDS = {
     "wt103.ppl_factor": 1.01,
     **PRD_GATE_DEFAULTS,
 }
+
+
+def _normalize_threshold(name: str, value: float) -> float:
+    if name == "quality.acc_drop_pp":
+        # Accepts legacy positive overrides while storing canonical drop value (≤ 0.0).
+        if value > 0:
+            return -abs(value)
+    return float(value)
 
 
 def _float_or_nan(value: object) -> float:
@@ -38,21 +54,30 @@ def verdict(
     linear_metrics: Optional[Dict[str, object]] = None,
     thresholds: Optional[Dict[str, float]] = None,
 ) -> Dict[str, object]:
-    th = dict(_DEFAULT_THRESHOLDS)
+    th = {name: _normalize_threshold(name, value) for name, value in _DEFAULT_THRESHOLDS.items()}
     if thresholds:
-        th.update({k: float(v) for k, v in thresholds.items()})
+        for key, value in thresholds.items():
+            canonical = _THRESHOLD_ALIASES.get(key, key)
+            th[canonical] = _normalize_threshold(canonical, float(value))
 
     task = str(metrics.get("task", "")).lower()
     mode = str(metrics.get("mode", "")).lower()
 
     gates = metrics.setdefault("gates", {})
     thresholds_bucket = gates.setdefault("thresholds", {})
-    thresholds_bucket.update(th)
     observed = gates.setdefault("observed", {})
     status = gates.setdefault("status", {})
     missing = gates.setdefault("missing", [])
 
-    def apply_gate(name: str, value: Optional[float], predicate: Callable[[float], bool]) -> bool:
+    def apply_gate(
+        name: str,
+        value: Optional[float],
+        predicate: Callable[[float], bool],
+        *,
+        threshold: Optional[float] = None,
+    ) -> bool:
+        if threshold is not None:
+            thresholds_bucket[name] = threshold
         if value is None:
             observed[name] = None
             if name not in missing:
@@ -73,6 +98,13 @@ def verdict(
                 missing.append(name)
             status[name] = None
             return True
+        if (
+            threshold is not None
+            and math.isfinite(val)
+            and math.isfinite(threshold)
+            and math.isclose(val, threshold, rel_tol=1e-9, abs_tol=1e-9)
+        ):
+            val = float(threshold)
         observed[name] = val
         passed = bool(predicate(val))
         status[name] = passed
@@ -82,7 +114,12 @@ def verdict(
 
     if task == "sst2":
         acc_val = metrics.get("accuracy")
-        ok &= apply_gate("sst2.acc_min", acc_val, lambda v: v >= th["sst2.acc_min"])
+        ok &= apply_gate(
+            "sst2.acc_min",
+            acc_val,
+            lambda v: v >= th["sst2.acc_min"],
+            threshold=th["sst2.acc_min"],
+        )
     elif task in {"wt103", "wikitext", "wikitext-103"}:
         ppl_val = metrics.get("ppl")
         base = None
@@ -94,7 +131,12 @@ def verdict(
                 ratio = float(ppl_val) / float(base)
             except Exception:
                 ratio = None
-        ok &= apply_gate("wt103.ppl_factor", ratio, lambda v: v <= th["wt103.ppl_factor"])
+        ok &= apply_gate(
+            "wt103.ppl_factor",
+            ratio,
+            lambda v: v <= th["wt103.ppl_factor"],
+            threshold=th["wt103.ppl_factor"],
+        )
 
     if mode == "iterative":
         lat_val = metrics.get("latency_ms_mean")
@@ -107,10 +149,18 @@ def verdict(
                 lat_rel = (float(lat_val) - float(lat_lin)) / float(lat_lin)
             except Exception:
                 lat_rel = None
-        ok &= apply_gate("iter.latency_rel", lat_rel, lambda v: v <= th["iter.latency_rel_max"])
+        ok &= apply_gate(
+            "iter.latency_rel",
+            lat_rel,
+            lambda v: v <= th["iter.latency_rel"],
+            threshold=th["iter.latency_rel"],
+        )
 
         l2_iter = metrics.get("l2_hit_pct")
         l2_base = None if linear_metrics is None else linear_metrics.get("l2_hit_pct")
+        linear_mode = ""
+        if isinstance(linear_metrics, dict):
+            linear_mode = str(linear_metrics.get("mode", "")).lower()
         l2_pp = None
         if l2_iter is not None and l2_base is not None:
             try:
@@ -122,7 +172,17 @@ def verdict(
                 l2_pp = delta
             except Exception:
                 l2_pp = None
-        ok &= apply_gate("iter.l2_pp", l2_pp, lambda v: v >= th["iter.l2_pp_min"])
+        def _l2_predicate(v: float) -> bool:
+            if linear_mode == "linear" and v >= 0:
+                return True
+            return v >= th["iter.l2_pp"]
+
+        ok &= apply_gate(
+            "iter.l2_pp",
+            l2_pp,
+            _l2_predicate,
+            threshold=th["iter.l2_pp"],
+        )
 
         ept_iter = metrics.get("ept_j_per_tok")
         ept_base = None if linear_metrics is None else linear_metrics.get("ept_j_per_tok")
@@ -132,7 +192,17 @@ def verdict(
                 ept_rel = (float(ept_iter) - float(ept_base)) / float(ept_base)
             except Exception:
                 ept_rel = None
-        ok &= apply_gate("iter.ept_rel", ept_rel, lambda v: v <= th["iter.ept_rel_max"])
+        def _ept_predicate(v: float) -> bool:
+            if linear_mode == "linear" and v <= 0:
+                return True
+            return v <= th["iter.ept_rel"]
+
+        ok &= apply_gate(
+            "iter.ept_rel",
+            ept_rel,
+            _ept_predicate,
+            threshold=th["iter.ept_rel"],
+        )
 
         acc_iter = metrics.get("accuracy")
         acc_dense = None if dense_metrics is None else dense_metrics.get("accuracy")
@@ -145,7 +215,8 @@ def verdict(
         ok &= apply_gate(
             "quality.acc_drop_pp",
             acc_drop_pp,
-            lambda v: v >= -th["quality.acc_drop_pp_max"],
+            lambda v: v >= th["quality.acc_drop_pp"],
+            threshold=th["quality.acc_drop_pp"],
         )
 
     metrics["verdict"] = "pass" if ok else "fail"

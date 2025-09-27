@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "IASP Capture Manifest",
+  "type": "object",
+  "required": ["version", "captures"],
+  "properties": {
+    "version": {"type": "string"},
+    "captures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["layer", "samples", "path", "dtype"],
+        "properties": {
+          "layer": {"type": "string"},
+          "samples": {"type": "integer", "minimum": 1},
+          "path": {"type": "string"},
+          "dtype": {"type": "string"},
+          "device": {"type": "string"},
+          "checksum": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

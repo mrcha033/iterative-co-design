@@ -25,7 +25,12 @@ except Exception:  # pragma: no cover
     NMLinear = None  # type: ignore[assignment]
     TopKMasker = None  # type: ignore[assignment]
 
-__all__ = ["MaskTrainingConfig", "run_mask_training", "iter_masked_modules"]
+__all__ = [
+    "MaskTrainingConfig",
+    "run_mask_training",
+    "iter_masked_modules",
+    "validate_mask_training_config",
+]
 
 
 @dataclass
@@ -99,6 +104,21 @@ def iter_masked_modules(model: torch.nn.Module) -> Iterable[NMLinear]:
     if NMLinear is None:
         return []
     return (m for m in model.modules() if isinstance(m, NMLinear))
+
+
+def validate_mask_training_config(cfg: "MaskTrainingConfig") -> None:
+    """Validate annealing/optimizer settings before training."""
+
+    if cfg.steps < 0:
+        raise ValueError("steps must be non-negative")
+    if cfg.anneal_steps is not None and cfg.anneal_steps < 0:
+        raise ValueError("anneal_steps must be non-negative when provided")
+    if cfg.temperature_final > cfg.temperature_init:
+        raise ValueError("temperature_final must not exceed temperature_init")
+    if cfg.grad_clip is not None and cfg.grad_clip <= 0:
+        raise ValueError("grad_clip must be positive when provided")
+    if cfg.stash_optimizer and not cfg.state_key:
+        raise ValueError("state_key must be non-empty when stash_optimizer=True")
 
 
 def _configure_masker(masker: TopKMasker, cfg: MaskTrainingConfig) -> None:

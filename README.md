@@ -76,7 +76,8 @@ Prereqs
   - `bash scripts/repro_smoke.sh`
 - Outputs: `runs/smoke/{linear,iter}/` with:
   - `W.csr.npz`, `w.meta.json` — co-access graph snapshot
-  - `perm_before.json`, `stats_before.json` — baseline permutation + stats
+- `perm_before.json`, `stats_before.json` — baseline permutation + stats
+- `perm_active.json` — currently active permutation after acceptance/rollback
   - `perm_after.json`, `stats_after.json` — iterative permutation + stats
   - `metrics.json` — latency/L2/EpT (nulls if disabled), acceptance gate info
   - `report.{html,csv}`, `run.log`, `config.lock.json`

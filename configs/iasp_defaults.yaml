@@ -1,0 +1,13 @@
+correlation:
+  samples: 16
+  layers:
+    - encoder.layer.0.output
+  dtype: float32
+  whiten: true
+  transfer_batch_size: 4
+  seed: 123
+clustering:
+  method: louvain
+  modularity_floor: 0.35
+  fallback_method: spectral
+  runtime_budget: 0.5

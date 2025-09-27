@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Measurement Manifest",
+  "type": "object",
+  "required": ["mode", "metrics", "confidence"],
+  "properties": {
+    "mode": {"type": "string"},
+    "metrics": {
+      "type": "object",
+      "additionalProperties": {"type": "number"}
+    },
+    "confidence": {
+      "type": "object",
+      "properties": {
+        "interval": {"type": "string"},
+        "level": {"type": "number"}
+      },
+      "required": ["interval", "level"],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

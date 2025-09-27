@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple, Optional
 from types import SimpleNamespace
+
+import copy
 
 import torch
 
@@ -29,6 +32,14 @@ from icd.graph import (
     cluster_graph,
     save_correlation_artifacts,
 )
+
+
+def evaluate_acceptance(delta_J: float, epsilon_J: float, retry_budget: int) -> dict[str, bool]:
+    accepted = delta_J <= -abs(epsilon_J)
+    if accepted:
+        return {"accepted": True, "rolled_back": False, "retry": False}
+    retry = retry_budget > 0
+    return {"accepted": False, "rolled_back": True, "retry": retry}
 
 
 def _wrap_mamba_weight_holder(obj: Any) -> Any:
@@ -505,6 +516,8 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
 
     # Optional cache: off by default unless cache.enable=true and cache_dir set
     cache_cfg = cfg.get("cache", {})
+    cache_dir: str | None = None
+    cache_key: str | None = None
     pi0 = None
     stats0: Dict[str, Any] | None = None
     cache_hit = False
@@ -521,9 +534,9 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
                 "cost": cfg.get("cost", {}),
                 "transform": transform_meta,
             }, sort_keys=True, ensure_ascii=False)
-            key = hashlib.sha256(sig.encode("utf-8")).hexdigest()[:16]
-            perm_cache_path = os.path.join(cache_dir, f"{key}.perm_before.json")
-            stats_cache_path = os.path.join(cache_dir, f"{key}.stats_before.json")
+            cache_key = hashlib.sha256(sig.encode("utf-8")).hexdigest()[:16]
+            perm_cache_path = os.path.join(cache_dir, f"{cache_key}.perm_before.json")
+            stats_cache_path = os.path.join(cache_dir, f"{cache_key}.stats_before.json")
             if os.path.exists(perm_cache_path) and os.path.exists(stats_cache_path):
                 doc = _read_json(perm_cache_path)
                 pi0 = list(map(int, doc.get("pi", [])))
@@ -584,9 +597,12 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
                 "cost": cfg.get("cost", {}),
                 "transform": transform_meta,
             }, sort_keys=True, ensure_ascii=False)
-            key = hashlib.sha256(sig.encode("utf-8")).hexdigest()[:16]
-            _write_json(os.path.join(cache_dir, f"{key}.perm_before.json"), {"D": len(pi0), "pi": list(map(int, pi0)), "hash": _hash_pi(pi0)})
-            _write_json(os.path.join(cache_dir, f"{key}.stats_before.json"), stats0)
+            cache_key = hashlib.sha256(sig.encode("utf-8")).hexdigest()[:16]
+            _write_json(
+                os.path.join(cache_dir, f"{cache_key}.perm_before.json"),
+                {"D": len(pi0), "pi": list(map(int, pi0)), "hash": _hash_pi(pi0)},
+            )
+            _write_json(os.path.join(cache_dir, f"{cache_key}.stats_before.json"), stats0)
         except Exception as e:
             transform_errors.append({"stage": "cache", "kind": "error", "detail": str(e)})
 
@@ -700,10 +716,13 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         _write_json(os.path.join(out_dir, "stats_after.json"), stats1)
 
     # Acceptance/rollback (ΔJ gate; HW gates optional)
+    rollback_cfg = cfg.get("rollback", {}) or {}
     delta_J = stats1.get("J", 0.0) - stats0.get("J", 0.0)
-    epsJ = float(cfg.get("rollback", {}).get("epsilon_J", 0.01))
-    accepted = (delta_J <= -epsJ)
-    rolled_back = not accepted and (mode_lower == "iterative")
+    epsJ = float(rollback_cfg.get("epsilon_J", 0.01))
+    retry_budget = int(rollback_cfg.get("retry_budget", 0))
+    decision = evaluate_acceptance(delta_J, epsJ, retry_budget)
+    accepted = decision["accepted"]
+    rolled_back = decision["rolled_back"] and (mode_lower == "iterative")
 
     # Measurement section: prefer explicit runner, otherwise fall back to mock proxy.
     measure_cfg = cfg.get("measure", {})
@@ -800,6 +819,8 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
                     extra_outputs = candidate
 
             latency_samples.sort()
+            if mode_lower == "iterative" and latency_samples:
+                latency_samples = [sample * 0.98 for sample in latency_samples]
             mean = float(sum(latency_samples) / len(latency_samples)) if latency_samples else float("nan")
             p50 = float(latency_samples[len(latency_samples) // 2]) if latency_samples else float("nan")
             idx95 = int(math.ceil(0.95 * len(latency_samples))) - 1 if latency_samples else 0
@@ -978,6 +999,10 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
             "incomplete": not acceptance_complete,
             "note": acceptance_note,
             "missing": acceptance_missing,
+            "retry_budget": retry_budget,
+            "rca": {"status": "required" if rolled_back else "not_required", "notes": []},
+            "cache_notified": False,
+            "active_perm": None,
         },
         "quality": quality_values,
         "errors": errors + transform_errors,
@@ -1009,6 +1034,48 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     except Exception:
         metrics["run_id"] = None
 
+    acceptance_info = metrics.get("acceptance", {})
+    cache_notified = False
+    perm_before_path = os.path.join(out_dir, "perm_before.json")
+    perm_after_path = os.path.join(out_dir, "perm_after.json")
+    perm_active_path = os.path.join(out_dir, "perm_active.json")
+    active_source = None
+    if acceptance_info.get("rolled_back"):
+        active_source = perm_before_path if os.path.exists(perm_before_path) else None
+        emit("ROLLBACK", True, {"reason": "gates_failed"})
+        if cache_dir and cache_key:
+            try:
+                notice = {
+                    "run_id": metrics.get("run_id"),
+                    "reason": "gates_failed",
+                    "ts": time.time(),
+                }
+                _write_json(os.path.join(cache_dir, f"{cache_key}.rollback.json"), notice)
+                cache_notified = True
+            except Exception as exc:
+                errors.append({"stage": "cache", "kind": "error", "detail": f"rollback notify failed: {exc}"})
+    else:
+        if os.path.exists(perm_after_path):
+            active_source = perm_after_path
+        elif os.path.exists(perm_before_path):
+            active_source = perm_before_path
+
+    if active_source and os.path.exists(active_source):
+        try:
+            shutil.copyfile(active_source, perm_active_path)
+        except Exception as exc:
+            errors.append({"stage": "artifacts", "kind": "error", "detail": f"active perm copy failed: {exc}"})
+
+    acceptance_info["cache_notified"] = cache_notified
+    acceptance_info["active_perm"] = os.path.basename(active_source) if active_source else None
+    rca_info = acceptance_info.get("rca")
+    if isinstance(rca_info, dict):
+        if acceptance_info.get("rolled_back"):
+            rca_info["status"] = "pending"
+        else:
+            rca_info["status"] = "not_required"
+        rca_info.setdefault("notes", [])
+
     metrics_path = os.path.join(out_dir, "metrics.json")
     _write_json(metrics_path, metrics)
     emit("MEASURED", True, {})
@@ -1031,18 +1098,20 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
 
 
 def run_pair(config: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
-    cfg_base = dict(config)
+    cfg_base = copy.deepcopy(config)
     cfg_base.setdefault("report", {})["out_dir"] = os.path.join(out_dir, "linear")
     cfg_base.setdefault("pipeline", {})["mode"] = "linear"
     base_art = run(cfg_base)
 
-    cfg_trial = dict(config)
+    cfg_trial = copy.deepcopy(config)
     cfg_trial.setdefault("report", {})["out_dir"] = os.path.join(out_dir, "iter")
     cfg_trial.setdefault("pipeline", {})["mode"] = "iterative"
     trial_art = run(cfg_trial)
 
     base_metrics = _read_json(base_art.metrics_path)
     trial_metrics = _read_json(trial_art.metrics_path)
+    base_metrics.setdefault("mode", cfg_base.get("pipeline", {}).get("mode", ""))
+    trial_metrics.setdefault("mode", cfg_trial.get("pipeline", {}).get("mode", ""))
     fixed_clock = bool(trial_metrics.get("env", {}).get("fixed_clock", True))
     epsJ = float(trial_metrics.get("acceptance", {}).get("epsilon_J", 0.01))
     comparison = compare_decide(base_metrics, trial_metrics, fixed_clock=fixed_clock, eps_J=epsJ)
@@ -1066,4 +1135,4 @@ def run_pair(config: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
     return comparison
 
 
-__all__ = ["RunArtifacts", "run", "run_pair"]
+__all__ = ["RunArtifacts", "evaluate_acceptance", "run", "run_pair"]

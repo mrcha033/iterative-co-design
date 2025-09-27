@@ -1,0 +1,16 @@
+mask_training:
+  steps: 200
+  temperature_init: 1.0
+  temperature_final: 0.1
+  anneal_steps: 200
+  optimizer: adamw
+  lr: 0.0005
+  weight_decay: 0.01
+  grad_clip: 1.0
+  seed: 17
+  stash_optimizer: true
+  state_key: hds.optimizer
+structured_sparsity:
+  type: 2:4
+  rate: 0.5
+  modules: null

@@ -2,8 +2,12 @@ from __future__ import annotations
 
 """Permutation application utilities for HuggingFace runners."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
+import importlib
+import importlib.util
+import os
+from importlib import metadata
 from typing import Iterable, Mapping, Any
 
 import torch
@@ -24,6 +28,9 @@ __all__ = [
     "apply_pi_to_mamba",
     "perm_signature",
     "perm_signature_from_iterable",
+    "StableHLOCapability",
+    "detect_stablehlo_capability",
+    "require_stablehlo_capability",
 ]
 
 
@@ -115,6 +122,86 @@ def perm_signature_from_iterable(seq: Iterable[int]) -> str:
 
 def perm_signature(pi: torch.LongTensor) -> str:
     return perm_signature_from_iterable(pi.detach().cpu().tolist())
+
+
+@dataclass(frozen=True)
+class StableHLOCapability:
+    """Represents the runtime readiness of StableHLO integrations."""
+
+    available: bool
+    reason: str | None = None
+    details: Mapping[str, object] = field(default_factory=dict)
+
+    def __bool__(self) -> bool:  # pragma: no cover - provided for ergonomics
+        return self.available
+
+
+_DISABLE_ENV = "ICD_DISABLE_STABLEHLO"
+
+
+def _is_env_disabled(env: Mapping[str, str]) -> str | None:
+    raw = env.get(_DISABLE_ENV)
+    if raw is None:
+        return None
+    normalized = raw.strip().lower()
+    if normalized in {"0", "", "false", "no", "off"}:
+        return None
+    return f"StableHLO disabled via {_DISABLE_ENV}={raw}"
+
+
+def detect_stablehlo_capability(env: Mapping[str, str] | None = None) -> StableHLOCapability:
+    """Probe whether StableHLO dependencies are importable.
+
+    Args:
+        env: Optional environment mapping. Defaults to :data:`os.environ`.
+
+    Returns:
+        A :class:`StableHLOCapability` describing availability and failure reason.
+    """
+
+    env_map = os.environ if env is None else env
+    disabled_reason = _is_env_disabled(env_map)
+    if disabled_reason is not None:
+        return StableHLOCapability(False, disabled_reason, {"stablehlo": False})
+
+    spec = importlib.util.find_spec("stablehlo")
+    if spec is None:
+        return StableHLOCapability(
+            False,
+            "Python package 'stablehlo' is not importable. Install stablehlo>=0.14.",
+            {"stablehlo": False},
+        )
+
+    try:
+        module = importlib.import_module("stablehlo")
+    except Exception as exc:  # pragma: no cover - defensive guardrail
+        return StableHLOCapability(
+            False,
+            f"Importing 'stablehlo' failed: {exc}",
+            {"stablehlo": True, "exception": repr(exc)},
+        )
+
+    details: dict[str, object] = {"stablehlo": True, "module": getattr(module, "__name__", "stablehlo")}
+    try:
+        version = metadata.version("stablehlo")
+    except metadata.PackageNotFoundError:  # pragma: no cover - metadata edge case
+        version = None
+    except Exception:  # pragma: no cover - fallback for non-standard metadata
+        version = None
+    if version is not None:
+        details["version"] = version
+
+    return StableHLOCapability(True, None, details)
+
+
+def require_stablehlo_capability(env: Mapping[str, str] | None = None) -> StableHLOCapability:
+    """Ensure StableHLO dependencies are available, raising on failure."""
+
+    capability = detect_stablehlo_capability(env=env)
+    if not capability.available:
+        reason = capability.reason or "StableHLO capability detection failed"
+        raise RuntimeError(reason)
+    return capability
 
 
 @dataclass
