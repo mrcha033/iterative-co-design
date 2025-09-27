@@ -821,3 +821,29 @@ Software. https://github.com/mrcha033/iterative-co-design
 ```
 
 See `CITATION.cff` for a citation file (CFF) that GitHub can render and export to BibTeX.
+
+## Phase 1 Infrastructure Deliverables
+
+### TVM Auto-tuning
+
+The `icd.adapters.tvm_export` module provides first-class support for exporting
+PyTorch modules into TVM Relay, executing AutoTVM or Ansor searches, and saving
+compiled artifacts.  Use `scripts/run_autotvm.py` to run the pipeline from the
+command line with configurable targets, tuning trials, and artifact directories.
+
+### Cross-vendor Profiling
+
+`icd.measure.rocm_profiler` and `icd.measure.vtune_profiler` expose consistent
+interfaces for ROCm `rocprof` and Intel `vtune` executions, respectively.  Each
+wrapper builds the appropriate command line invocation, captures metrics, and
+returns structured dictionaries so higher-level experiments can remain vendor
+agnostic.
+
+### Production Benchmarking
+
+`deploy/triton` now contains a Docker Compose stack for Triton Inference Server
+paired with Prometheus and Grafana monitoring.  Dashboards ship with pre-wired
+panels for request throughput and latency.  The
+`scripts/production_benchmark.py` load test utility can be used to generate
+synthetic traffic against a deployment and emit JSON reports suitable for a
+canary analysis pipeline.
