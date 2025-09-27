@@ -8,6 +8,37 @@
       "type": "object",
       "properties": {
         "mode": {"enum": ["linear", "iterative"]},
+        "transform_stage": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "default",
+            "pre",
+            "pre_w",
+            "before",
+            "before_w",
+            "quant_first",
+            "post",
+            "post_perm",
+            "after",
+            "after_perm",
+            "both",
+            "pre_and_post"
+          ]
+        },
+        "post_transform_repermute": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "never",
+            "off",
+            "disabled",
+            "always",
+            "force",
+            "delta",
+            "delta_only"
+          ]
+        },
         "repermute_on_delta": {"type": "boolean"},
         "repeats": {"type": "integer", "minimum": 1},
         "warmup_iter": {"type": "integer", "minimum": 0},

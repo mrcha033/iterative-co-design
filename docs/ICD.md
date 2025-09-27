@@ -133,6 +133,8 @@ def measure_power_nvml(*, sample_hz:int=10, duration_s:int) -> dict: ...
 ```yaml
 pipeline:
   mode: iterative              # linear | iterative
+  transform_stage: post        # pre | post | both (pre = run transforms before building W)
+  post_transform_repermute: auto  # auto | never | delta | always (controls re-permute after transforms)
   repermute_on_delta: false    # if true, re-permute when transform_meta.delta_layout=true (even in linear mode)
   repeats: 1000
   warmup_iter: 50
@@ -172,6 +174,8 @@ cache: {enable: false, cache_dir: ".icd_cache"}
 ```
 
 * **Contract**: If `pipeline.mode=linear`, skip Step 4 (re-permute) unless `repermute_on_delta=true` and the transform metadata contains `delta_layout=true`.
+* **Transform stage**: `pipeline.transform_stage=pre` applies transforms (e.g., quantization) before `build_w`, ensuring the affinity matrix reflects the transformed weights. `post` keeps the legacy order, and `both` runs transforms in both places.
+* **Re-permute policy**: `pipeline.post_transform_repermute` overrides the default re-permutation behaviour (`auto`). Set `never` for Quant→Permute workflows, `delta` to only re-run when layout changes, or `always` to force a second permutation.
 * **Defaults**: Fall back to PRD/SAS defaults when unspecified.
 * **Iterative guard**: With `pipeline.mode=iterative`, at least one of `transform.*.enable=true` or `graph.correlation.enable=true` must be set.
 * **Cache**: Active only when both `cache.enable=true` and `cache.cache_dir` are provided.

@@ -17,5 +17,6 @@ run_pair() {
 
 run_pair bert_large configs/bert_large.json
 run_pair mamba_2p8b configs/mamba_2p8b.json
+run_pair mamba_3b configs/mamba_3b.json
 
-echo "Large-model repro run completed. Outputs in ${OUT_ROOT}/{bert_large_*,mamba_2p8b_*}."
+echo "Large-model repro run completed. Outputs in ${OUT_ROOT}/{bert_large_*,mamba_2p8b_*,mamba_3b_*}."

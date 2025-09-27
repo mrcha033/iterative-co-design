@@ -342,6 +342,82 @@ def test_transform_stage_uses_loaded_model(tmp_path: Path, monkeypatch) -> None:
     assert model_obj.__class__.__name__ == "DummyModel"
 
 
+def test_quant_pre_stage_updates_graph_and_w(tmp_path: Path, monkeypatch) -> None:
+    class QuantModel(DummyModel):
+        pass
+
+    recorded: Dict[str, Any] = {}
+
+    def loader(*args, **kwargs):
+        model = QuantModel()
+        recorded["loader_model"] = model
+        return model, ("example",)
+
+    def fake_apply_quant(model, dtype="int8", method="ptq-minmax"):
+        recorded["quant_input"] = model
+        quantized = QuantModel()
+        quantized.quantized = True
+        recorded["quant_output"] = quantized
+        return quantized, {"delta_layout": True, "quant": {"dtype": dtype, "method": method}}
+
+    class FakeW:
+        def __init__(self, model):
+            self._model = model
+            self.shape = (1, 1)
+            self.meta = {"source": "pytorch"}
+
+        def nnz(self) -> int:
+            return 1
+
+    def fake_build_w(*, source: str, **kwargs):
+        recorded["build_source"] = source
+        recorded["build_model"] = kwargs.get("model")
+        recorded["build_inputs"] = kwargs.get("example_inputs")
+        return FakeW(kwargs.get("model"))
+
+    def fake_save_w(path: str, W) -> None:
+        recorded.setdefault("saved_w", path)
+
+    def fake_fit_permutation(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None, method=None):
+        recorded["fit_w_model"] = getattr(W, "_model", None)
+        return [0], {"J": 0.0, "C": 0.0, "Q": 0.0}
+
+    monkeypatch.setattr("tests.unit.test_runtime_orchestrator.dummy_model_loader", loader)
+    monkeypatch.setattr("icd.runtime.orchestrator.build_w", fake_build_w)
+    monkeypatch.setattr("icd.runtime.orchestrator.save_w_npz", fake_save_w)
+    monkeypatch.setattr("icd.runtime.orchestrator.fit_permutation", fake_fit_permutation)
+    monkeypatch.setattr("icd.adapters.quant.apply_quant", fake_apply_quant)
+
+    cfg = {
+        "report": {"out_dir": str(tmp_path / "quant_pre")},
+        "pipeline": {
+            "mode": "iterative",
+            "no_measure": True,
+            "transform_stage": "pre",
+            "post_transform_repermute": "never",
+        },
+        "graph": {
+            "source": "pytorch",
+            "loader": "tests.unit.test_runtime_orchestrator:dummy_model_loader",
+        },
+        "solver": {"time_budget_s": 0.01, "refine_steps": 1, "rng_seed": 0},
+        "transform": {"quant": {"enable": True, "method": "ptq-minmax", "dtype": "int8"}},
+    }
+
+    run(cfg)
+
+    assert recorded.get("quant_input") is recorded.get("loader_model")
+    assert recorded.get("build_model") is recorded.get("quant_output")
+    assert recorded.get("fit_w_model") is recorded.get("quant_output")
+    assert recorded.get("build_inputs") == ("example",)
+
+    metrics = json.loads((tmp_path / "quant_pre" / "metrics.json").read_text(encoding="utf-8"))
+    tmeta = metrics.get("transform_meta", {})
+    assert tmeta.get("delta_layout") is True
+    assert any(meta.get("stage") == "pre" for meta in tmeta.get("metas", []))
+    assert "Q" in tmeta.get("triggers", [])
+
+
 def test_run_with_correlation_and_clustering(tmp_path: Path, monkeypatch) -> None:
     captured: Dict[str, Any] = {"clusters": []}
 

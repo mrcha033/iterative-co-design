@@ -11,6 +11,34 @@ This guide shows how to run the iterative layout optimization pipeline from sour
 - Optional profiling/power: set `ICD_NCU_CMD=...` and add `--override measure.ncu_enable=true`, `--override measure.power_enable=true`
 - Custom runner: provide a dotted path via `--override pipeline.runner="your.module:runner_fn"` and optional context with `--override pipeline.runner_context={"tokens":1024}`
 
+### Quantization/Permutation strategies
+
+The following override sets make the three supported strategies explicit (combine with a config such as `configs/mamba.json` that enables a quantizable loader):
+
+* **Quant → Permute** (build `W` from quantized weights):
+
+  ```bash
+  --override transform.quant.enable=true \
+  --override pipeline.transform_stage=pre \
+  --override pipeline.post_transform_repermute=never
+  ```
+
+* **Permute → Quant** (legacy order, skip re-permutation):
+
+  ```bash
+  --override transform.quant.enable=true \
+  --override pipeline.transform_stage=post \
+  --override pipeline.post_transform_repermute=never
+  ```
+
+* **Permute → Quant → Re-permute** (quantize after the first permutation, then refine):
+
+  ```bash
+  --override transform.quant.enable=true \
+  --override pipeline.transform_stage=post \
+  --override pipeline.post_transform_repermute=always
+  ```
+
 ## Requirements
 - Python 3.10+
 - No GPU is required for the mock pipeline; Nsight/NVML are optional for profiling/power.
@@ -71,6 +99,31 @@ Both configs rely on two new fields:
 
 Set `"device": "cuda"` in the loader kwargs to target a GPU (ensure the correct PyTorch wheel is installed).
 When running on shared machines consider setting `HF_HOME`/`TRANSFORMERS_CACHE` to control HuggingFace download paths.
+
+## Vision & Graph Experiments (TorchVision / PyG)
+
+Additional configs cover computer-vision and graph workloads. Install the optional dependencies first:
+
+```bash
+pip install torchvision
+pip install torch-geometric ogb
+```
+
+TorchVision will download pretrained checkpoints on first use (set `TORCH_HOME` to control the cache path). The `ogbn-arxiv`
+dataset is fetched through `ogb`; use `OGB_CACHE_ROOT` to relocate the dataset cache if needed.
+
+Run the configs once dependencies are available:
+
+```bash
+# ResNet-50 vision trace (mock runner context)
+python -m icd.cli.main run -c configs/resnet50.json --out runs/resnet50_iter
+
+# GCN on OGBN-ArXiv (graph loader + mock runner context)
+python -m icd.cli.main run -c configs/gcn_arxiv.json --out runs/gcn_iter
+```
+
+Both configs reuse the `graph.loader`/`pipeline.runner_context.model_loader` pattern introduced for HuggingFace models. Swap the
+mock runner for your measurement harness when collecting real latency or accuracy numbers.
 
 ## Validation & Schema
 

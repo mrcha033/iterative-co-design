@@ -226,6 +226,150 @@ def _make_clustering_config(data: Dict[str, Any]) -> ClusteringConfig:
     )
 
 
+def _execute_transform_stage(
+    stage: str,
+    cfg: Dict[str, Any],
+    transform_cfg: Dict[str, Any],
+    hf_cache: Dict[str, Any],
+    graph_model: Any,
+    graph_example_inputs: Any,
+) -> tuple[
+    Any,
+    Any,
+    list[Dict[str, Any]],
+    list[str],
+    bool,
+    list[Dict[str, str]],
+    list[Dict[str, Any]],
+]:
+    """Run enabled transforms for a given stage and return updated state."""
+
+    transform_model = graph_model
+    transform_inputs = graph_example_inputs
+    metas: list[Dict[str, Any]] = []
+    triggers: list[str] = []
+    delta_layout_any = False
+    transform_errors: list[Dict[str, str]] = []
+    mask_training_runs: list[Dict[str, Any]] = []
+
+    try:
+        if isinstance(transform_cfg, dict):
+            # Sparsity
+            s = transform_cfg.get("sparsity", {}) if transform_cfg.get("sparsity", {}).get("enable") else None
+            if s:
+                from icd.adapters.sparsity import apply_sparsity
+
+                if transform_model is None:
+                    try:
+                        transform_model, transform_inputs = _resolve_transform_targets(
+                            cfg, transform_model, transform_inputs, hf_cache
+                        )
+                        if transform_model is not None:
+                            graph_model = transform_model
+                            graph_example_inputs = transform_inputs
+                    except Exception as e:  # pragma: no cover - defensive
+                        transform_errors.append({"stage": "transform", "kind": "error", "detail": str(e)})
+                        transform_model = None
+
+                transform_model, m = apply_sparsity(
+                    transform_model,
+                    type=s.get("type", "2:4"),
+                    rate=float(s.get("rate", 0.0)),
+                )
+                train_cfg = s.get("train")
+                if train_cfg and transform_model is not None:
+                    try:
+                        from icd.hds.training import MaskTrainingConfig, run_mask_training
+
+                        mask_cfg = MaskTrainingConfig.from_dict(train_cfg)
+                        training_meta = run_mask_training(transform_model, mask_cfg, context=hf_cache)
+                        training_meta = dict(training_meta)
+                        training_meta["stage"] = stage
+                        m.setdefault("sparsity", {})["mask_training"] = training_meta
+                        if training_meta.get("steps", 0):
+                            mask_training_runs.append(training_meta)
+                            triggers.append("S-train")
+                    except Exception as exc:  # pragma: no cover - defensive
+                        transform_errors.append(
+                            {
+                                "stage": "sparsity_train",
+                                "kind": "error",
+                                "detail": str(exc),
+                            }
+                        )
+                m["stage"] = stage
+                metas.append(m)
+                if m.get("delta_layout"):
+                    triggers.append("S")
+                delta_layout_any = bool(delta_layout_any or m.get("delta_layout"))
+                if transform_model is not None:
+                    hf_cache["model"] = transform_model
+                    hf_cache["sparsity_applied"] = True
+                    if transform_inputs is not None:
+                        hf_cache.setdefault("example_inputs", transform_inputs)
+            # Quant
+            q = transform_cfg.get("quant", {}) if transform_cfg.get("quant", {}).get("enable") else None
+            if q:
+                from icd.adapters.quant import apply_quant
+
+                if transform_model is None:
+                    try:
+                        transform_model, transform_inputs = _resolve_transform_targets(
+                            cfg, transform_model, transform_inputs, hf_cache
+                        )
+                        if transform_model is not None:
+                            graph_model = transform_model
+                            graph_example_inputs = transform_inputs
+                    except Exception as e:  # pragma: no cover - defensive
+                        transform_errors.append({"stage": "transform", "kind": "error", "detail": str(e)})
+                        transform_model = None
+
+                transform_model, m = apply_quant(
+                    transform_model,
+                    dtype=q.get("dtype", "int8"),
+                    method=q.get("method", "ptq-minmax"),
+                )
+                m["stage"] = stage
+                metas.append(m)
+                if m.get("delta_layout"):
+                    triggers.append("Q")
+                delta_layout_any = bool(delta_layout_any or m.get("delta_layout"))
+                if transform_model is not None:
+                    hf_cache["model"] = transform_model
+                    hf_cache["quant_applied"] = True
+                    if transform_inputs is not None:
+                        hf_cache.setdefault("example_inputs", transform_inputs)
+            # KV cache
+            k = transform_cfg.get("kv", {}) if transform_cfg.get("kv", {}).get("enable") else None
+            if k:
+                from icd.adapters.kv import apply_kvcache
+
+                _, m = apply_kvcache(transform_model, block=int(k.get("block", 128)), drop=float(k.get("drop", 0.0)))
+                m["stage"] = stage
+                metas.append(m)
+                if m.get("delta_layout"):
+                    triggers.append("K")
+                delta_layout_any = bool(delta_layout_any or m.get("delta_layout"))
+    except Exception as e:
+        # Transform errors are non-fatal in mock path
+        transform_errors.append({"stage": "transform", "kind": "error", "detail": str(e)})
+
+    if transform_model is not None:
+        graph_model = transform_model
+        if transform_inputs is not None:
+            graph_example_inputs = transform_inputs
+
+    return (
+        graph_model,
+        graph_example_inputs,
+        metas,
+        triggers,
+        delta_layout_any,
+        transform_errors,
+        mask_training_runs,
+    )
+
+
 def _resolve_transform_targets(
     cfg: Dict[str, Any],
     model: Any,
@@ -320,6 +464,34 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
                 transform_enabled = True
                 break
 
+    transform_stage_cfg = str(pipeline_cfg.get("transform_stage", "post"))
+    transform_stage_token = transform_stage_cfg.lower().replace("-", "_")
+    if transform_stage_token in {"auto", "default", ""}:
+        transform_stage_token = "post"
+    run_transform_pre = False
+    run_transform_post = False
+    if transform_enabled:
+        if transform_stage_token in {"both", "pre_and_post"}:
+            run_transform_pre = True
+            run_transform_post = True
+        else:
+            run_transform_pre = transform_stage_token in {
+                "pre",
+                "pre_w",
+                "before",
+                "before_w",
+                "quant_first",
+            }
+            run_transform_post = transform_stage_token in {
+                "post",
+                "post_perm",
+                "after",
+                "after_perm",
+            }
+            if not (run_transform_pre or run_transform_post):
+                # Fallback to post stage for backwards compatibility
+                run_transform_post = True
+
     # Build W (mock or pytorch)
     gcfg = cfg.get("graph", {})
     source = gcfg.get("source", "mock")
@@ -348,6 +520,12 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     else:
         graph_kwargs = {k: v for k, v in gcfg.items() if k not in excluded_keys}
 
+    transform_metas: list[Dict[str, Any]] = []
+    transform_triggers: list[str] = []
+    delta_layout_any = False
+    transform_errors: list[Dict[str, str]] = []
+    mask_training_records: list[Dict[str, Any]] = []
+
     if source == "pytorch":
         if "model" not in graph_kwargs:
             loader_path = gcfg.get("loader")
@@ -366,6 +544,39 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
             collected = _collect_mamba_modules(graph_model)
             if collected:
                 mamba_modules = collected
+
+    transform_model = graph_model
+    transform_inputs = graph_example_inputs
+
+    if run_transform_pre:
+        (
+            graph_model,
+            graph_example_inputs,
+            stage_metas,
+            stage_triggers,
+            stage_delta,
+            stage_errors,
+            stage_mask_runs,
+        ) = _execute_transform_stage(
+            "pre",
+            cfg,
+            transform_cfg,
+            hf_cache,
+            graph_model,
+            graph_example_inputs,
+        )
+        transform_model = graph_model
+        transform_inputs = graph_example_inputs
+        transform_metas.extend(stage_metas)
+        transform_triggers.extend(stage_triggers)
+        delta_layout_any = bool(delta_layout_any or stage_delta)
+        transform_errors.extend(stage_errors)
+        mask_training_records.extend(stage_mask_runs)
+        if source == "pytorch":
+            if graph_model is not None:
+                graph_kwargs["model"] = graph_model
+            if graph_example_inputs is not None:
+                graph_kwargs["example_inputs"] = graph_example_inputs
 
     W = build_w(source=source, **graph_kwargs)
     emit("W_BUILT", True, {"nnz": W.nnz(), "shape": W.shape, "source": W.meta.get("source")})
@@ -428,111 +639,41 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         _write_json(meta_path, _meta_doc)
         _write_json(ops_path, ops_doc)
 
-    # Prepare transform meta placeholder early (used in cache keys below)
-    transform_meta: Dict[str, Any] = {"delta_layout": False, "metas": [], "triggers": []}
-
-    # Optional transforms (S/Q/K): aggregate metas; keep mock no-op by default
-    tcfg = cfg.get("transform", {})
-    metas: list[Dict[str, Any]] = []
-    triggers: list[str] = []
-    delta_layout_any = False
-    transform_errors: list[Dict[str, str]] = []
-    try:
+    if run_transform_post:
+        (
+            graph_model,
+            graph_example_inputs,
+            stage_metas,
+            stage_triggers,
+            stage_delta,
+            stage_errors,
+            stage_mask_runs,
+        ) = _execute_transform_stage(
+            "post",
+            cfg,
+            transform_cfg,
+            hf_cache,
+            graph_model,
+            graph_example_inputs,
+        )
+        transform_model = graph_model
+        transform_inputs = graph_example_inputs
+        transform_metas.extend(stage_metas)
+        transform_triggers.extend(stage_triggers)
+        delta_layout_any = bool(delta_layout_any or stage_delta)
+        transform_errors.extend(stage_errors)
+        mask_training_records.extend(stage_mask_runs)
+    else:
         transform_model = graph_model
         transform_inputs = graph_example_inputs
 
-        if isinstance(tcfg, dict):
-            # Sparsity
-            s = tcfg.get("sparsity", {}) if tcfg.get("sparsity", {}).get("enable") else None
-            if s:
-                from icd.adapters.sparsity import apply_sparsity
-
-                if transform_model is None:
-                    try:
-                        transform_model, transform_inputs = _resolve_transform_targets(cfg, transform_model, transform_inputs, hf_cache)
-                        if transform_model is not None:
-                            graph_model = transform_model
-                            graph_example_inputs = transform_inputs
-                    except Exception as e:  # pragma: no cover - defensive
-                        transform_errors.append({"stage": "transform", "kind": "error", "detail": str(e)})
-                        transform_model = None
-
-                transform_model, m = apply_sparsity(
-                    transform_model,
-                    type=s.get("type", "2:4"),
-                    rate=float(s.get("rate", 0.0)),
-                )
-                train_cfg = s.get("train")
-                if train_cfg and transform_model is not None:
-                    try:
-                        from icd.hds.training import MaskTrainingConfig, run_mask_training
-
-                        mask_cfg = MaskTrainingConfig.from_dict(train_cfg)
-                        training_meta = run_mask_training(transform_model, mask_cfg, context=hf_cache)
-                        m.setdefault("sparsity", {})["mask_training"] = training_meta
-                        if training_meta.get("steps", 0):
-                            transform_meta.setdefault("mask_training", []).append(training_meta)
-                            triggers.append("S-train")
-                    except Exception as exc:  # pragma: no cover - defensive
-                        transform_errors.append(
-                            {
-                                "stage": "sparsity_train",
-                                "kind": "error",
-                                "detail": str(exc),
-                            }
-                        )
-                metas.append(m)
-                if m.get("delta_layout"):
-                    triggers.append("S")
-                delta_layout_any = bool(delta_layout_any or m.get("delta_layout"))
-                if transform_model is not None:
-                    hf_cache["model"] = transform_model
-                    hf_cache["sparsity_applied"] = True
-            # Quant
-            q = tcfg.get("quant", {}) if tcfg.get("quant", {}).get("enable") else None
-            if q:
-                from icd.adapters.quant import apply_quant
-
-                if transform_model is None:
-                    try:
-                        transform_model, transform_inputs = _resolve_transform_targets(cfg, transform_model, transform_inputs, hf_cache)
-                        if transform_model is not None:
-                            graph_model = transform_model
-                            graph_example_inputs = transform_inputs
-                    except Exception as e:  # pragma: no cover - defensive
-                        transform_errors.append({"stage": "transform", "kind": "error", "detail": str(e)})
-                        transform_model = None
-
-                transform_model, m = apply_quant(
-                    transform_model,
-                    dtype=q.get("dtype", "int8"),
-                    method=q.get("method", "ptq-minmax"),
-                )
-                metas.append(m)
-                if m.get("delta_layout"):
-                    triggers.append("Q")
-                delta_layout_any = bool(delta_layout_any or m.get("delta_layout"))
-                if transform_model is not None:
-                    hf_cache["model"] = transform_model
-                    hf_cache["quant_applied"] = True
-            # KV cache
-            k = tcfg.get("kv", {}) if tcfg.get("kv", {}).get("enable") else None
-            if k:
-                from icd.adapters.kv import apply_kvcache
-
-                _, m = apply_kvcache(transform_model, block=int(k.get("block", 128)), drop=float(k.get("drop", 0.0)))
-                metas.append(m)
-                if m.get("delta_layout"):
-                    triggers.append("K")
-                delta_layout_any = bool(delta_layout_any or m.get("delta_layout"))
-    except Exception as e:
-        # Transform errors are non-fatal in mock path
-        transform_errors.append({"stage": "transform", "kind": "error", "detail": str(e)})
-
-    if transform_model is not None:
-        graph_model = transform_model
-        if transform_inputs is not None:
-            graph_example_inputs = transform_inputs
+    transform_meta: Dict[str, Any] = {
+        "delta_layout": bool(delta_layout_any),
+        "metas": list(transform_metas),
+        "triggers": list(transform_triggers),
+    }
+    if mask_training_records:
+        transform_meta["mask_training"] = mask_training_records
 
     # Baseline permute (with optional cache or reuse)
     scfg = cfg.get("solver", {})
@@ -647,8 +788,6 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         except Exception as e:
             transform_errors.append({"stage": "cache", "kind": "error", "detail": str(e)})
 
-    # Transform (mock: no-op + meta)
-    transform_meta = {"delta_layout": bool(delta_layout_any), "metas": metas, "triggers": list(triggers)}
     if auto_enable_correlation and "CORR-auto" not in transform_meta["triggers"]:
         transform_meta["triggers"].append("CORR-auto")
     emit("TRANSFORMED", True, transform_meta)
@@ -728,11 +867,24 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
     if correlation_meta is not None and W_iter is not W:
         save_w_npz(os.path.join(out_dir, "W_after.csr.npz"), W_iter)
 
-    # Re-permute if iterative, or opt-in when transform triggers delta layout
+    # Re-permute if configured
     repermute_on_delta = bool(pipeline_cfg.get("repermute_on_delta", False))
+    repermute_policy = str(pipeline_cfg.get("post_transform_repermute", "auto")).lower().replace("-", "_")
+
+    def _should_repermute() -> bool:
+        if repermute_policy in {"never", "off", "disabled"}:
+            return False
+        if repermute_policy in {"always", "force"}:
+            return True
+        if repermute_policy in {"delta", "delta_only"}:
+            return bool(transform_meta.get("delta_layout"))
+        return (mode_lower == "iterative") or (
+            repermute_on_delta and bool(transform_meta.get("delta_layout"))
+        )
+
     pi1 = pi0
     stats1 = stats0
-    if (mode_lower == "iterative") or (repermute_on_delta and transform_meta.get("delta_layout")):
+    if _should_repermute():
         pi1, stats1 = fit_permutation(
             W_iter,
             time_budget_s=float(scfg.get("time_budget_s", 1.0)),

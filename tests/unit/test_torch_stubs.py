@@ -18,8 +18,13 @@ class FakeTensor:
     def __init__(self, shape: Tuple[int, ...], dtype: Any = None):
         self.shape = tuple(shape)
         self._dtype = dtype
+        self.device = None
 
-    def to(self, device: str) -> "FakeTensor":
+    def to(self, device: str | None = None, dtype: Any | None = None) -> "FakeTensor":
+        if device is not None:
+            self.device = device
+        if dtype is not None:
+            self._dtype = dtype
         return self
 
     def dim(self) -> int:
@@ -46,8 +51,11 @@ class FakeModel:
         self.device = None
         self.calls = 0
 
-    def to(self, device: str) -> "FakeModel":
-        self.device = device
+    def to(self, device: str | None = None, dtype: Any | None = None) -> "FakeModel":
+        if device is not None:
+            self.device = device
+        if dtype is not None:
+            self.torch_dtype = dtype
         return self
 
     def eval(self) -> "FakeModel":
@@ -55,7 +63,7 @@ class FakeModel:
 
     def __call__(self, *args, **kwargs) -> None:
         self.calls += 1
-        return None
+        return FakeTensor((1, 1), dtype=self.torch_dtype)
 
 
 def fake_sequence_loader() -> Tuple[FakeModel, Tuple[FakeTensor, ...]]:
@@ -81,6 +89,51 @@ def fake_torch_env(monkeypatch):
     torch_mod.manual_seed = lambda seed: None
     torch_mod.no_grad = FakeNoGrad
     torch_mod.Tensor = FakeTensor
+
+    def _zeros(shape, dtype=None, device=None):
+        tensor = FakeTensor(tuple(shape), dtype=dtype)
+        if device is not None:
+            tensor.device = device
+        return tensor
+
+    torch_mod.zeros = _zeros
+
+    # torch.nn module
+    nn_mod_root = types.ModuleType("torch.nn")
+
+    class FakeNNModule:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def to(self, *args, **kwargs):  # pragma: no cover - trivial
+            return self
+
+        def eval(self):  # pragma: no cover - trivial
+            return self
+
+        def parameters(self):  # pragma: no cover - trivial
+            return []
+
+    class FakeLinear(FakeNNModule):
+        pass
+
+    nn_mod_root.Module = FakeNNModule
+    nn_mod_root.Linear = FakeLinear
+    torch_mod.nn = nn_mod_root
+    monkeypatch.setitem(sys.modules, "torch.nn", nn_mod_root)
+
+    nn_utils_mod = types.ModuleType("torch.nn.utils")
+    prune_mod = types.ModuleType("torch.nn.utils.prune")
+
+    def _noop(*args, **kwargs):  # pragma: no cover - trivial
+        return None
+
+    prune_mod.global_unstructured = _noop
+    prune_mod.l1_unstructured = _noop
+    nn_utils_mod.prune = prune_mod
+
+    monkeypatch.setitem(sys.modules, "torch.nn.utils", nn_utils_mod)
+    monkeypatch.setitem(sys.modules, "torch.nn.utils.prune", prune_mod)
 
     def _no_grad():
         return FakeNoGrad()
@@ -187,16 +240,98 @@ def fake_torch_env(monkeypatch):
     transformers_mod.AutoModelForCausalLM = FakeCausalModel
     monkeypatch.setitem(sys.modules, "transformers", transformers_mod)
 
+    # torchvision module
+    vision_mod = types.ModuleType("torchvision")
+    models_mod = types.ModuleType("torchvision.models")
+
+    class FakeWeights:
+        def __init__(self, name: str):
+            self.name = name
+
+    class ResNet50Weights:
+        DEFAULT = FakeWeights("DEFAULT")
+        IMAGENET1K_V1 = FakeWeights("IMAGENET1K_V1")
+        IMAGENET1K_V2 = FakeWeights("IMAGENET1K_V2")
+
+    def fake_resnet50(weights=None, **kwargs) -> FakeModel:
+        model = FakeModel("resnet50", torch_dtype=getattr(weights, "name", None))
+        model.weights = weights
+        return model
+
+    models_mod.ResNet50_Weights = ResNet50Weights
+    models_mod.resnet50 = fake_resnet50
+    vision_mod.models = models_mod
+    monkeypatch.setitem(sys.modules, "torchvision", vision_mod)
+    monkeypatch.setitem(sys.modules, "torchvision.models", models_mod)
+
+    # torch_geometric module
+    pyg_mod = types.ModuleType("torch_geometric")
+    datasets_mod = types.ModuleType("torch_geometric.datasets")
+    nn_mod = types.ModuleType("torch_geometric.nn")
+    nn_models_mod = types.ModuleType("torch_geometric.nn.models")
+
+    class FakeGraphData:
+        def __init__(self) -> None:
+            self.x = FakeTensor((5, 16), dtype=torch_mod.float32)
+            self.edge_index = FakeTensor((2, 12), dtype=torch_mod.float32)
+
+    class FakeDataset:
+        def __init__(self) -> None:
+            self.num_features = 16
+            self.num_classes = 3
+
+        def __len__(self) -> int:
+            return 1
+
+        def __getitem__(self, idx: int) -> FakeGraphData:
+            return FakeGraphData()
+
+    def fake_arxiv(root=None, **kwargs):
+        return FakeDataset()
+
+    def fake_planetoid(root=None, name=None, **kwargs):
+        return FakeDataset()
+
+    datasets_mod.OgbnArxiv = fake_arxiv
+    datasets_mod.Planetoid = fake_planetoid
+
+    class FakeGCN(FakeModel):
+        pass
+
+    class FakeGraphSAGE(FakeModel):
+        pass
+
+    def fake_gcn(**kwargs) -> FakeGCN:
+        return FakeGCN("gcn", torch_dtype=kwargs.get("dtype"))
+
+    def fake_graphsage(**kwargs) -> FakeGraphSAGE:
+        return FakeGraphSAGE("graphsage", torch_dtype=kwargs.get("dtype"))
+
+    nn_models_mod.GCN = fake_gcn
+    nn_models_mod.GraphSAGE = fake_graphsage
+    nn_mod.models = nn_models_mod
+    pyg_mod.datasets = datasets_mod
+    pyg_mod.nn = nn_mod
+
+    monkeypatch.setitem(sys.modules, "torch_geometric", pyg_mod)
+    monkeypatch.setitem(sys.modules, "torch_geometric.datasets", datasets_mod)
+    monkeypatch.setitem(sys.modules, "torch_geometric.nn", nn_mod)
+    monkeypatch.setitem(sys.modules, "torch_geometric.nn.models", nn_models_mod)
+
     # Reload target modules now that stubs exist
     import icd.core.graph_pytorch as gp
     import icd.runtime.runners_hf as rhf
     import icd.experiments.hf as ehf
+    import icd.experiments.vision as evision
+    import icd.experiments.graph as egraph
 
     gp = importlib.reload(gp)
     rhf = importlib.reload(rhf)
     ehf = importlib.reload(ehf)
+    evision = importlib.reload(evision)
+    egraph = importlib.reload(egraph)
 
-    yield types.SimpleNamespace(torch=torch_mod, gp=gp, rhf=rhf, ehf=ehf)
+    yield types.SimpleNamespace(torch=torch_mod, gp=gp, rhf=rhf, ehf=ehf, evision=evision, egraph=egraph)
 
     # Cleanup handled by monkeypatch
 
@@ -251,3 +386,43 @@ def test_experiment_loaders_with_stubs(fake_torch_env):
     model_causal, inputs_causal = ehf.load_hf_causal_lm("demo-causal", batch_size=1, sequence_length=8)
     assert isinstance(model_causal, FakeModel)
     assert len(inputs_causal) >= 1
+
+
+def test_torchvision_resnet_loader(fake_torch_env, monkeypatch):
+    evision = fake_torch_env.evision
+    gp = fake_torch_env.gp
+    monkeypatch.setattr(gp, "_infer_feature_dim_from_fx", lambda gm, fallback=0: fallback or 32, raising=False)
+    model, example = evision.load_torchvision_resnet50(batch_size=2, image_size=128, device="cpu")
+    assert isinstance(model, FakeModel)
+    assert len(example) == 1
+    assert example[0].shape == (2, 3, 128, 128)
+    assert model.device == "cpu"
+
+    W = gp.build_w_from_pytorch(model, example, hops=1, reuse_decay=0.5, max_len=16, seed=7)
+    assert W.meta["source"] == "pytorch"
+
+
+def test_pyg_gcn_loader(fake_torch_env, monkeypatch):
+    egraph = fake_torch_env.egraph
+    gp = fake_torch_env.gp
+    monkeypatch.setattr(gp, "_infer_feature_dim_from_fx", lambda gm, fallback=0: fallback or 32, raising=False)
+    model, example = egraph.load_pyg_gcn(dataset_name="ogbn-arxiv", hidden_channels=64, num_layers=2, device="cpu")
+    assert isinstance(model, FakeModel)
+    assert len(example) == 2
+    x, edge_index = example
+    assert x.shape[0] == 5
+    assert edge_index.shape[0] == 2
+
+    W = gp.build_w_from_pytorch(model, example, hops=1, reuse_decay=0.5, max_len=16, seed=9)
+    assert W.meta["source"] == "pytorch"
+
+
+def test_pyg_graphsage_loader(fake_torch_env, monkeypatch):
+    egraph = fake_torch_env.egraph
+    gp = fake_torch_env.gp
+    monkeypatch.setattr(gp, "_infer_feature_dim_from_fx", lambda gm, fallback=0: fallback or 32, raising=False)
+    model, example = egraph.load_pyg_graphsage(dataset_name="ogbn-arxiv", hidden_channels=32, num_layers=2, device="cpu")
+    assert isinstance(model, FakeModel)
+    assert len(example) == 2
+    W = gp.build_w_from_pytorch(model, example, hops=1, reuse_decay=0.5, max_len=16, seed=11)
+    assert W.meta["source"] == "pytorch"

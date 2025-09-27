@@ -10,7 +10,7 @@ Automate installation → environment locking → data/model setup → experimen
 Experiments are provided at two levels:
 
 1. **Mock smoke test** — validates structure/pipeline without heavy dependencies (`configs/mock.json`).
-2. **HuggingFace BERT/Mamba** — loads real models and runs inference (`configs/bert.json`, `configs/mamba.json`, `configs/bert_large.json`, `configs/mamba_2p8b.json`).
+2. **HuggingFace BERT/Mamba** — loads real models and runs inference (`configs/bert.json`, `configs/mamba.json`, `configs/bert_large.json`, `configs/mamba_2p8b.json`, `configs/mamba_3b.json`).
 
 To run the HuggingFace experiments (example CPU setup):
 
@@ -35,7 +35,7 @@ For GPU runs, install the PyTorch wheel that matches your CUDA/cuDNN version; se
 
   * `Makefile`, `scripts/repro_{smoke,full,ae}.sh`, `scripts/collect_artifacts.py`
   * `env/environment.yml` (conda), `Dockerfile` (optional)
-  * `configs/{mock.json,trace.json,bert.json,mamba.json,bert_large.json,mamba_2p8b.json}`
+  * `configs/{mock.json,trace.json,bert.json,mamba.json,bert_large.json,mamba_2p8b.json,mamba_3b.json}`
   * `docs/{SOP.md, TESTPLAN.md, PRD.md, SAS.md, ICD.md, PASS_DOC.md, COST_SPEC.md}`
 * **Expected outputs**: `runs/*/metrics.json`, `report.{html,csv}`, `ncu.json` (if available), `power.csv`, `config.lock.json`.
 
@@ -118,7 +118,7 @@ Sweep sparsity `{0.3, 0.5, 0.7}`, precision `{fp8, int8}`, and sequence length `
 make repro_ablation
 ```
 
-### 4.5 Repro 4 — Large Models (BERT-large & Mamba-2.8B)
+### 4.5 Repro 4 — Large Models (BERT-large, Mamba-2.8B & Mamba-3B)
 
 > **Objective**: Reproduce performance and statistical results for large-scale checkpoints as required by NeurIPS artifact evaluation.
 
@@ -128,9 +128,10 @@ bash scripts/repro_large_models.sh runs/large_models
 
 **Execution Features**:
 
-- The script sequentially executes `configs/bert_large.json` and `configs/mamba_2p8b.json` to automatically generate baseline/iterative pairs.
+- The script sequentially executes `configs/bert_large.json`, `configs/mamba_2p8b.json`, and `configs/mamba_3b.json` to automatically generate baseline/iterative pairs.
 - For each pair, calls `scripts/validate_results.py` to immediately summarize Latency/L2/EpT improvements (95% CI available in `metrics.json`).
-- Default sample counts: BERT-large 600 iterations, Mamba-2.8B 500 iterations (excluding warmup). GPU clock locking via `nvidia-smi -lgc` settings recommended.
+- Default sample counts: BERT-large 600 iterations, Mamba-2.8B 500 iterations, Mamba-3B 450 iterations (excluding warmup). GPU clock locking via `nvidia-smi -lgc` settings recommended.
+- Hardware assumption for the Mamba-3B configuration: at least 120 GB of aggregate GPU memory (e.g., dual H100 80GB with NVLink or an H100 120GB SXM) to hold activations for 2048-token contexts without gradient checkpointing.
 - Results are saved under `runs/large_models/` as HTML/CSV reports and metrics logs.
 
 ### 4.6 Repro 5 — IR Pass PoC (optional)

@@ -6,27 +6,7 @@ from typing import Any, Iterable, Tuple
 
 from icd.utils.imports import load_object
 
-
-def _resolve_device(device: str | None, torch_module) -> str:
-    if device:
-        return device
-    return "cuda" if torch_module.cuda.is_available() else "cpu"
-
-
-def _resolve_dtype(dtype: str | None, torch_module):
-    mapping = {
-        None: torch_module.float32,
-        "float32": torch_module.float32,
-        "fp32": torch_module.float32,
-        "float16": torch_module.float16,
-        "fp16": torch_module.float16,
-        "bfloat16": torch_module.bfloat16,
-        "bf16": torch_module.bfloat16,
-    }
-    key = (dtype or "float32").lower()
-    if key not in mapping:
-        raise ValueError(f"unsupported torch dtype '{dtype}'")
-    return mapping[key]
+from ._torch_utils import resolve_device, resolve_dtype
 
 
 def _repeat_text(prompt: str | Iterable[str], batch_size: int) -> list[str]:
@@ -77,8 +57,8 @@ def load_hf_sequence_classifier(
         max_length=sequence_length,
     )
 
-    torch_dtype = _resolve_dtype(dtype, torch)
-    device_name = _resolve_device(device, torch)
+    torch_dtype = resolve_dtype(dtype, torch)
+    device_name = resolve_device(device, torch)
 
     model = model_loader_fn(model_name, torch_dtype=torch_dtype)
     model.to(device_name)
@@ -127,8 +107,8 @@ def load_hf_causal_lm(
         max_length=sequence_length,
     )
 
-    torch_dtype = _resolve_dtype(dtype, torch)
-    device_name = _resolve_device(device, torch)
+    torch_dtype = resolve_dtype(dtype, torch)
+    device_name = resolve_device(device, torch)
 
     model = model_loader_fn(model_name, torch_dtype=torch_dtype)
     model.to(device_name)
