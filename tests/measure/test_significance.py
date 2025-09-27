@@ -89,3 +89,39 @@ def test_make_pairwise_summary_includes_significance():
     latency_stats = sig_vs_linear["latency_ms"]
     assert latency_stats["sample_size"] == 4
     assert math.isfinite(latency_stats["mean_diff"])
+
+
+def test_make_pairwise_summary_three_baselines_all_pairs():
+    def make_metrics(mode: str, latency: float, l2: float, ept: float) -> dict:
+        return {
+            "mode": mode,
+            "latency_ms": {
+                "mean": latency,
+                "samples": [latency - 0.5, latency, latency + 0.5],
+            },
+            "latency_ms_mean": latency,
+            "l2_hit_pct": l2,
+            "l2_hit_pct_samples": [l2 - 0.01, l2, l2 + 0.01],
+            "ept_j_per_tok": ept,
+            "ept_j_per_tok_samples": [ept - 0.02, ept, ept + 0.02],
+        }
+
+    dense = make_metrics("dense", 22.0, 0.52, 0.61)
+    linear = make_metrics("linear", 18.0, 0.58, 0.57)
+    louvain = make_metrics("linear:louvain", 19.5, 0.56, 0.59)
+    iterative = make_metrics("iterative", 14.0, 0.74, 0.48)
+
+    summary = make_pairwise_summary([dense, linear, louvain, iterative])
+    by_mode = {str(entry.get("mode", "")).lower(): entry for entry in summary}
+
+    assert set(by_mode.keys()) == {"dense", "linear", "linear:louvain", "iterative"}
+
+    for mode, entry in by_mode.items():
+        sig = entry.get("significance")
+        assert isinstance(sig, dict)
+        expected_keys = {m for m in by_mode if m != mode}
+        assert set(sig.keys()) == expected_keys
+
+    dense_vs_linear = by_mode["dense"]["significance"]["linear"]["latency_ms"]["mean_diff"]
+    linear_vs_dense = by_mode["linear"]["significance"]["dense"]["latency_ms"]["mean_diff"]
+    assert dense_vs_linear == pytest.approx(-linear_vs_dense)

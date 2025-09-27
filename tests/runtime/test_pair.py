@@ -77,6 +77,13 @@ def test_run_pair_handles_multiple_baselines(tmp_path: Path, monkeypatch: pytest
     assert modes["linear"]["baseline_method"] == "linear"
     assert modes["linear:louvain"]["baseline_method"] == "louvain"
 
+    all_mode_keys = {str(name).lower() for name in modes}
+    for name, entry in modes.items():
+        sig = entry.get("significance")
+        assert isinstance(sig, dict)
+        expected = {key for key in all_mode_keys if key != str(name).lower()}
+        assert set(sig.keys()) == expected
+
     iter_metrics = json.loads(
         Path(tmp_path / "pair" / "iter" / "metrics.json").read_text(encoding="utf-8")
     )

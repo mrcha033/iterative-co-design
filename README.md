@@ -101,6 +101,8 @@ class CSRMatrix:
 
 #### 2. Solver & Optimization (`icd/core/solver.py`)
 **Algorithm**: Multi-level graph partitioning with clustering-based refinement.
+See `docs/Theoretical_Analysis.md` for formal convergence, approximation, and complexity guarantees
+covering all solver paths.
 
 **Clustering Methods**:
 - **Louvain** (Primary): Community detection with modularity optimization
@@ -108,6 +110,33 @@ class CSRMatrix:
   - Modularity floor validation (minimum quality threshold)
 - **Spectral** (Fallback): Eigenvalue-based partitioning
   - Automatic fallback when Louvain fails quality/time constraints
+
+**Hardware-aware scheduling**:
+- Enable via `method="hardware"` (or `hardware_aware`) in `fit_permutation`.
+- Provide hardware metadata through `CostConfig.hardware_topology`:
+  ```python
+  CostConfig(
+      vec_width=4,
+      hardware_topology={
+          "lanes": [
+              {"id": 0, "l2_slice": 0, "memory_channel": 0},
+              {"id": 1, "l2_slice": 0, "memory_channel": 0},
+              {"id": 2, "l2_slice": 1, "memory_channel": 1},
+              {"id": 3, "l2_slice": 1, "memory_channel": 1},
+          ]
+      },
+  )
+  ```
+- Optional lane fields: `weight`/`throughput` (capacity hints), `l2_slice`, `memory_channel`.
+- Heuristic stages:
+  1. Build topology groups from shared L2 or memory channels.
+  2. Cluster graph nodes into those groups using neighbor affinity & capacity balancing.
+  3. Distribute clustered nodes across lanes while balancing per-lane load.
+- Solver stats expose assignments (`topology_assignment`, `lane_assignment`) for downstream validation.
+
+**Solver Configuration Keys**:
+- `solver.louvain_time_budget_s`: Optional hard cap (seconds) for the Louvain attempt; defaults to the solver-wide budget when omitted.
+- `solver.louvain_modularity_floor`: Minimum modularity the Louvain partition must achieve; values below the floor trigger the spectral fallback.
 
 **Cost Function** (`icd/core/cost.py`):
 ```
@@ -232,7 +261,9 @@ PRD_GATE_DEFAULTS = {
   "solver": {
     "time_budget_s": 1.0,          // Real-time constraints
     "refine_steps": 500,           // Optimization iterations
-    "k_blocks": 4                  // Partitioning granularity
+    "k_blocks": 4,                 // Partitioning granularity
+    "louvain_time_budget_s": 0.5,  // Hard cap for Louvain community detection
+    "louvain_modularity_floor": -0.25 // Minimum modularity required to keep Louvain partition
   }
 }
 ```
@@ -334,6 +365,9 @@ tests/
 - **Iterative Co-Design Checklist** (`docs/Iterative_CoDesign_Checklist.md`)
 - **RCA Templates** (`docs/templates/rca_template.md`)
 - **Rollback Flow Diagrams** (`docs/rollback_flow.mmd`)
+
+#### Research Planning
+- **Literature Review & NeurIPS Outline** (`docs/Literature_Review.md`): Related work summary and manuscript plan aligned with existing infrastructure.
 
 #### Technical Specifications
 - **Observability Spec** (`docs/Observability_Spec.md`): Metrics, events, sampling policies

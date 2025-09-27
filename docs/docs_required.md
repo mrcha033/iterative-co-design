@@ -14,10 +14,12 @@ Present
 - Kernel Contract: `docs/Kernel_Contract.md`
 - Runtime/Memory Plan: `docs/Runtime_Memory_Plan.md`
 - Observability Spec: `docs/Observability_Spec.md`
+- Solver Theory: `docs/Theoretical_Analysis.md`
 - SBOM & Contributing: `docs/SBOM_Contrib.md`, `CONTRIBUTING.md`
 - USAGE: `docs/USAGE.md`
 - Config Schema: `docs/schema/run_config.schema.json`
 - Repro Plan: `docs/Repro_Plan.md`
+- Literature Review & Paper Outline: `docs/Literature_Review.md`
 - Executable configs: `configs/mock.json`, `configs/trace.json`, `configs/bert.json`, `configs/mamba.json`
 
 Planned / Optional

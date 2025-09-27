@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from .graph import CSRMatrix
 
@@ -19,6 +19,9 @@ class CostConfig:
     blocks_k: int = 4
     vec_width: int = 16
     hysteresis: int = 2
+    hardware_topology: Dict[str, Any] | None = None
+    louvain_time_budget_s: float = float("inf")
+    louvain_modularity_floor: float = float("-inf")
 
 
 def invperm(pi: List[int]) -> List[int]:

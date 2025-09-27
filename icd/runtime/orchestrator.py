@@ -548,6 +548,8 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         blocks_k=cfg.get("solver", {}).get("k_blocks", 4),
         vec_width=cfg.get("cost", {}).get("vec_width", 16),
         hysteresis=cfg.get("cost", {}).get("hysteresis", 2),
+        louvain_time_budget_s=float(scfg.get("louvain_time_budget_s", math.inf)),
+        louvain_modularity_floor=float(scfg.get("louvain_modularity_floor", -math.inf)),
     )
 
     # Optional cache: off by default unless cache.enable=true and cache_dir set

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from itertools import combinations
 from typing import Callable, Dict, Iterable, Optional
 
 from .significance import compute_prd_significance
@@ -225,6 +226,33 @@ def verdict(
     return metrics
 
 
+def _significance_key(entry: Dict[str, object], fallback: str) -> str:
+    mode = entry.get("mode")
+    if isinstance(mode, str) and mode.strip():
+        return mode.strip().lower()
+    baseline_method = entry.get("baseline_method")
+    if isinstance(baseline_method, str) and baseline_method.strip():
+        return baseline_method.strip().lower()
+    return fallback
+
+
+def _assign_significance(
+    entry: Dict[str, object],
+    key: str,
+    value: Dict[str, Dict[str, float | int | str | None]],
+) -> None:
+    if not key:
+        return
+    if not isinstance(value, dict):
+        return
+    bucket = entry.get("significance")
+    if not isinstance(bucket, dict):
+        bucket = {}
+        entry["significance"] = bucket
+    cloned = {metric: dict(stats) for metric, stats in value.items() if isinstance(stats, dict)}
+    bucket[key] = cloned
+
+
 def make_pairwise_summary(metrics_list: Iterable[Dict[str, object]]) -> list[Dict[str, object]]:
     metrics = list(metrics_list)
     by_mode = {str(m.get("mode", "")).lower(): m for m in metrics}
@@ -246,17 +274,21 @@ def make_pairwise_summary(metrics_list: Iterable[Dict[str, object]]) -> list[Dic
                 m["delta_l2_hit_vs_linear"] = float(m.get("l2_hit_pct", 0.0)) - float(linear.get("l2_hit_pct", 0.0))
             if "ept_j_per_tok" in m and "ept_j_per_tok" in linear:
                 m["delta_ept_vs_linear"] = float(m.get("ept_j_per_tok", 0.0)) - float(linear.get("ept_j_per_tok", 0.0))
-        significance: dict[str, dict[str, float | int | str | None]] = {}
-        if dense and m is not dense:
-            significance["dense"] = compute_prd_significance(dense, m)
-        if mode == "iterative" and "linear" in by_mode:
-            linear = by_mode["linear"]
-            if linear is not m:
-                significance["linear"] = compute_prd_significance(linear, m)
-        if significance:
-            existing = m.get("significance")
-            if isinstance(existing, dict):
-                existing.update(significance)
-            else:
-                m["significance"] = significance
+    if len(metrics) >= 2:
+        keys: list[str] = []
+        occurrences: dict[str, int] = {}
+        for idx, entry in enumerate(metrics):
+            base_key = _significance_key(entry, f"entry_{idx}")
+            count = occurrences.get(base_key, 0)
+            key = base_key if count == 0 else f"{base_key}#{count}"
+            occurrences[base_key] = count + 1
+            keys.append(key)
+
+        for (i, entry_a), (j, entry_b) in combinations(enumerate(metrics), 2):
+            key_a = keys[i]
+            key_b = keys[j]
+            sig_for_b = compute_prd_significance(entry_a, entry_b)
+            sig_for_a = compute_prd_significance(entry_b, entry_a)
+            _assign_significance(entry_b, key_a, sig_for_b)
+            _assign_significance(entry_a, key_b, sig_for_a)
     return metrics

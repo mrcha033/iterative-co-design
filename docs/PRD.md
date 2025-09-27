@@ -73,7 +73,8 @@
 
 ## 7) 아키텍처 개요(상위 블록)
 
-* **core/**: 그래프 생성(접근 공빈도 → W), 비용모델(C(π), Q), solver(스펙트럴+로컬).
+* **core/**: 그래프 생성(접근 공빈도 → W), 비용모델(C(π), Q), solver(스펙트럴+로컬). 이 경로의
+  수렴/근사/복잡도 보증은 `docs/Theoretical_Analysis.md`에 정리되어 있다.
 * **adapters/**: S/Q/K 변환 어댑터(HDS 2:4, PTQ/FP8, KV 압축).
 * **runtime/**: 실행 파이프라인, permutation 캐시, 실패 복구.
 * **measure/**: Nsight/NVML 래퍼, 리포터(HTML/CSV).

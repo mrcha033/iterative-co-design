@@ -3,7 +3,8 @@ from __future__ import annotations
 import math
 import statistics
 import time
-from typing import Callable, Dict, Iterable, List, Sequence, Tuple
+from collections import OrderedDict
+from typing import Any, Callable, Dict, Iterable, List, Sequence, Tuple
 
 from .graph import CSRMatrix
 from .cost import CostConfig, eval_cost, invperm
@@ -226,6 +227,13 @@ def _solve_louvain(
     try:
         import networkx as nx
 
+        runtime_budget = min(
+            float(time_budget_s),
+            float(getattr(cfg, "louvain_time_budget_s", float("inf"))),
+        )
+        if runtime_budget <= 0.0:
+            raise TimeoutError("louvain runtime budget exhausted")
+
         G = nx.Graph()
         n = W.shape[0]
         G.add_nodes_from(range(n))
@@ -241,19 +249,29 @@ def _solve_louvain(
                 G.add_edge(i, j, weight=w)
         if G.number_of_edges() == 0:
             raise ValueError("graph has no edges")
+        start_time = time.perf_counter()
         communities = nx.algorithms.community.louvain_communities(
             G,
             seed=seed,
             weight="weight",
             resolution=getattr(cfg, "modularity_gamma", 1.0),
         )
+        elapsed = time.perf_counter() - start_time
+        tolerance = 1e-6
+        if elapsed > runtime_budget + tolerance:
+            raise TimeoutError("louvain runtime budget exceeded")
         if not communities:
             raise ValueError("empty partition")
         pi = _cluster_to_permutation(communities)
         stats = eval_cost(W, pi, pi, cfg)
+        modularity_floor = float(getattr(cfg, "louvain_modularity_floor", float("-inf")))
+        modularity_value = _modularity(W, communities)
+        if modularity_value < modularity_floor:
+            raise ValueError("louvain modularity below floor")
         extra = {
             "clusters": len(communities),
-            "Q_louvain": _modularity(W, communities),
+            "Q_louvain": modularity_value,
+            "louvain_runtime_s": elapsed,
         }
         return _finalize_stats(pi, stats, method="louvain", reference=stats_id, extra=extra)
     except Exception:
@@ -310,20 +328,162 @@ def _solve_hardware_aware(
 ) -> Tuple[List[int], Dict[str, float]]:
     _ = (time_budget_s, refine_steps, seed, clusters)
     _, stats_id = _identity_stats(W, cfg)
+
+    def _build_lane_records(topology: Dict[str, Any] | None, fallback_width: int) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        lanes_meta = list(topology.get("lanes", [])) if topology else []
+        if not lanes_meta:
+            lanes_meta = [{"id": idx} for idx in range(fallback_width)]
+        lane_records: List[Dict[str, Any]] = []
+        for idx, lane in enumerate(lanes_meta):
+            weight = float(lane.get("weight", lane.get("throughput", 1.0)))
+            lane_records.append(
+                {
+                    "orig_index": idx,
+                    "id": int(lane.get("id", idx)),
+                    "l2_slice": lane.get("l2_slice"),
+                    "memory_channel": lane.get("memory_channel"),
+                    "weight": weight if weight > 0 else 1.0,
+                }
+            )
+
+        def _lane_sort_key(rec: Dict[str, Any]) -> Tuple[int, int, int, int]:
+            mc = rec.get("memory_channel")
+            l2 = rec.get("l2_slice")
+            mc_key = (0, int(mc)) if mc is not None else (1, rec["orig_index"])
+            l2_key = (0, int(l2)) if l2 is not None else (1, rec["orig_index"])
+            return (mc_key[0], mc_key[1], l2_key[0], l2_key[1])
+
+        lane_records.sort(key=_lane_sort_key)
+        for new_idx, rec in enumerate(lane_records):
+            rec["index"] = new_idx
+        grouped: "OrderedDict[Tuple[Any, Any], Dict[str, Any]]" = OrderedDict()
+        for rec in lane_records:
+            key = (rec.get("memory_channel"), rec.get("l2_slice"))
+            if key not in grouped:
+                grouped[key] = {
+                    "memory_channel": rec.get("memory_channel"),
+                    "l2_slice": rec.get("l2_slice"),
+                    "lane_indices": [],
+                    "capacity": 0.0,
+                }
+            grouped[key]["lane_indices"].append(rec["index"])
+            grouped[key]["capacity"] += rec["weight"]
+        groups = list(grouped.values())
+        return lane_records, groups
+
     vec_width = max(1, int(getattr(cfg, "vec_width", 1)))
+    lane_records, groups = _build_lane_records(getattr(cfg, "hardware_topology", None), vec_width)
+    if not lane_records:
+        lane_records = [{"index": i, "weight": 1.0} for i in range(vec_width)]
+    if not groups:
+        groups = [
+            {
+                "memory_channel": None,
+                "l2_slice": None,
+                "lane_indices": [rec["index"] for rec in lane_records],
+                "capacity": float(sum(rec.get("weight", 1.0) for rec in lane_records)),
+            }
+        ]
+
+    n = W.shape[0]
     deg = _degree_vector(W)
-    lanes: List[List[int]] = [[] for _ in range(vec_width)]
-    for node in range(W.shape[0]):
-        lane = node % vec_width
-        lanes[lane].append(node)
-    for lane_nodes in lanes:
-        lane_nodes.sort(key=lambda i: (-deg[i], i))
+    adj: List[List[Tuple[int, float]]] = [[] for _ in range(n)]
+    for i in range(n):
+        start, end = W.indptr[i], W.indptr[i + 1]
+        for idx in range(start, end):
+            j = W.indices[idx]
+            w = float(W.data[idx])
+            if j >= n:
+                continue
+            adj[i].append((j, w))
+            adj[j].append((i, w))
+
+    node_group = [-1] * n
+    group_nodes: List[List[int]] = [[] for _ in groups]
+    group_loads = [0.0] * len(groups)
+    group_capacity = [max(group.get("capacity", 1.0), 1.0) for group in groups]
+    avg_deg = (sum(deg) / float(n)) if n > 0 else 0.0
+    base_affinity = max(avg_deg * 0.05, 1e-6)
+
+    order = sorted(range(n), key=lambda i: (-deg[i], i))
+    for node in order:
+        neighbor_affinity = [0.0] * len(groups)
+        for nbr, weight in adj[node]:
+            grp = node_group[nbr]
+            if grp != -1:
+                neighbor_affinity[grp] += weight
+
+        best_group = 0
+        best_score = -math.inf
+        best_affinity = -math.inf
+        best_balance = math.inf
+        for gi in range(len(groups)):
+            affinity = neighbor_affinity[gi]
+            balance = group_loads[gi] / group_capacity[gi]
+            balance_term = 1.0 / (1.0 + balance)
+            score = (affinity + base_affinity) * balance_term
+            if (
+                score > best_score
+                or (
+                    math.isclose(score, best_score, rel_tol=1e-9, abs_tol=1e-12)
+                    and (
+                        affinity > best_affinity
+                        or (
+                            math.isclose(affinity, best_affinity, rel_tol=1e-9, abs_tol=1e-12)
+                            and balance < best_balance
+                        )
+                    )
+                )
+            ):
+                best_score = score
+                best_group = gi
+                best_affinity = affinity
+                best_balance = balance
+        node_group[node] = best_group
+        group_nodes[best_group].append(node)
+        group_loads[best_group] += deg[node]
+
+    lane_count = len(lane_records)
+    lane_weights = [float(rec.get("weight", 1.0)) for rec in lane_records]
+    lane_loads = [0.0] * lane_count
+    lane_buckets: List[List[int]] = [[] for _ in range(lane_count)]
+    lane_assignment = [-1] * n
+
+    for gi, nodes in enumerate(group_nodes):
+        lanes = groups[gi]["lane_indices"]
+        if not lanes:
+            lanes = list(range(lane_count))
+        nodes_sorted = sorted(nodes, key=lambda i: (-deg[i], i))
+        for node in nodes_sorted:
+            lane_idx = min(
+                lanes,
+                key=lambda lid: lane_loads[lid] / max(lane_weights[lid], 1e-9),
+            )
+            lane_buckets[lane_idx].append(node)
+            lane_loads[lane_idx] += deg[node]
+            lane_assignment[node] = lane_idx
+
+    ordered_lane_indices: List[int] = []
+    for group in groups:
+        ordered_lane_indices.extend(sorted(group["lane_indices"]))
+    remaining = [idx for idx in range(lane_count) if idx not in ordered_lane_indices]
+    ordered_lane_indices.extend(remaining)
+
     pi: List[int] = []
-    for lane_nodes in lanes:
+    for lane_idx in ordered_lane_indices:
+        lane_nodes = lane_buckets[lane_idx]
+        lane_nodes.sort(key=lambda i: (-deg[i], i))
         pi.extend(lane_nodes)
+
     stats = eval_cost(W, pi, pi, cfg)
     extra = {
-        "lane_groups": vec_width,
+        "lane_groups": lane_count,
+        "topology_groups": len(groups),
+        "group_balance_std": float(statistics.pstdev(group_loads)) if len(group_loads) > 1 else 0.0,
+        "lane_balance_std": float(statistics.pstdev(lane_loads)) if lane_count > 1 else 0.0,
+        "topology_assignment": tuple(int(g) for g in node_group),
+        "topology_group_sizes": tuple(len(nodes) for nodes in group_nodes),
+        "lane_assignment": tuple(int(l) for l in lane_assignment),
     }
     return _finalize_stats(pi, stats, method="hardware_aware", reference=stats_id, extra=extra)
 
