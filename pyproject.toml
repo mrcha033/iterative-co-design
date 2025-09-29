@@ -25,6 +25,9 @@ dependencies = [
   "jsonschema>=4.21",
   "numpy>=1.24",
   "scipy>=1.11",
+  "hypothesis>=6.100",
+  "torch>=2.1",
+  "transformers>=4.40",
 ]
 
 [project.urls]

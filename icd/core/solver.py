@@ -108,6 +108,9 @@ def _modularity(W: CSRMatrix, clusters: Sequence[Sequence[int]]) -> float:
     except ImportError:  # pragma: no cover
         return 0.0
 
+    if not hasattr(nx, "algorithms"):
+        return 0.0
+
     G = nx.Graph()
     n = W.shape[0]
     G.add_nodes_from(range(n))
@@ -226,14 +229,43 @@ def _solve_louvain(
     pi_id, stats_id = _identity_stats(W, cfg)
     try:
         import networkx as nx
-
-        runtime_budget = min(
-            float(time_budget_s),
-            float(getattr(cfg, "louvain_time_budget_s", float("inf"))),
+    except ImportError:  # pragma: no cover - optional dependency
+        return _solve_spectral_refine(
+            W,
+            time_budget_s=time_budget_s,
+            refine_steps=refine_steps,
+            cfg=cfg,
+            seed=seed,
+            clusters=clusters,
         )
-        if runtime_budget <= 0.0:
-            raise TimeoutError("louvain runtime budget exhausted")
 
+    if not hasattr(nx, "algorithms"):
+        return _solve_spectral_refine(
+            W,
+            time_budget_s=time_budget_s,
+            refine_steps=refine_steps,
+            cfg=cfg,
+            seed=seed,
+            clusters=clusters,
+        )
+
+    nx_error = getattr(nx, "NetworkXError", Exception)
+
+    runtime_budget = min(
+        float(time_budget_s),
+        float(getattr(cfg, "louvain_time_budget_s", float("inf"))),
+    )
+    if runtime_budget <= 0.0:
+        return _solve_spectral_refine(
+            W,
+            time_budget_s=time_budget_s,
+            refine_steps=refine_steps,
+            cfg=cfg,
+            seed=seed,
+            clusters=clusters,
+        )
+
+    try:
         G = nx.Graph()
         n = W.shape[0]
         G.add_nodes_from(range(n))
@@ -274,8 +306,7 @@ def _solve_louvain(
             "louvain_runtime_s": elapsed,
         }
         return _finalize_stats(pi, stats, method="louvain", reference=stats_id, extra=extra)
-    except Exception:
-        # fall back to spectral refine if Louvain is unavailable
+    except (TimeoutError, ValueError, nx_error, AttributeError):
         return _solve_spectral_refine(
             W,
             time_budget_s=time_budget_s,

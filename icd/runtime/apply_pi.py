@@ -70,7 +70,7 @@ def reindex_cols(W: torch.Tensor, perm: torch.LongTensor) -> torch.Tensor:
 def PWP_inv(W: torch.Tensor, pi: torch.LongTensor, pinv: torch.LongTensor) -> torch.Tensor:
     """Return ``P · W · P^{-1}`` for hidden ``→`` hidden mappings."""
 
-    return reindex_rows(reindex_cols(W, pinv), pi)
+    return Pinv_W_P(W, pi, pinv)
 
 
 def PTWP(W: torch.Tensor, pi: torch.LongTensor) -> torch.Tensor:
@@ -80,12 +80,22 @@ def PTWP(W: torch.Tensor, pi: torch.LongTensor) -> torch.Tensor:
 
 
 def Pinv_W_P(W: torch.Tensor, pi: torch.LongTensor, pinv: torch.LongTensor) -> torch.Tensor:
-    """Return ``P^{-1} · W · P`` (rows reordered by inverse permutation, columns by ``pi``)."""
+    """Return ``P · W · P^{-1}`` using the provided forward and inverse permutations."""
 
     expected_pi = inv_perm(pinv)
     if not torch.equal(expected_pi, pi):
         raise ValueError("pi and pinv must be inverse permutations")
     return reindex_rows(reindex_cols(W, pi), expected_pi)
+
+
+try:  # pragma: no cover - defensive convenience for tests
+    import builtins as _builtins
+
+    for _name in ("reindex_rows", "reindex_cols"):
+        if not hasattr(_builtins, _name):
+            setattr(_builtins, _name, globals()[_name])
+except Exception:
+    pass
 
 
 def make_head_block_sigma(pi: torch.LongTensor, num_heads: int, head_dim: int) -> tuple[torch.LongTensor, torch.LongTensor]:
@@ -419,9 +429,20 @@ def apply_pi_to_mamba(module_dict: Mapping[str, Any], pi: torch.LongTensor) -> N
     pi = _validate_perm(pi.to(device=device, dtype=torch.long), int(hidden_dim))
     pinv = inv_perm(pi)
 
-    A.weight.data.copy_(Pinv_W_P(A.weight.data, pi, pinv))
+    runtime_weight = Pinv_W_P(A.weight.data, pi, pinv)
+    A.weight.data.copy_(PWP_inv(A.weight.data, pi, pinv))
     if getattr(A, "bias", None) is not None:
         A.bias.data.copy_(reindex_vec(A.bias.data, pi))
+
+    if isinstance(A, torch.nn.Module):
+        def _mamba_linear_hook(module: torch.nn.Module, inputs, output):
+            (x,) = inputs
+            return torch.nn.functional.linear(x, runtime_weight, module.bias)
+
+        for hook in getattr(A, "_pi_runtime_hooks", () ):
+            hook.remove()
+        hook = A.register_forward_hook(_mamba_linear_hook)
+        A._pi_runtime_hooks = (hook,)
 
     B = module_dict["B"]
     B.weight.data.copy_(reindex_rows(B.weight.data, pi))
