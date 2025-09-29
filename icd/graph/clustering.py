@@ -8,6 +8,8 @@ from typing import List
 import math
 import time
 
+import importlib.util
+
 import networkx as nx
 from networkx.algorithms import community
 
@@ -15,6 +17,9 @@ from icd.core.graph import CSRMatrix
 
 __all__ = ["ClusteringConfig", "cluster_graph"]
 
+
+if getattr(nx, "__spec__", None) is None:  # pragma: no cover - exercised in tests with manual stubs
+    nx.__spec__ = importlib.util.spec_from_loader("networkx", loader=None)
 
 @dataclass
 class ClusteringConfig:

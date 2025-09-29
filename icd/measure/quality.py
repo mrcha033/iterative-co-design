@@ -7,8 +7,35 @@ import types
 from typing import Iterable, Optional
 
 import numpy as np
-import torch
 from datasets import load_dataset
+
+try:  # pragma: no cover - torch optional in minimal installs
+    import torch  # type: ignore[import-not-found]
+except Exception as _torch_exc:  # pragma: no cover
+    torch = None  # type: ignore[assignment]
+    _TORCH_IMPORT_ERROR: Exception | None = _torch_exc
+
+    def _no_grad():  # type: ignore[misc]
+        def decorator(fn):
+            return fn
+
+        return decorator
+
+    def _require_torch(op: str) -> None:
+        message = (
+            f"{op} requires PyTorch. Install the 'experiments' extra (pip install 'repermute[experiments]') "
+            "to enable quality evaluation helpers."
+        )
+        raise RuntimeError(message) from _TORCH_IMPORT_ERROR
+
+else:
+    _TORCH_IMPORT_ERROR = None
+
+    def _no_grad():  # pragma: no cover - thin wrapper to please the type checker
+        return torch.no_grad()
+
+    def _require_torch(op: str) -> None:  # pragma: no cover - torch already available
+        return None
 
 __all__ = ["eval_wt103_ppl", "eval_sst2"]
 
@@ -22,9 +49,9 @@ def _raise_evaluate_placeholder(*args, **kwargs):  # pragma: no cover - replaced
 evaluate = types.SimpleNamespace(load=_raise_evaluate_placeholder)
 
 
-@torch.no_grad()
+@_no_grad()
 def eval_wt103_ppl(
-    model: torch.nn.Module,
+    model,
     tokenizer,
     *,
     max_length: int = 1024,
@@ -42,6 +69,7 @@ def eval_wt103_ppl(
     max_samples: Optional cap on number of examples for faster smoke tests.
     """
 
+    _require_torch("eval_wt103_ppl")
     dataset = load_dataset("wikitext", "wikitext-103-v1")[split]
     model.eval()
 
@@ -50,7 +78,7 @@ def eval_wt103_ppl(
     try:
         device = next(model.parameters()).device
     except StopIteration:
-        device = torch.device("cpu")
+        device = torch.device("cpu") if torch is not None else "cpu"
 
     count = 0
     for example in dataset:  # type: ignore[assignment]
@@ -75,9 +103,9 @@ def eval_wt103_ppl(
     return float(ppl)
 
 
-@torch.no_grad()
+@_no_grad()
 def eval_sst2(
-    model: torch.nn.Module,
+    model,
     tokenizer,
     *,
     batch_size: int = 64,
@@ -87,6 +115,7 @@ def eval_sst2(
 ) -> dict[str, float]:
     """Evaluate SST-2 accuracy and F1."""
 
+    _require_torch("eval_sst2")
     dataset = load_dataset("glue", "sst2")[split]
 
     global evaluate
@@ -104,7 +133,7 @@ def eval_sst2(
     try:
         device = next(model.parameters()).device
     except StopIteration:
-        device = torch.device("cpu")
+        device = torch.device("cpu") if torch is not None else "cpu"
 
     processed = 0
     for start in range(0, len(dataset), batch_size):

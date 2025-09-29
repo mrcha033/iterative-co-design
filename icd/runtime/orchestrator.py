@@ -11,7 +11,13 @@ from types import SimpleNamespace
 
 import copy
 
-import torch
+try:  # pragma: no cover - torch is optional for CLI/unit tests
+    import torch  # type: ignore[import-not-found]
+except Exception as _torch_exc:  # pragma: no cover
+    torch = None  # type: ignore[assignment]
+    _TORCH_IMPORT_ERROR: Exception | None = _torch_exc
+else:
+    _TORCH_IMPORT_ERROR = None
 
 from icd.core.graph import build_w, save_w_npz
 from icd.core.solver import fit_permutation
@@ -153,7 +159,9 @@ def _read_json(path: str) -> Dict[str, Any]:
         return json.load(f)
 
 
-def _parse_torch_dtype(value: Any) -> torch.dtype:
+def _parse_torch_dtype(value: Any) -> Any:
+    if torch is None:
+        return value if value is not None else "float32"
     if isinstance(value, torch.dtype):
         return value
     if value is None:

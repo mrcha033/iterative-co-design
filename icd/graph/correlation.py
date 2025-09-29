@@ -6,13 +6,56 @@ import json
 import random
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Dict, Iterable, Iterator, List, MutableMapping, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterable, Iterator, List, MutableMapping, Optional, Sequence, Tuple
 
 try:  # pragma: no cover - numpy optional for seeding
     import numpy as np
 except Exception:  # pragma: no cover
     np = None  # type: ignore[assignment]
-import torch
+
+try:  # pragma: no cover - torch is an optional dependency for correlation utilities
+    import torch  # type: ignore[import-not-found]
+except Exception as _torch_exc:  # pragma: no cover - exercised on CPU-only CI
+    torch = None  # type: ignore[assignment]
+    _TORCH_IMPORT_ERROR: Exception | None = _torch_exc
+else:  # pragma: no branch
+    _TORCH_IMPORT_ERROR = None
+
+if TYPE_CHECKING:  # pragma: no cover - typing helpers only
+    import torch as _torch
+
+    TorchTensor = _torch.Tensor
+    TorchDType = _torch.dtype
+    TorchModule = _torch.nn.Module
+else:  # pragma: no cover - runtime fallbacks when torch is unavailable
+    TorchTensor = Any
+    TorchDType = Any
+    TorchModule = Any
+
+_TORCH_HAS_CORE_APIS = bool(
+    torch is not None
+    and hasattr(torch, "zeros")
+    and hasattr(torch, "Tensor")
+    and hasattr(torch, "nn")
+)
+
+if torch is not None and hasattr(torch, "Tensor"):
+    _TENSOR_TYPES: Tuple[type, ...] = (torch.Tensor,)  # type: ignore[misc]
+else:  # pragma: no cover - exercised when torch unavailable
+    _TENSOR_TYPES = tuple()
+
+
+def _ensure_torch(op: str) -> None:
+    """Raise a clear error when a correlation helper requires PyTorch."""
+
+    if not _TORCH_HAS_CORE_APIS:
+        message = (
+            f"{op} requires PyTorch. Install the 'experiments' extra (pip install 'repermute[experiments]') "
+            "or otherwise provide a compatible torch implementation."
+        )
+        if _TORCH_IMPORT_ERROR is not None:
+            raise RuntimeError(message) from _TORCH_IMPORT_ERROR
+        raise RuntimeError(message)
 
 from icd.core import graph as graph_mod
 from icd.core.graph import CSRMatrix
@@ -25,13 +68,20 @@ __all__ = [
 ]
 
 
+_DEFAULT_DTYPE: Any
+if torch is not None and hasattr(torch, "float32"):
+    _DEFAULT_DTYPE = torch.float32  # type: ignore[assignment]
+else:  # pragma: no cover - fallback when torch unavailable
+    _DEFAULT_DTYPE = "float32"
+
+
 @dataclass
 class CorrelationConfig:
     mode: str = "activation"
     layers: Optional[Sequence[str]] = None
     samples: int = 8
     seed: Optional[int] = None
-    dtype: torch.dtype = torch.float32
+    dtype: TorchDType | Any = _DEFAULT_DTYPE
     device_guard: bool = True
     threshold: float = 0.0
     normalize: str = "sym"
@@ -43,14 +93,15 @@ class CorrelationConfig:
 class _ActivationStats:
     """Running statistics for a single layer's activations."""
 
-    def __init__(self, feature_dim: int, dtype: torch.dtype, device: torch.device) -> None:
+    def __init__(self, feature_dim: int, dtype: TorchDType | Any, device: Any) -> None:
+        _ensure_torch("_ActivationStats")
         self.device = torch.device(device)
         self.dtype = dtype
         self.sum = torch.zeros(feature_dim, dtype=dtype, device=self.device)
         self.sum_outer = torch.zeros(feature_dim, feature_dim, dtype=dtype, device=self.device)
         self.count = 0
 
-    def update(self, activations: torch.Tensor) -> None:
+    def update(self, activations: TorchTensor) -> None:
         if activations.ndim != 2:
             raise ValueError("expected 2-D activations (batch, features)")
         if activations.numel() == 0:
@@ -60,7 +111,7 @@ class _ActivationStats:
         self.sum += activations.sum(dim=0)
         self.sum_outer += activations.t().mm(activations)
 
-    def covariance(self) -> torch.Tensor:
+    def covariance(self) -> TorchTensor:
         if self.count == 0:
             raise RuntimeError("No activations recorded")
         mean = self.sum / float(self.count)
@@ -74,13 +125,14 @@ class ActivationCollector:
 
     def __init__(
         self,
-        model: torch.nn.Module,
+        model: TorchModule,
         targets: Sequence[str],
-        dtype: torch.dtype,
+        dtype: TorchDType | Any,
         *,
         device_guard: bool = True,
         transfer_batch_size: Optional[int] = None,
     ) -> None:
+        _ensure_torch("ActivationCollector")
         self.model = model
         self.targets = list(targets)
         self.dtype = dtype
@@ -88,14 +140,14 @@ class ActivationCollector:
         self.transfer_batch_size = int(transfer_batch_size) if transfer_batch_size else None
         self._stats: "OrderedDict[str, _ActivationStats]" = OrderedDict()
         self._layer_meta: "OrderedDict[str, MutableMapping[str, object]]" = OrderedDict()
-        self._handles: List[torch.utils.hooks.RemovableHandle] = []
+        self._handles: List[Any] = []
 
         for name, module in model.named_modules():
             if not self.targets or name in self.targets:
                 handle = module.register_forward_hook(self._hook(name))
                 self._handles.append(handle)
 
-    def _get_stats(self, name: str, feature_dim: int, device: torch.device) -> _ActivationStats:
+    def _get_stats(self, name: str, feature_dim: int, device: Any) -> _ActivationStats:
         stats = self._stats.get(name)
         if stats is None:
             stats_device = torch.device("cpu") if self.device_guard else device
@@ -146,7 +198,7 @@ class ActivationCollector:
                     inputs = (inputs,)
                 self.model(*inputs)
 
-    def covariance(self) -> Tuple[torch.Tensor, List[Dict[str, object]]]:
+    def covariance(self) -> Tuple[TorchTensor, List[Dict[str, object]]]:
         if not self._stats:
             raise RuntimeError("No activations captured")
         covariances = [stats.covariance() for stats in self._stats.values()]
@@ -178,7 +230,8 @@ def _input_iterator(example_inputs: object, samples: int) -> Iterator[Tuple]:
                 yield result
         return generator()
 
-    if isinstance(example_inputs, Iterable) and not isinstance(example_inputs, (torch.Tensor, str, bytes)):
+    tensor_guard = _TENSOR_TYPES + (str, bytes)
+    if isinstance(example_inputs, Iterable) and not isinstance(example_inputs, tensor_guard):
         iterator = iter(example_inputs)
         peek = next(iterator, None)
         if peek is None:
@@ -202,6 +255,7 @@ def _input_iterator(example_inputs: object, samples: int) -> Iterator[Tuple]:
 
 
 def _set_deterministic_seed(seed: int) -> None:
+    _ensure_torch("set_deterministic_seed")
     torch.manual_seed(seed)
     if torch.cuda.is_available():  # pragma: no cover - CUDA optional in CI
         torch.cuda.manual_seed_all(seed)
@@ -211,6 +265,7 @@ def _set_deterministic_seed(seed: int) -> None:
 
 
 def _whiten_covariance(matrix: torch.Tensor) -> torch.Tensor:
+    _ensure_torch("_whiten_covariance")
     diag = matrix.diagonal()
     eps = torch.finfo(matrix.dtype).eps if matrix.is_floating_point() else 1e-12
     denom = torch.sqrt(torch.clamp(diag, min=eps))
@@ -223,11 +278,12 @@ def _whiten_covariance(matrix: torch.Tensor) -> torch.Tensor:
 
 
 def collect_correlations(
-    model: torch.nn.Module,
+    model: TorchModule,
     example_inputs: object,
     *,
     cfg: CorrelationConfig,
 ) -> Tuple[torch.Tensor, Dict[str, object]]:
+    _ensure_torch("collect_correlations")
     if cfg.seed is not None:
         _set_deterministic_seed(int(cfg.seed))
 
@@ -271,10 +327,11 @@ def collect_correlations(
 
 
 def correlation_to_csr(
-    matrix: torch.Tensor,
+    matrix: TorchTensor,
     *,
     cfg: CorrelationConfig,
 ) -> CSRMatrix:
+    _ensure_torch("correlation_to_csr")
     matrix = matrix.clone()
     matrix = torch.relu(matrix)
     matrix.fill_diagonal_(0.0)
@@ -313,6 +370,7 @@ def correlation_to_csr(
 
 
 def save_correlation_artifacts(out_dir: str, matrix: torch.Tensor, meta: Dict[str, object]) -> None:
+    _ensure_torch("save_correlation_artifacts")
     payload = {
         "meta": meta,
         "shape": list(matrix.shape),
