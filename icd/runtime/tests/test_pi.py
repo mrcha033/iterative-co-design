@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 import torch
+from types import SimpleNamespace
 
 from icd.runtime.apply_pi import (
     PWP_inv,
@@ -11,6 +12,8 @@ from icd.runtime.apply_pi import (
     perm_signature,
     reindex_vec,
 )
+from icd.adapters.quant import QuantConfig
+from icd.runtime.runners_hf import _apply_pi_sequence
 
 
 def test_inv_perm_roundtrip():
@@ -208,3 +211,37 @@ def test_apply_pi_to_mamba_mock_layer():
     assert torch.allclose(y0, y1, atol=1e-5, rtol=1e-5)
     pinv = inv_perm(pi)
     assert torch.allclose(x_final0, x_final1.index_select(0, pinv), atol=1e-5, rtol=1e-5)
+
+
+def test_apply_pi_sequence_auto_collects_mamba_modules():
+    class TinyMamba(torch.nn.Module):
+        def __init__(self, dim: int):
+            super().__init__()
+            self.A = torch.nn.Linear(dim, dim, bias=True)
+            self.B = torch.nn.Linear(dim, dim, bias=True)
+            self.C = torch.nn.Linear(dim, dim, bias=True)
+            self.x0 = torch.nn.Parameter(torch.arange(dim, dtype=torch.float32))
+            self.config = SimpleNamespace(model_type="mamba")
+
+    dim = 4
+    model = TinyMamba(dim)
+    pi = torch.tensor([2, 0, 3, 1], dtype=torch.long)
+    pinv = inv_perm(pi)
+
+    orig_A = model.A.weight.detach().clone()
+    orig_B = model.B.weight.detach().clone()
+    orig_C = model.C.weight.detach().clone()
+    orig_x0 = model.x0.detach().clone()
+
+    ctx = {"_hf_cache": {}, "permutation_after": pi.tolist(), "config": {}}
+    quant_cfg = QuantConfig()
+
+    _apply_pi_sequence(model, ctx, pi.tolist(), quant_cfg)
+
+    modules = ctx.get("mamba_modules")
+    assert isinstance(modules, list) and modules, "expected auto-collected Mamba modules"
+
+    assert torch.allclose(model.A.weight, PWP_inv(orig_A, pi, pinv))
+    assert torch.allclose(model.B.weight, reindex_rows(orig_B, pi))
+    assert torch.allclose(model.C.weight, reindex_cols(orig_C, pi))
+    assert torch.allclose(model.x0, reindex_vec(orig_x0, pi))

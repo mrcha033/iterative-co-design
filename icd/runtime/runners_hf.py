@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Iterable, Tuple, List
 
 from collections.abc import Mapping
+from types import SimpleNamespace
 
 import torch
 
@@ -15,6 +16,41 @@ from icd.adapters.quant import (
 )
 from icd.adapters.sparsity import SparsityConfig, apply_sparsity_from_config
 from icd.runtime.apply_pi import apply_pi_to_bert, apply_pi_to_mamba, perm_signature_from_iterable
+
+
+def _wrap_mamba_weight_holder(obj: Any) -> Any:
+    if hasattr(obj, "weight"):
+        return obj
+    try:
+        if isinstance(obj, torch.nn.Parameter) or torch.is_tensor(obj):
+            return SimpleNamespace(weight=obj)
+    except Exception:
+        pass
+    if hasattr(obj, "data"):
+        return SimpleNamespace(weight=getattr(obj, "data"))
+    raise TypeError("Unsupported Mamba weight holder; expected tensor-like with 'data'.")
+
+
+def _collect_mamba_modules_from_model(model: Any) -> List[Dict[str, Any]]:
+    modules: List[Dict[str, Any]] = []
+    if model is None or not hasattr(model, "named_modules"):
+        return modules
+    for name, module in model.named_modules():  # type: ignore[attr-defined]
+        if not all(hasattr(module, attr) for attr in ("A", "B", "C")):
+            continue
+        try:
+            entry: Dict[str, Any] = {
+                "A": _wrap_mamba_weight_holder(getattr(module, "A")),
+                "B": _wrap_mamba_weight_holder(getattr(module, "B")),
+                "C": _wrap_mamba_weight_holder(getattr(module, "C")),
+                "_module_name": name,
+            }
+            if hasattr(module, "x0"):
+                entry["x0"] = getattr(module, "x0")
+            modules.append(entry)
+        except Exception:
+            continue
+    return modules
 from icd.utils.imports import load_object
 
 
@@ -95,6 +131,10 @@ def _apply_pi_sequence(
         apply_pi_to_bert(model, pi_tensor)
     elif model_type == "mamba":
         modules = context.get("mamba_modules")
+        if modules is None:
+            modules = _collect_mamba_modules_from_model(model)
+            if modules:
+                context["mamba_modules"] = modules
         if modules is None:
             raise RuntimeError("runner context missing 'mamba_modules' for Mamba permutation application")
         if isinstance(modules, Mapping):
