@@ -9,7 +9,7 @@
     "runner_context": {
       "model_loader": "icd.experiments.hf.load_hf_causal_lm",
       "model_loader_kwargs": {
-        "model_name": "state-spaces/mamba-3b-hf",
+        "model_name": "state-spaces/mamba-2.8b-hf",
         "sequence_length": 2048,
         "batch_size": 1,
         "prompt": [
@@ -25,7 +25,7 @@
     "normalize": "sym",
     "loader": "icd.experiments.hf.load_hf_causal_lm",
     "loader_kwargs": {
-      "model_name": "state-spaces/mamba-3b-hf",
+      "model_name": "state-spaces/mamba-2.8b-hf",
       "sequence_length": 2048,
       "batch_size": 1,
       "prompt": [

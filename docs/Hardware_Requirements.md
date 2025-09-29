@@ -232,7 +232,7 @@ intel_gpu_top  # If Intel GPU present
 
 ### Multi-GPU Requirements
 
-**For Large Model Experiments** (Mamba-3B+):
+**For Large Model Experiments** (Mamba-2.8B+):
 ```
 Configuration: 2x A100 80GB or H100 80GB
 Connection: NVLink or high-bandwidth interconnect

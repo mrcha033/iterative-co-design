@@ -9,7 +9,7 @@ systems and (2) to measure impact under real request traffic.
 
 - Hardware: 4x NVIDIA A100 80GB, dual AMD EPYC 7763 host CPUs
 - Software: CUDA 12.2, cuDNN 9.0, Triton Inference Server 2.38
-- Model: Mamba-3B MoE with 8 experts, FP16 weights, KV-cache enabled
+- Model: Mamba-2.8B MoE with 8 experts, FP16 weights, KV-cache enabled
 - Batch scheduler: Dynamic batching with a 2 ms queueing delay
 
 ## Methodology

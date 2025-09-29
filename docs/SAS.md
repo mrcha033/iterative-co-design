@@ -9,7 +9,7 @@ Provide the `permute → transform(S/Q/K) → re-permute` loop as a unified libr
 
 * **Environment**: Python 3.10, CUDA 11.x+, with MPS/CPU guards. Nsight Compute (ncu) and NVML power sampling must be available. At least one A100 or H100 GPU.
 * **Scope**: Inference-only pathway. Training, distributed scheduling, and cluster orchestration are excluded.
-* **Goals (summary)**: Achieve Latency −20%, L2 hit +10%p, and EpT −15% on two representative workloads (SSM-Mamba-3B and Transformer-BERT-base) for the MVP.
+* **Goals (summary)**: Achieve Latency −20%, L2 hit +10%p, and EpT −15% on two representative workloads (SSM-Mamba-2.8B and Transformer-BERT-base) for the MVP.
 
 ---
 

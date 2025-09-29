@@ -41,7 +41,7 @@ cat runs/smoke/compare.json
 - **Cost**: $50-100 total
 
 ### Full Validation Requirements (All Claims)
-- **Multi-GPU**: Dual A100 80GB for Mamba-3B experiments
+- **Multi-GPU**: Dual A100 80GB for Mamba-2.8B experiments
 - **Cross-vendor**: AMD MI100, Intel Xeon 8380 access
 - **Time**: 48-72 hours
 - **Cost**: $2000-5000 (institutional access recommended)

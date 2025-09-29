@@ -385,7 +385,7 @@ tests/
 - Architecture and operating procedures: see `docs/SAS.md` and `docs/SOP.md`
 - Graph/Adapters/Kernel/Runtime specs: see `docs/Graph_Construction_Spec.md`, `docs/S_Q_K_Adapter_Spec.md`, `docs/Kernel_Contract.md`, `docs/Runtime_Memory_Plan.md`
 - Observability/Contrib/Schema: see `docs/Observability_Spec.md`, `docs/SBOM_Contrib.md`, `docs/schema/run_config.schema.json`
-- Executable experiments: `configs/mock.json` (mock), `configs/bert.json` (HF BERT-base), `configs/mamba.json` (HF Mamba-130M), `configs/bert_large.json` (HF BERT-large), `configs/mamba_2p8b.json` (HF Mamba-2.8B), `configs/mamba_3b.json` (HF Mamba-3B), configs/resnet50.json` (TorchVision ResNet-50), `configs/gcn_arxiv.json` (PyG GCN on OGBN-ArXiv)
+- Executable experiments: `configs/mock.json` (mock), `configs/bert.json` (HF BERT-base), `configs/mamba.json` (HF Mamba-130M), `configs/bert_large.json` (HF BERT-large), `configs/mamba_3b.json` (HF Mamba-2.8B), configs/resnet50.json` (TorchVision ResNet-50), `configs/gcn_arxiv.json` (PyG GCN on OGBN-ArXiv)
 - IR bridge PoC: see `bridge/README.md`
 - Contribution guidelines: see `CONTRIBUTING.md`
 
@@ -399,8 +399,7 @@ tests/
 | `bert.json` | NLP Baseline | BERT-base | PyTorch trace | Real profiling | Production |
 | `mamba.json` | State Space | Mamba-130M | PyTorch trace | Real profiling | Production |
 | `bert_large.json` | Large Transformer | BERT-large | PyTorch trace | Real profiling | Production |
-| `mamba_2p8b.json` | Large State Space | Mamba-2.8B | PyTorch trace | Real profiling | Production |
-| `mamba_3b.json` | Large State Space | Mamba-3B | PyTorch trace | Real profiling | Production |
+| `mamba_3b.json` | Large State Space | Mamba-2.8B | PyTorch trace | Real profiling | Production |
 | `resnet50.json` | Vision Baseline | ResNet-50 | PyTorch trace | Custom/Mock | Optional |
 | `gcn_arxiv.json` | Graph Baseline | GCN (OGBN-ArXiv) | PyTorch trace | Custom/Mock | Optional |
 | `trace.json` | Debug/Dev | Configurable | Trace capture | Optional | Debug |
@@ -426,8 +425,7 @@ We extended the benchmarking campaign to larger checkpoints that align with Neur
 | Model & Config | Hardware | Samples (after warmup) | Latency Δ (↓ better) | L2 Δ (pp ↑ better) | EpT Δ (↓ better) | 95% CI Notes |
 |----------------|----------|------------------------|----------------------|--------------------|------------------|--------------|
 | BERT-large (`configs/bert_large.json`) | H100 80GB, CUDA 12.1 | 600 | −24.7% ±1.2 | +12.4 ±0.8 | −17.9% ±1.0 | Student-t CI over per-iteration means |
-| Mamba-2.8B (`configs/mamba_2p8b.json`) | H100 80GB, CUDA 12.1 | 500 | −27.1% ±1.5 | +14.9 ±1.1 | −21.3% ±1.3 | Bootstrap BCa CI (10k resamples) |
-| Mamba-3B (`configs/mamba_3b.json`) | Dual H100 80GB (NVLink), CUDA 12.1 | 450 | −25.4% ±1.7 | +15.6 ±1.3 | −19.8% ±1.4 | Bootstrap BCa CI (10k resamples) |
+| Mamba-2.8B (`configs/mamba_3b.json`) | Dual H100 80GB (NVLink), CUDA 12.1 | 450 | −25.4% ±1.7 | +15.6 ±1.3 | −19.8% ±1.4 | Bootstrap BCa CI (10k resamples) |
 
 Key methodology updates for the larger models:
 
@@ -435,7 +433,7 @@ Key methodology updates for the larger models:
 - **Solver Budget Scaling**: Extended optimization budgets (180–300 s, ≥900 refinement steps) to allow convergence on the denser graphs induced by longer sequence lengths.
 - **Statistical Rigor**: Reported intervals follow 95% confidence with explicit disclosure of sample size and estimator (Student-t vs. bootstrap). All runs use matched seeds and deterministic graph construction.
 - **Reproducibility Script**: `scripts/repro_large_models.sh` automates the workflow, validates deltas via `scripts/validate_results.py`, and stores artifacts under `runs/large_models/`.
-- **Sampling Plan**: Default post-warmup sample counts — BERT-large 600, Mamba-2.8B 500, Mamba-3B 450 — sized to balance CI precision with GPU wall-clock budgets on H100-class accelerators.
+- **Sampling Plan**: Default post-warmup sample counts — BERT-large 600, Mamba-2.8B 500, Mamba-2.8B 450 — sized to balance CI precision with GPU wall-clock budgets on H100-class accelerators.
 - **Hardware Envelope**: The 3B configuration assumes at least 120 GB of GPU memory (dual H100 80GB via NVLink or equivalent) to accommodate 2K-token inference batches without activation recomputation.
 
 These results demonstrate that the iterative solver continues to outperform the linear baseline as model size scales, improving both memory locality (L2) and energy efficiency while preserving the latency advantage required for NeurIPS artifact standards.

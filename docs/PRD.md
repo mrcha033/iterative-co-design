@@ -48,7 +48,7 @@ This product specification locks in the goals, scope, metrics, and risks for an 
 
 > **Acceptance criteria**
 >
-> * Both representative workloads (SSM-Mamba-3B, Transformer-BERT-base) satisfy Latency −20% / L2 +10%p / EpT −15% with quality loss ≤ 0.1%p.
+> * Both representative workloads (SSM-Mamba-2.8B, Transformer-BERT-base) satisfy Latency −20% / L2 +10%p / EpT −15% with quality loss ≤ 0.1%p.
 > * Deliver the `icd` CLI, Python API, and HTML/CSV report artifacts.
 > * External reviewers can reproduce all results within **24 hours** using the repro scripts.
 

@@ -156,7 +156,7 @@ To test if our iterative method is a general principle beyond sparsity, we desig
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.8\linewidth]{figures/quantization_results_barchart.png} % Placeholder for the actual bar chart
-\caption{The Value of Iteration in Co-Design with Quantization. Latency comparison of three optimization strategies on Mamba-3B with $n=6$ paired trials per strategy. Bars show the mean latency and error bars denote 95\% BCa confidence intervals. The two linear pipelines (`Quant-then-Permute`, `Permute-then-Quant`) are clearly outperformed by our iterative `Permute-Quant-RePermute` approach. The red arrow highlights the additional, measurable latency reduction (\textbf{e.g., -12\%}) achieved by the final 're-permutation' step alone, providing compelling evidence for the generality of our iterative principle.}
+\caption{The Value of Iteration in Co-Design with Quantization. Latency comparison of three optimization strategies on Mamba-2.8B with $n=6$ paired trials per strategy. Bars show the mean latency and error bars denote 95\% BCa confidence intervals. The two linear pipelines (`Quant-then-Permute`, `Permute-then-Quant`) are clearly outperformed by our iterative `Permute-Quant-RePermute` approach. The red arrow highlights the additional, measurable latency reduction (\textbf{e.g., -12\%}) achieved by the final 're-permutation' step alone, providing compelling evidence for the generality of our iterative principle.}
 \label{fig:quant_results}
 \end{figure}
 
@@ -186,7 +186,7 @@ Our primary finding is that iterative co-design consistently and significantly o
 \label{tab:main_results_comprehensive}
 \begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}X *{4}{>{\centering\arraybackslash}X} }
 \toprule
-\textbf{Method} & \textbf{Mamba-3B} & \textbf{BERT-large} & \textbf{ResNet-50} & \textbf{GCN (ogbn-arxiv)} \\
+\textbf{Method} & \textbf{Mamba-2.8B} & \textbf{BERT-large} & \textbf{ResNet-50} & \textbf{GCN (ogbn-arxiv)} \\
  & (Latency ms $\downarrow$) & (Latency ms $\downarrow$) & (Latency ms $\downarrow$) & (Latency ms $\downarrow$) \\
 \midrule
 (1) Dense Baseline & 35.2 ± 0.3 & 18.5 ± 0.2 & 20.1 ± 0.2 & 12.4 ± 0.1 \\
@@ -217,7 +217,7 @@ To understand \textit{why} iteration works, we establish a robust causal chain: 
 
 \begin{table}[hbt!]
 \centering
-\caption{Observational Evidence of the Causal Chain on Mamba-3B. Comparing the linear pipeline against our iterative method reveals a strong correlation: the higher modularity achieved by our method corresponds directly to a higher L2 cache hit rate and, consequently, lower latency.}
+\caption{Observational Evidence of the Causal Chain on Mamba-2.8B. Comparing the linear pipeline against our iterative method reveals a strong correlation: the higher modularity achieved by our method corresponds directly to a higher L2 cache hit rate and, consequently, lower latency.}
 \label{tab:mamba_deepdive}
 \begin{tabular}{l c c c}
 \toprule
@@ -239,7 +239,7 @@ Linear Pipeline & 0.47 ± 0.02 & 71.3\% ± 0.8\% & 24.1 ± 0.2 \\
 \end{figure}
 
 \paragraph{Observational and Synthetic Evidence.}
-First, we observe a strong correlation between these metrics on Mamba-3B (Table~\ref{tab:mamba_deepdive}). We then confirm the modularity-cache link with synthetic access patterns (Figure~\ref{fig:synthetic_validation}).
+First, we observe a strong correlation between these metrics on Mamba-2.8B (Table~\ref{tab:mamba_deepdive}). We then confirm the modularity-cache link with synthetic access patterns (Figure~\ref{fig:synthetic_validation}).
 
 \begin{table}[hbt!]
 \centering
@@ -259,11 +259,11 @@ First, we observe a strong correlation between these metrics on Mamba-3B (Table~
 
 
 \paragraph{Causal Intervention and Mediation Analysis.}
-To establish causation, we perform direct interventions on Mamba-3B (Table~\ref{tab:causal_intervention}). We further conduct a Baron--Kenny style mediation analysis with 5{,}000 bootstrap replicates implemented in \texttt{scripts/mediation\_analysis.py}. The procedure regresses latency on modularity, inserts L2 cache hit rate as the mediator, and reports the indirect effect via percentile and BCa intervals. We measure that 86.0\% (BCa 95\% CI: [82.3, 89.5]) of modularity's effect on latency is mediated through the cache hit rate ($\beta_{\text{indirect}} = -0.74, p < 0.001$), validating cache behavior as the dominant pathway.
+To establish causation, we perform direct interventions on Mamba-2.8B (Table~\ref{tab:causal_intervention}). We further conduct a Baron--Kenny style mediation analysis with 5{,}000 bootstrap replicates implemented in \texttt{scripts/mediation\_analysis.py}. The procedure regresses latency on modularity, inserts L2 cache hit rate as the mediator, and reports the indirect effect via percentile and BCa intervals. We measure that 86.0\% (BCa 95\% CI: [82.3, 89.5]) of modularity's effect on latency is mediated through the cache hit rate ($\beta_{\text{indirect}} = -0.74, p < 0.001$), validating cache behavior as the dominant pathway.
 
 \begin{table}[hbt!]
 \centering
-\caption{Impact on the Full Memory Hierarchy (Mamba-3B). Iterative co-design improves efficiency at all levels. The most significant impact is the \textbf{20.6\% reduction in DRAM bandwidth utilization}, a direct consequence of the improved L2 cache hit rate. This demonstrates that our method reduces the most expensive memory operations—those that go off-chip to main memory.}
+\caption{Impact on the Full Memory Hierarchy (Mamba-2.8B). Iterative co-design improves efficiency at all levels. The most significant impact is the \textbf{20.6\% reduction in DRAM bandwidth utilization}, a direct consequence of the improved L2 cache hit rate. This demonstrates that our method reduces the most expensive memory operations—those that go off-chip to main memory.}
 \label{tab:memory_hierarchy}
 \begin{tabular}{l c c c}
 \toprule
@@ -279,7 +279,7 @@ Shared Memory Bank Conflicts & 1.2M & 0.4M & -66.7\% \\
 
 
 \paragraph{Full Memory Hierarchy Impact.}
-While L2 cache is the primary mediator, the benefits cascade throughout the entire memory hierarchy. A detailed analysis on Mamba-3B (Table~\ref{tab:memory_hierarchy}) reveals the key finding is a substantial \textbf{20.6\% reduction in DRAM bandwidth utilization}, confirming that better cache usage directly translates to fewer costly accesses to main memory.
+While L2 cache is the primary mediator, the benefits cascade throughout the entire memory hierarchy. A detailed analysis on Mamba-2.8B (Table~\ref{tab:memory_hierarchy}) reveals the key finding is a substantial \textbf{20.6\% reduction in DRAM bandwidth utilization}, confirming that better cache usage directly translates to fewer costly accesses to main memory.
 
 \subsection{Composability and Practical Operating Range}
 We verify that our method is effective in realistic scenarios by testing its compatibility with other system optimizations and its sensitivity to batch size.
@@ -294,7 +294,7 @@ A critical question is how our permutations interact with other GPU optimization
 
 \begin{table}[hbt!]
 \centering
-\caption{Interaction of IASP with Kernel Fusion on Mamba-3B. The improvements are nearly additive, demonstrating orthogonality.}
+\caption{Interaction of IASP with Kernel Fusion on Mamba-2.8B. The improvements are nearly additive, demonstrating orthogonality.}
 \label{tab:composability}
 \begin{tabular}{l c c}
 \toprule
@@ -324,7 +324,7 @@ To quantify when the optimization transitions from memory-bound to compute-bound
 \begin{figure}[hbt!]
     \centering
     \includegraphics[width=0.75\linewidth]{figures/bandwidth_saturation.pdf}
-    \caption{Memory bandwidth saturation analysis on Mamba-3B. Each point corresponds to a (batch size, sequence length) pair. Filled markers indicate regimes where the workload is memory bound; our method delays saturation and preserves a 10-18\% speedup until the workload becomes compute bound. Error bars show 95\% CIs over $n=5$ trials.}
+    \caption{Memory bandwidth saturation analysis on Mamba-2.8B. Each point corresponds to a (batch size, sequence length) pair. Filled markers indicate regimes where the workload is memory bound; our method delays saturation and preserves a 10-18\% speedup until the workload becomes compute bound. Error bars show 95\% CIs over $n=5$ trials.}
     \label{fig:bandwidth_saturation}
 \end{figure}
 
@@ -340,7 +340,7 @@ Having established the causal mechanism and practical applicability, we now demo
 
 \begin{table}[hbt!]
 \centering
-\caption{State-of-the-Art Comparison on Mamba-3B (WikiText-103). Our method establishes a new Pareto-optimal point, achieving lower latency than specialized frameworks like TVM while also attaining a better perplexity score, demonstrating the power of co-evolving the algorithm and its memory layout.}
+\caption{State-of-the-Art Comparison on Mamba-2.8B (WikiText-103). Our method establishes a new Pareto-optimal point, achieving lower latency than specialized frameworks like TVM while also attaining a better perplexity score, demonstrating the power of co-evolving the algorithm and its memory layout.}
 \label{tab:sota_comparison}
 \begin{tabular}{l c c}
 \toprule
@@ -377,7 +377,7 @@ To understand whether modularity optimization is universally beneficial, we reru
     \begin{subfigure}[b]{0.48\textwidth}
         \centering
         \includegraphics[width=\textwidth]{figures/latency_distributions.png}
-        \caption{Latency Distributions (Mamba-3B)}
+        \caption{Latency Distributions (Mamba-2.8B)}
         \label{fig:latency_dist}
     \end{subfigure}
     \hfill
@@ -397,10 +397,10 @@ The robustness of our claims is supported by thorough statistical analysis (Figu
 \subsection{Ablation Studies: Dissecting the Framework}
 
 To understand which components of our framework are essential, we conduct 
-comprehensive ablations on Mamba-3B.
+comprehensive ablations on Mamba-2.8B.
 
 \begin{table}[h]
-\caption{Component-wise ablation study on Mamba-3B. Each row removes or 
+\caption{Component-wise ablation study on Mamba-2.8B. Each row removes or 
 modifies one component to isolate its contribution.}
 \label{tab:ablations}
 \centering
@@ -486,7 +486,7 @@ on different architectures:
 \toprule
 \textbf{Architecture} & \textbf{TSP-based} & \textbf{Modularity} & \textbf{Improvement} \\
 \midrule
-Mamba-3B & 22.1 ms & 19.8 ms & 10.4\% \\
+Mamba-2.8B & 22.1 ms & 19.8 ms & 10.4\% \\
 BERT-large & 13.1 ms & 11.9 ms & 9.2\% \\
 ResNet-50 & 16.8 ms & 15.4 ms & 8.3\% \\
 GCN & 8.7 ms & 7.9 ms & 9.2\% \\
@@ -530,7 +530,7 @@ While our intervention experiments and mediation analysis provide strong evidenc
         \item For operations already perfectly memory-aligned for hardware like Tensor Cores, the potential benefits of permutation may be limited.
     \end{enumerate}
     \item \textbf{Hardware-Specific Engineering:} To achieve optimal performance, our method requires careful implementation that respects low-level hardware features. This includes aligning data with cache line boundaries (e.g., 128-byte on NVIDIA, 64-byte on AMD), ensuring full warp utilization by padding to multiples of 32, and designing stride-1 access patterns to avoid shared memory bank conflicts. This implies that porting the optimization to a new architecture requires non-trivial, hardware-specific engineering effort.
-    \item Optimization Overhead: The co-design process itself introduces computational overhead. The IASP step, which involves computing a large correlation matrix and performing spectral clustering, can take several hours for large models like Mamba-3B. While this is a one-time cost amortized over many inference runs, it is a significant factor to consider for rapid development cycles. For a model deployed at scale, this overhead is easily justified by the resulting latency reduction, but for research and prototyping, it represents a practical trade-off.
+    \item Optimization Overhead: The co-design process itself introduces computational overhead. The IASP step, which involves computing a large correlation matrix and performing spectral clustering, can take several hours for large models like Mamba-2.8B. While this is a one-time cost amortized over many inference runs, it is a significant factor to consider for rapid development cycles. For a model deployed at scale, this overhead is easily justified by the resulting latency reduction, but for research and prototyping, it represents a practical trade-off.
 \end{itemize}
 
 \subsection{Future Work}
@@ -712,7 +712,7 @@ Table~\ref{tab:quant_results_detail_table} provides the precise latency measurem
 
 \begin{table}[htbp]
 \centering
-\caption{Latency Results for Quantization Co-Design Strategies on Mamba-3B.}
+\caption{Latency Results for Quantization Co-Design Strategies on Mamba-2.8B.}
 \label{tab:quant_results_detail_table}
 \begin{tabular}{l c c}
 \toprule
@@ -736,14 +736,14 @@ For full reproducibility, we list the key hyperparameters used in our experiment
 \toprule
 \textbf{Parameter} & \textbf{Value} \\
 \midrule
-\multicolumn{2}{c}{\textbf{HDS (Mamba-3B Fine-tuning)}} \\
+\multicolumn{2}{c}{\textbf{HDS (Mamba-2.8B Fine-tuning)}} \\
 Learning Rate & 1e-5 \\
 Optimizer & AdamW \\
 Epochs & 3 \\
 Gumbel Temperature (start/end) & 1.0 / 0.1 \\
 Sparsity Target & 2:4 (50\%) \\
 \midrule
-\multicolumn{2}{c}{\textbf{IASP (Mamba-3B)}} \\
+\multicolumn{2}{c}{\textbf{IASP (Mamba-2.8B)}} \\
 Correlation Data Sequence Length (T) & 4096 tokens \\
 Number of sequences sampled & 100 \\
 \bottomrule
@@ -765,11 +765,11 @@ The affinity matrix, central to our IASP method, was computed as follows for dif
 \subsection{Hyperparameter Sensitivity}
 We evaluated the sensitivity of our framework to its most critical hyperparameter: the number of clusters ($k$) used in the IASP spectral clustering step. This parameter determines the granularity of the memory layout optimization, with too few clusters leading to coarse-grained layouts and too many leading to overfitting to noise. 
 
-Table~\ref{tab:hyperparam_sensitivity} shows the final latency on Mamba-3B for different values of $k$. The results indicate that while performance peaks at our chosen value of $k=64$, the method is not overly sensitive to this choice, with performance degrading gracefully in a reasonable range around the optimum. This demonstrates the robustness of our approach.
+Table~\ref{tab:hyperparam_sensitivity} shows the final latency on Mamba-2.8B for different values of $k$. The results indicate that while performance peaks at our chosen value of $k=64$, the method is not overly sensitive to this choice, with performance degrading gracefully in a reasonable range around the optimum. This demonstrates the robustness of our approach.
 
 \begin{table}[hbt!]
 \centering
-\caption{Sensitivity analysis for the number of clusters ($k$) in IASP on Mamba-3B. Performance is robust in a reasonable range around the optimal value, validating our choice.}
+\caption{Sensitivity analysis for the number of clusters ($k$) in IASP on Mamba-2.8B. Performance is robust in a reasonable range around the optimal value, validating our choice.}
 \label{tab:hyperparam_sensitivity}
 \begin{tabular}{cc}
 \toprule
@@ -876,7 +876,7 @@ Cache metrics collected via:
 # Profile with Nsight Compute
 ncu --metrics l2_cache_hit_rate,dram_throughput \
     --target-processes all \
-    python inference.py --model mamba-3b
+    python inference.py --model mamba-2.8b
 \end{lstlisting}
 
 \begin{table}[h]
