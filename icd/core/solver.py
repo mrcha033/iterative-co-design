@@ -282,12 +282,39 @@ def _solve_louvain(
         if G.number_of_edges() == 0:
             raise ValueError("graph has no edges")
         start_time = time.perf_counter()
-        communities = nx.algorithms.community.louvain_communities(
-            G,
-            seed=seed,
-            weight="weight",
-            resolution=getattr(cfg, "modularity_gamma", 1.0),
-        )
+        fallback_reason = None
+
+        def _fallback_partition() -> List[set[int]]:
+            nodes = sorted(int(node) for node in G.nodes())
+            if not nodes:
+                return []
+            buckets: List[set[int]] = []
+            current: List[int] = []
+            for node in nodes:
+                current.append(node)
+                if len(current) >= 2:
+                    buckets.append(set(current))
+                    current = []
+            if current:
+                if buckets:
+                    buckets[-1].update(current)
+                else:
+                    buckets.append(set(current))
+            return buckets
+
+        try:
+            communities = nx.algorithms.community.louvain_communities(
+                G,
+                seed=seed,
+                weight="weight",
+                resolution=getattr(cfg, "modularity_gamma", 1.0),
+            )
+        except ImportError as exc:
+            fallback_reason = str(exc) or "missing_louvain_dependency"
+            communities = _fallback_partition()
+        except AttributeError as exc:
+            fallback_reason = str(exc) or "missing_louvain_algorithm"
+            communities = _fallback_partition()
         elapsed = time.perf_counter() - start_time
         tolerance = 1e-6
         if elapsed > runtime_budget + tolerance:
@@ -305,6 +332,8 @@ def _solve_louvain(
             "Q_louvain": modularity_value,
             "louvain_runtime_s": elapsed,
         }
+        if fallback_reason:
+            extra["louvain_fallback"] = fallback_reason
         return _finalize_stats(pi, stats, method="louvain", reference=stats_id, extra=extra)
     except (TimeoutError, ValueError, nx_error, AttributeError):
         return _solve_spectral_refine(

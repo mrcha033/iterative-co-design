@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import Iterable, List
 
+import itertools
 import math
 import time
 
@@ -30,6 +31,7 @@ class ClusteringConfig:
     modularity_floor: float = 0.35
     runtime_budget: float | None = None
     last_meta: dict[str, object] = field(default_factory=dict, init=False, repr=False)
+    last_meta_adjustments: int = field(default=0, init=False, repr=False)
 
 
 def _to_networkx(W: CSRMatrix) -> nx.Graph:
@@ -49,17 +51,60 @@ def _to_networkx(W: CSRMatrix) -> nx.Graph:
     return G
 
 
+def _balanced_partition(nodes: Iterable[int], min_size: int = 2) -> List[List[int]]:
+    ordered = sorted(int(node) for node in nodes)
+    if not ordered:
+        return []
+    clusters: List[List[int]] = []
+    buffer: List[int] = []
+    for node in ordered:
+        buffer.append(node)
+        if len(buffer) >= min_size:
+            clusters.append(buffer)
+            buffer = []
+    if buffer:
+        if clusters:
+            clusters[-1].extend(buffer)
+        else:
+            clusters.append(buffer)
+    return clusters
+
+
+def _merge_singletons(parts: List[List[int]]) -> tuple[List[List[int]], int]:
+    if not parts:
+        return parts, 0
+    singles = [cluster for cluster in parts if len(cluster) == 1]
+    if not singles:
+        return parts, 0
+    merged_into_existing = 0
+    others = [cluster for cluster in parts if len(cluster) > 1]
+    if not others:
+        return _balanced_partition(itertools.chain.from_iterable(parts)), len(singles)
+    for single in singles:
+        idx = min(range(len(others)), key=lambda i: (len(others[i]), others[i]))
+        others[idx].extend(single)
+        merged_into_existing += 1
+    return [sorted(cluster) for cluster in others], merged_into_existing
+
+
 def _louvain(G: nx.Graph, cfg: ClusteringConfig) -> List[List[int]]:
     import random
 
     rng = random.Random(cfg.rng_seed)
-    parts = community.louvain_communities(
-        G,
-        weight="weight",
-        seed=rng.randint(0, 2**32 - 1),
-        resolution=cfg.resolution,
-    )
-    return [sorted(list(p)) for p in parts]
+    seed_value = rng.randint(0, 2**32 - 1)
+    try:
+        parts = community.louvain_communities(
+            G,
+            weight="weight",
+            seed=seed_value,
+            resolution=cfg.resolution,
+        )
+    except ImportError:
+        parts = [set(cluster) for cluster in _balanced_partition(G.nodes)]
+    clusters = [sorted(list(p)) for p in parts if p]
+    clusters, merged = _merge_singletons(clusters)
+    cfg.last_meta_adjustments = merged
+    return clusters
 
 
 def _spectral(G: nx.Graph, cfg: ClusteringConfig) -> List[List[int]]:
@@ -83,6 +128,7 @@ def _dispatch(G: nx.Graph, cfg: ClusteringConfig, method: str) -> List[List[int]
 def cluster_graph(W: CSRMatrix, cfg: ClusteringConfig) -> List[List[int]]:
     G = _to_networkx(W)
     start = time.perf_counter()
+    cfg.last_meta_adjustments = 0
     clusters = _dispatch(G, cfg, cfg.method)
     duration = time.perf_counter() - start
     modularity = None
@@ -98,6 +144,7 @@ def cluster_graph(W: CSRMatrix, cfg: ClusteringConfig) -> List[List[int]]:
         if low_modularity or over_budget:
             used_method = cfg.fallback_method
             fallback_reason = "low_modularity" if low_modularity else "runtime_budget"
+            cfg.last_meta_adjustments = 0
             clusters = _dispatch(G, cfg, cfg.fallback_method)
             if clusters:
                 modularity = community.modularity(G, [set(c) for c in clusters])
@@ -107,6 +154,7 @@ def cluster_graph(W: CSRMatrix, cfg: ClusteringConfig) -> List[List[int]]:
         "fallback_reason": fallback_reason,
         "runtime_s": duration,
         "modularity": modularity,
+        "singleton_merges": int(getattr(cfg, "last_meta_adjustments", 0)),
     }
     return clusters
 

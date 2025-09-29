@@ -6,6 +6,26 @@ import time
 from typing import Any, Dict
 
 
+def _precise_sleep(duration: float) -> None:
+    """Sleep for ``duration`` seconds with sub-millisecond accuracy.
+
+    ``time.sleep`` can overshoot significantly for short durations which makes
+    latency-sensitive tests noisy.  For very small delays we therefore busy-wait
+    using :func:`time.perf_counter` which provides much tighter bounds while
+    keeping the implementation dependency-free.
+    """
+
+    duration = max(0.0, float(duration))
+    if duration == 0.0:
+        return
+    if duration >= 0.01:
+        time.sleep(duration)
+        return
+    deadline = time.perf_counter() + duration
+    while time.perf_counter() < deadline:
+        pass
+
+
 def mock_inference(mode: str, context: Dict[str, Any]) -> Dict[str, Any]:
     """Deterministic mock inference runner used for CI.
 
@@ -29,7 +49,7 @@ def mock_inference(mode: str, context: Dict[str, Any]) -> Dict[str, Any]:
         l2 = float(context.get("linear_l2_hit", 0.82)) if provide_l2 else None
         ept = float(context.get("linear_ept", 1.0)) if provide_ept else None
 
-    time.sleep(delay)
+    _precise_sleep(delay)
     result: Dict[str, Any] = {"tokens": tokens}
     if l2 is not None:
         result["l2_hit_pct"] = l2

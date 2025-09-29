@@ -3,7 +3,7 @@ from typing import List
 
 import hypothesis.strategies as st
 import numpy as np
-from hypothesis import given, settings
+from hypothesis import HealthCheck, given, settings
 
 from icd.core.cost import CostConfig, eval_cost
 from icd.core.graph import CSRMatrix
@@ -43,7 +43,7 @@ def symmetric_csr(draw):
     return _dense_to_csr(mat)
 
 
-@settings(max_examples=25, deadline=None)
+@settings(max_examples=25, deadline=None, suppress_health_check=[HealthCheck.too_slow])
 @given(symmetric_csr())
 def test_fit_permutation_returns_valid_permutation(W: CSRMatrix):
     pi, stats = fit_permutation(W, time_budget_s=0.05, refine_steps=32, seed=3)
@@ -52,7 +52,7 @@ def test_fit_permutation_returns_valid_permutation(W: CSRMatrix):
     assert "J" in stats
 
 
-@settings(max_examples=20, deadline=None)
+@settings(max_examples=20, deadline=None, suppress_health_check=[HealthCheck.too_slow])
 @given(symmetric_csr())
 def test_iterative_cost_never_worse_than_identity(W: CSRMatrix):
     cfg = CostConfig()

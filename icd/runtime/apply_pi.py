@@ -70,7 +70,16 @@ def reindex_cols(W: torch.Tensor, perm: torch.LongTensor) -> torch.Tensor:
 def PWP_inv(W: torch.Tensor, pi: torch.LongTensor, pinv: torch.LongTensor) -> torch.Tensor:
     """Return ``P · W · P^{-1}`` for hidden ``→`` hidden mappings."""
 
-    return Pinv_W_P(W, pi, pinv)
+    if W.ndim != 2:
+        raise ValueError("W must be a 2-D tensor")
+    if W.shape[0] != W.shape[1]:
+        raise ValueError("W must be square for hidden→hidden mappings")
+    _validate_perm(pi, W.shape[0])
+    _validate_perm(pinv, W.shape[0])
+    expected_pi = inv_perm(pinv)
+    if not torch.equal(expected_pi.to(device=pi.device, dtype=pi.dtype), pi):
+        raise ValueError("pi and pinv must be inverse permutations")
+    return reindex_rows(reindex_cols(W, pinv), pinv)
 
 
 def PTWP(W: torch.Tensor, pi: torch.LongTensor) -> torch.Tensor:
