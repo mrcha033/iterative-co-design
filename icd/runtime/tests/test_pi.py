@@ -245,3 +245,51 @@ def test_apply_pi_sequence_auto_collects_mamba_modules():
     assert torch.allclose(model.B.weight, reindex_rows(orig_B, pi))
     assert torch.allclose(model.C.weight, reindex_cols(orig_C, pi))
     assert torch.allclose(model.x0, reindex_vec(orig_x0, pi))
+
+
+def test_apply_pi_sequence_skips_mamba_mismatch():
+    class DummyMambaBlock(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            hidden = 4
+            intermediate = 6
+            self.in_proj = torch.nn.Linear(hidden, intermediate * 2, bias=False)
+            self.x_proj = torch.nn.Linear(intermediate, 5, bias=False)
+            self.out_proj = torch.nn.Linear(intermediate, hidden, bias=False)
+            self.A_log = torch.nn.Parameter(torch.zeros(intermediate, 2))
+            self.D = torch.nn.Parameter(torch.ones(intermediate))
+            self.conv1d = torch.nn.Conv1d(intermediate, intermediate, kernel_size=2, groups=intermediate)
+
+    class DummyMambaModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.block = DummyMambaBlock()
+            self.config = SimpleNamespace(model_type="mamba")
+            self.register_parameter("_anchor", torch.nn.Parameter(torch.zeros(1)))
+
+    model = DummyMambaModel()
+    block = model.block
+
+    module_entry = {
+        "A": block.in_proj,
+        "B": block.x_proj,
+        "C": block.out_proj,
+        "_hf_mamba": True,
+        "_module_name": "dummy",
+        "_module_ref": block,
+    }
+
+    context = {
+        "_hf_cache": {},
+        "mamba_modules": [module_entry],
+        "config": {},
+    }
+
+    quant_cfg = QuantConfig()
+    pi = list(range(5))  # length mismatched with hidden/intermediate dims
+
+    _apply_pi_sequence(model, context, pi, quant_cfg)
+
+    cache = context["_hf_cache"]
+    assert cache.get("pi_signatures") in (None, set())
+    assert "last_pi_signature" not in cache

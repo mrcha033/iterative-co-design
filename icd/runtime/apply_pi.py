@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Permutation application utilities for HuggingFace runners."""
 
+import logging
 from dataclasses import dataclass, field
 import hashlib
 import importlib
@@ -27,12 +28,20 @@ __all__ = [
     "apply_pi_to_bert",
     "apply_pi_to_mamba",
     "apply_pi_to_mamba_hf",
+    "PermutationApplicationError",
     "perm_signature",
     "perm_signature_from_iterable",
     "StableHLOCapability",
     "detect_stablehlo_capability",
     "require_stablehlo_capability",
 ]
+
+
+logger = logging.getLogger(__name__)
+
+
+class PermutationApplicationError(RuntimeError):
+    """Raised when a permutation cannot be applied to a module."""
 
 
 def inv_perm(pi: torch.LongTensor) -> torch.LongTensor:
@@ -598,7 +607,7 @@ def apply_pi_to_mamba_hf(module_dict: Mapping[str, Any], pi: torch.LongTensor) -
             pi_inner, hidden_size_int, intermediate_size_int
         )
     else:
-        raise ValueError(
+        raise PermutationApplicationError(
             "permutation length {} does not match hidden_size {} or intermediate_size {}".format(
                 pi_length, hidden_size_int, intermediate_size_int
             )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Iterable, Tuple, List
 
 from collections.abc import Mapping
@@ -15,7 +16,16 @@ from icd.adapters.quant import (
     repack_linear_after_permutation,
 )
 from icd.adapters.sparsity import SparsityConfig, apply_sparsity_from_config
-from icd.runtime.apply_pi import apply_pi_to_bert, apply_pi_to_mamba, apply_pi_to_mamba_hf, perm_signature_from_iterable
+from icd.runtime.apply_pi import (
+    PermutationApplicationError,
+    apply_pi_to_bert,
+    apply_pi_to_mamba,
+    apply_pi_to_mamba_hf,
+    perm_signature_from_iterable,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 def _wrap_mamba_weight_holder(obj: Any) -> Any:
@@ -141,8 +151,11 @@ def _apply_pi_sequence(
 
     pi_tensor = _tensor_from_pi(model, pi_seq)
     model_type = getattr(getattr(model, "config", None), "model_type", None)
+    applied_successfully = False
+
     if model_type == "bert" or hasattr(model, "bert"):
         apply_pi_to_bert(model, pi_tensor)
+        applied_successfully = True
     elif model_type == "mamba":
         modules = context.get("mamba_modules")
         if modules is None:
@@ -151,23 +164,52 @@ def _apply_pi_sequence(
                 context["mamba_modules"] = modules
         if modules is None:
             raise RuntimeError("runner context missing 'mamba_modules' for Mamba permutation application")
-        if isinstance(modules, Mapping):
-            if modules.get("_hf_mamba"):
-                apply_pi_to_mamba_hf(modules, pi_tensor)
+
+        def _module_name(entry: Mapping[str, Any]) -> str:
+            return str(entry.get("_module_name") or "<unnamed>")
+
+        def _apply_entry(entry: Mapping[str, Any]) -> bool:
+            if entry.get("_hf_mamba"):
+                apply_pi_to_mamba_hf(entry, pi_tensor)
             else:
-                apply_pi_to_mamba(modules, pi_tensor)
+                apply_pi_to_mamba(entry, pi_tensor)
+            return True
+
+        if isinstance(modules, Mapping):
+            try:
+                applied_successfully = _apply_entry(modules)
+            except PermutationApplicationError as exc:
+                logger.warning(
+                    "Skipping Mamba permutation for %s: %s",
+                    _module_name(modules),
+                    exc,
+                )
         else:
-            any_applied = False
+            attempted = False
             for entry in modules:
-                if entry.get("_hf_mamba"):
-                    apply_pi_to_mamba_hf(entry, pi_tensor)
-                else:
-                    apply_pi_to_mamba(entry, pi_tensor)
-                any_applied = True
-            if not any_applied:
+                attempted = True
+                try:
+                    if _apply_entry(entry):
+                        applied_successfully = True
+                except PermutationApplicationError as exc:
+                    logger.warning(
+                        "Skipping Mamba permutation for %s: %s",
+                        _module_name(entry),
+                        exc,
+                    )
+            if not attempted:
                 raise RuntimeError("no applicable Mamba modules found for permutation application")
+            if not applied_successfully:
+                logger.warning(
+                    "Mamba permutation rejected for all %d collected modules; leaving model unpermuted.",
+                    len(modules),
+                )
     else:
         apply_pi_to_bert(model, pi_tensor)
+        applied_successfully = True
+
+    if not applied_successfully:
+        return
 
     applied.add(signature)
     cache["last_pi_signature"] = signature
