@@ -1,25 +1,5 @@
 # Iterative HW–SW Co-Design — Layout Re-Optimization (ICD)
 
-## ⚠️ Experimental Validation Status
-
-**Infrastructure Status:** ✅ COMPLETE
-**Systematic Validation:** ⏳ IN PROGRESS
-
-This repository provides **production-quality infrastructure** for iterative co-design research. The core framework, hardware profiling, and automation tools are complete and tested. **Systematic experimental validation** across all paper claims is currently in progress.
-
-**What's Ready:**
-- ✅ NCU and NVML hardware profiling (no more mocks!)
-- ✅ 6 architecture configs (Mamba, BERT, ResNet, GCN, EfficientNet, GraphSAGE)
-- ✅ Batch experimental runner and data collection
-- ✅ BCa bootstrap statistical analysis
-
-**What's Pending:**
-- ⏳ Systematic execution of 120 experimental runs
-- ⏳ Cross-hardware validation (requires GPU access)
-- ⏳ Publication-quality figure generation from real data
-
----
-
 ## System Overview & Architecture Analysis
 
 This repository implements a production-grade, scientifically rigorous pipeline for **iterative hardware-software co-design** through memory layout re-optimization. The system orchestrates a complex workflow: `permute → transform(S/Q/K) → re-permute → measure → accept/rollback`, with emphasis on determinism, comprehensive observability, and CI/CD portability.
