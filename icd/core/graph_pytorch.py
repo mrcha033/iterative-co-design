@@ -250,11 +250,13 @@ def build_w_from_pytorch(
         "mm": 1.0,
         "addmm": 1.0,
         "bmm": 0.8,
-        # attention cores (cover fused implementations)
+        # attention cores (cover fused/aten/3rd-party variants)
         "scaled_dot_product": 1.2,
         "scaled_dot_product_attention": 1.2,
+        "aten::scaled_dot_product_attention": 1.2,
         "flash_attn": 1.2,
         "flashattention": 1.2,
+        "mem_efficient_attention": 1.2,
         "add": 0.25,
         "transpose": 0.1,
         "permute": 0.1,
@@ -266,9 +268,10 @@ def build_w_from_pytorch(
 
     for e in events:
         key = str(getattr(e, 'key', ''))
+        key_l = key.lower()
         matched = False
         for k, w in WEIGHTS.items():
-            if k in key:
+            if k in key_l:
                 total_weight += w * bpf
                 used_ops.add(k)
                 matched = True
@@ -300,6 +303,10 @@ def build_w_from_pytorch(
                 if nh > 0 and hs > 0 and hs % nh == 0:
                     head_dim = hs // nh
                     num_heads = nh
+                kvh = int(getattr(cfg, "num_key_value_heads", 0) or 0)
+                if head_dim is None and kvh > 0 and hs > 0 and hs % kvh == 0:
+                    head_dim = hs // kvh
+                    num_heads = kvh
         except Exception:
             pass
         if head_dim is None:
@@ -367,6 +374,7 @@ def build_w_from_pytorch(
             "shape": tuple(shp) if shp is not None else None,
             "dtype": str(dtype).split(".")[-1] if dtype is not None else None,
             "feature_dim": (len(shp) - 1) if hasattr(shp, "__len__") and len(shp) >= 2 else None,
+            "last_dim_size": int(shp[-1]) if hasattr(shp, "__len__") and len(shp) >= 1 else None,
         })
 
     import hashlib, json as _json
@@ -397,6 +405,7 @@ def build_w_from_pytorch(
             "trace_hash": trace_hash,
             "feature_dim": D,
             "feature_dim_source": feature_dim_source,
+            "nnz": len(data),
         },
     }
     if inter_size and D > 0:
