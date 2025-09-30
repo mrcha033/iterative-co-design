@@ -22,8 +22,8 @@ source venv/bin/activate || source "$PROJECT_ROOT/venv/bin/activate"
 python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available!'; print(f'Using {torch.cuda.get_device_name(0)}')" | tee -a "$LOG_FILE"
 
 # Architecture configs - use proper model sizes for paper
-# mamba_3b = Mamba-2.8B for paper
-ARCHS=("mamba_3b" "bert" "resnet50" "gcn_arxiv")
+# mamba_ssm_2.8b = Original mamba-ssm Mamba-2.8B (has A, B, C modules)
+ARCHS=("mamba_ssm_2.8b" "bert" "resnet50" "gcn_arxiv")
 RUNS=5
 
 # Function to run a single experiment with separate config and output names
@@ -58,8 +58,9 @@ run_experiment_with_outdir() {
 
 # Main experiment loop
 for arch in "${ARCHS[@]}"; do
-    # Use friendly name for output directory (mamba_3b -> mamba)
-    out_arch="${arch/_3b/}"
+    # Use friendly name for output directory (mamba_ssm_2.8b -> mamba)
+    out_arch="${arch/_ssm_2.8b/}"
+    out_arch="${out_arch/_3b/}"
 
     echo "========================================" | tee -a "$LOG_FILE"
     echo "Starting architecture: $arch (output: $out_arch)" | tee -a "$LOG_FILE"
