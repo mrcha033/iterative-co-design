@@ -37,16 +37,10 @@ def _maybe_override_feature_dim_from_config(model: Any, current_dim: int) -> tup
     if config is None:
         return current_dim, None
 
-    try:
-        model_type = str(getattr(config, "model_type", ""))
-    except Exception:
-        model_type = ""
-
     hidden_size = getattr(config, "hidden_size", None)
     d_model = getattr(config, "d_model", None)
-    mtype = model_type.lower()
     if isinstance(hidden_size, int) and hidden_size > 0:
-        if mtype in {"mamba", "mamba2", "ssm"} and hidden_size != current_dim:
+        if hidden_size != current_dim:
             return hidden_size, "hf_config.hidden_size"
         if current_dim <= 0:
             return hidden_size, "hf_config.hidden_size"
@@ -54,6 +48,15 @@ def _maybe_override_feature_dim_from_config(model: Any, current_dim: int) -> tup
         return d_model, "hf_config.d_model"
 
     return current_dim, None
+
+
+def _infer_seq_len_from_tensor(t: Any) -> int:
+    try:
+        if hasattr(t, "dim") and hasattr(t, "shape") and t.dim() >= 2:
+            return int(t.shape[-2])
+    except Exception:
+        pass
+    return 0
 
 
 def _infer_feature_dim_from_fx(gm: Any, fallback: int = 0) -> int:
@@ -232,6 +235,15 @@ def build_w_from_pytorch(
     if D <= 0:
         D = 256
         feature_dim_source = "default"
+
+    seq_len = _infer_seq_len_from_tensor(ex[0])
+    try:
+        cfg_hs = int(getattr(getattr(model, "config", object()), "hidden_size", 0) or 0)
+    except Exception:
+        cfg_hs = 0
+    if seq_len > 0 and cfg_hs > 0 and D == seq_len and cfg_hs != D:
+        D = cfg_hs
+        feature_dim_source = "hf_config.hidden_size(seq_len_disambiguation)"
 
     D, override_source = _maybe_override_feature_dim_from_config(model, D)
     if override_source is not None:

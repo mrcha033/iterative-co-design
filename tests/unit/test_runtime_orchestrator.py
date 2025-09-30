@@ -101,6 +101,36 @@ def test_run_produces_artifacts(tmp_path: Path, monkeypatch, orchestrator_config
     assert call_order == [0, 1]
 
 
+def test_fallback_proxy_clamps_metrics(
+    tmp_path: Path, monkeypatch, orchestrator_config: Dict[str, Any]
+) -> None:
+    cfg = orchestrator_config
+    cfg["pipeline"]["runner"] = None
+    cfg["pipeline"]["repeats"] = 3
+
+    def fake_fit_permutation(W, time_budget_s=0.0, refine_steps=0, cfg=None, seed=0, clusters=None, method=None):
+        size = W.shape[0]
+        calls = getattr(fake_fit_permutation, "_calls", 0)
+        fake_fit_permutation._calls = calls + 1
+        pi = list(range(size))
+        if calls == 0:
+            return pi, {"J": 1000.0, "C": 1.0, "Q": 1.0, "improved": False}
+        return pi, {"J": -5000.0, "C": 1.0, "Q": 1.0, "improved": True}
+
+    monkeypatch.setattr("icd.runtime.orchestrator.fit_permutation", fake_fit_permutation)
+
+    artifacts = run(cfg)
+
+    metrics = json.loads(Path(artifacts.metrics_path).read_text(encoding="utf-8"))
+    lat_stats = metrics["latency_ms"]
+    assert lat_stats["mean"] == pytest.approx(75.0)
+    assert lat_stats["p50"] > 0.0
+    assert lat_stats["p95"] > 0.0
+    assert metrics["l2_hit_pct"] <= 0.99
+    assert metrics["l2_hit_pct"] >= 0.0
+    assert metrics["ept_j_per_tok"] > 0.0
+
+
 def test_iterative_requires_transform_or_correlation(tmp_path: Path) -> None:
     cfg = {
         "report": {"out_dir": str(tmp_path / "guard")},

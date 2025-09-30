@@ -1050,8 +1050,9 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         import statistics
 
         lat_base = 100.0
-        delta_factor = min(0.0, delta_J)
+        delta_factor = max(-0.25, min(0.0, float(delta_J)))
         lat_iter = lat_base * (1.0 + delta_factor)
+        lat_iter = max(1.0, lat_iter)
         samples = [lat_iter if mode_lower == "iterative" else lat_base for _ in range(repeats)]
         latency_samples = samples[:]
         mean = float(sum(samples) / max(1, len(samples)))
@@ -1064,8 +1065,8 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
             p50 = mean
             p95 = mean
         if mode_lower == "iterative":
-            l2_hit = 0.80 * (1.0 - delta_factor)
-            ept = 1.0 * (1.0 + delta_factor)
+            l2_hit = max(0.0, min(0.99, 0.80 * (1.0 - delta_factor)))
+            ept = max(0.01, 1.0 * (1.0 + delta_factor))
 
     if measure_cfg.get("ncu_enable", False) and not no_measure and l2_hit is None:
         try:
