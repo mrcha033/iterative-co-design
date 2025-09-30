@@ -10,6 +10,7 @@ Notes
 - Returns CSRMatrix compatible with icd.core.graph.CSRMatrix.
 """
 
+from collections import Counter
 from typing import Any, Dict, List, Tuple
 
 try:
@@ -18,7 +19,109 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     TORCH_AVAILABLE = False
 
+if TORCH_AVAILABLE:
+    try:
+        import torch.nn as nn  # type: ignore
+    except Exception:  # pragma: no cover - optional dependency
+        nn = None  # type: ignore
+else:  # pragma: no cover - optional dependency
+    nn = None  # type: ignore
+
 from .graph import CSRMatrix
+
+
+def _maybe_override_feature_dim_from_config(model: Any, current_dim: int) -> tuple[int, str | None]:
+    """Use HuggingFace config metadata to refine feature dimension when available."""
+
+    config = getattr(model, "config", None)
+    if config is None:
+        return current_dim, None
+
+    try:
+        model_type = str(getattr(config, "model_type", ""))
+    except Exception:
+        model_type = ""
+
+    hidden_size = getattr(config, "hidden_size", None)
+    d_model = getattr(config, "d_model", None)
+    mtype = model_type.lower()
+    if isinstance(hidden_size, int) and hidden_size > 0:
+        if mtype in {"mamba", "mamba2", "ssm"} and hidden_size != current_dim:
+            return hidden_size, "hf_config.hidden_size"
+        if current_dim <= 0:
+            return hidden_size, "hf_config.hidden_size"
+    if isinstance(d_model, int) and d_model > 0 and current_dim <= 0:
+        return d_model, "hf_config.d_model"
+
+    return current_dim, None
+
+
+def _infer_feature_dim_from_fx(gm: Any, fallback: int = 0) -> int:
+    """Infer feature dimension from FX trace metadata.
+
+    Falls back to the provided ``fallback`` when inference fails. Prioritises
+    nn.Linear ``out_features`` metadata, then matmul-style ops, and finally
+    generic last-dimension shape votes to avoid being dominated by Conv1d
+    traces that expose the sequence length as the final dimension.
+    """
+
+    if gm is None:
+        return fallback
+
+    dims_last: List[int] = []
+    dims_linear: List[int] = []
+    dims_matmul: List[int] = []
+    graph = getattr(gm, "graph", None)
+    nodes = getattr(graph, "nodes", []) if graph is not None else []
+    get_submodule = getattr(gm, "get_submodule", None)
+    for node in nodes:
+        meta = getattr(node, "meta", {})
+        tensor_meta = meta.get("tensor_meta") if isinstance(meta, dict) else getattr(meta, "tensor_meta", None)
+        shape = getattr(tensor_meta, "shape", None)
+        # 1) Prefer explicit nn.Linear out_features metadata when available
+        if (
+            getattr(node, "op", "") == "call_module"
+            and callable(get_submodule)
+            and nn is not None
+        ):
+            try:
+                sub = get_submodule(node.target)
+                if isinstance(sub, nn.Linear) and getattr(sub, "out_features", 0) > 0:
+                    dims_linear.append(int(sub.out_features))
+                    continue
+            except Exception:
+                pass
+
+        # 2) Trust matrix multiplications that preserve feature dimension ordering
+        if getattr(node, "op", "") == "call_function":
+            fn = node.target
+            fn_name = getattr(fn, "__name__", str(fn))
+            if fn_name in {"addmm", "mm", "matmul", "bmm"}:
+                if shape is not None and hasattr(shape, "__len__") and len(shape) >= 2:
+                    try:
+                        last = int(shape[-1])
+                        if last > 0:
+                            dims_matmul.append(last)
+                        continue
+                    except Exception:
+                        pass
+
+        # 3) Fall back to last-dimension shape votes (may be polluted by Conv1d)
+        if shape is not None and hasattr(shape, "__len__") and len(shape) >= 2:
+            try:
+                last = int(shape[-1])
+                if last > 0:
+                    dims_last.append(last)
+            except Exception:
+                pass
+
+    for votes in (dims_linear, dims_matmul, dims_last):
+        if votes:
+            counts = Counter(votes)
+            inferred, _ = max(counts.items(), key=lambda kv: (kv[1], -kv[0]))
+            if inferred > 0:
+                return inferred
+    return fallback
 
 
 def _fallback_w(
@@ -109,9 +212,21 @@ def build_w_from_pytorch(
         pass
 
     # 3) Infer feature dim D
-    D = _infer_feature_dim_from_fx(gm, fallback=_infer_feature_dim_from_tensor(ex[0]))
+    fallback_dim = _infer_feature_dim_from_tensor(ex[0])
+    D = _infer_feature_dim_from_fx(gm, fallback=fallback_dim)
+    feature_dim_source = "fx"
+    if D == fallback_dim and fallback_dim > 0:
+        feature_dim_source = "tensor"
     if D <= 0:
         D = 256
+        feature_dim_source = "default"
+
+    D, override_source = _maybe_override_feature_dim_from_config(model, D)
+    if override_source is not None:
+        feature_dim_source = override_source
+    if D <= 0:
+        D = 256
+        feature_dim_source = "default"
 
     # 4) Op-based weight accumulation (coarse, but op-aware)
     total_weight = 0.0
@@ -230,6 +345,16 @@ def build_w_from_pytorch(
     import hashlib, json as _json
     trace_hash = hashlib.sha256(_json.dumps([(m["name"], m["shape"]) for m in used_meta]).encode("utf-8")).hexdigest()
 
+    inter_size = None
+    try:
+        config = getattr(model, "config", None)
+        if config is not None:
+            maybe_inter = getattr(config, "intermediate_size", None)
+            if isinstance(maybe_inter, int) and maybe_inter > 0:
+                inter_size = maybe_inter
+    except Exception:
+        inter_size = None
+
     meta = {
         "shape": D,
         "format": "csr",
@@ -243,8 +368,15 @@ def build_w_from_pytorch(
             "notes": "v0.9 last-dim heuristic",
             "shapes": used_meta,
             "trace_hash": trace_hash,
+            "feature_dim": D,
+            "feature_dim_source": feature_dim_source,
         },
     }
+    if inter_size and D > 0:
+        intermediate_meta: Dict[str, Any] = {"size": inter_size}
+        if inter_size % D == 0:
+            intermediate_meta["expansion_factor"] = inter_size // D
+        meta["pytorch"]["intermediate"] = intermediate_meta
     if att_meta is not None:
         meta["pytorch"]["attention"] = att_meta
     return CSRMatrix(indptr=indptr, indices=indices, data=data, shape=(D, D), meta=meta)
