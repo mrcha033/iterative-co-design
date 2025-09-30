@@ -71,7 +71,10 @@ def _infer_feature_dim_from_fx(gm: Any, fallback: int = 0) -> int:
     dims_last: List[int] = []
     dims_linear: List[int] = []
     dims_matmul: List[int] = []
+
     def _accept_dim(val: int) -> bool:
+        # Clamp to a plausible hidden-width window so LM heads (|V|) or long
+        # sequence axes do not dominate the vote tally.
         return 16 <= val <= 32768
     graph = getattr(gm, "graph", None)
     nodes = getattr(graph, "nodes", []) if graph is not None else []
