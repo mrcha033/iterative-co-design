@@ -10,6 +10,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 EXPERIMENTS_DIR="$PROJECT_ROOT/experiments"
 LOG_FILE="$EXPERIMENTS_DIR/quantization/progress.log"
 
+# Create log directory
 mkdir -p "$EXPERIMENTS_DIR/quantization"
 
 echo "Starting Quantization experiments at $(date)" | tee -a "$LOG_FILE"
@@ -27,6 +28,9 @@ run_quant_experiment() {
     local repermute=$4
 
     local out_dir="$EXPERIMENTS_DIR/quantization/$strategy/run_$run"
+
+    # Create output directory first
+    mkdir -p "$out_dir"
 
     echo "[$(date)] Running $strategy | run $run..." | tee -a "$LOG_FILE"
 

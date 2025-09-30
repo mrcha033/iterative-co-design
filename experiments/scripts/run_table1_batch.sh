@@ -9,6 +9,9 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 EXPERIMENTS_DIR="$PROJECT_ROOT/experiments"
 LOG_FILE="$EXPERIMENTS_DIR/table1/progress.log"
 
+# Create log directory
+mkdir -p "$EXPERIMENTS_DIR/table1"
+
 echo "Starting Table 1 experiments at $(date)" | tee -a "$LOG_FILE"
 echo "Project root: $PROJECT_ROOT" | tee -a "$LOG_FILE"
 
@@ -30,6 +33,9 @@ run_experiment() {
     local extra_args=$4
 
     local out_dir="$EXPERIMENTS_DIR/table1/$arch/$baseline/run_$run"
+
+    # Create output directory first
+    mkdir -p "$out_dir"
 
     echo "[$(date)] Running $arch | $baseline | run $run..." | tee -a "$LOG_FILE"
 
