@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "repermute"
 version = "0.1.0"
-description = "Iterative HW–SW Co-Design — Layout Re-Optimization (mock pipeline + CLI)"
+description = "Iterative HW–SW Co-Design — Memory Layout Re-Optimization via Hardware Profiling"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }

@@ -79,7 +79,7 @@ def test_config_override_prefers_hidden_size_for_mamba_family():
 
 
 def test_config_override_uses_d_model_when_hidden_missing():
-    current = 0
+    current = 4096
     d_model = 128
     model = ToyModel(hidden=d_model, intermediate=d_model * 2)
     model.config = types.SimpleNamespace(model_type="ssm", d_model=d_model)
