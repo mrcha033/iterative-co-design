@@ -47,6 +47,30 @@ The following override sets make the three supported strategies explicit (combin
   - `pip install torch --index-url https://download.pytorch.org/whl/cpu` (pick the wheel that matches your CUDA/cuDNN stack if targeting GPU)
   - `pip install mamba-ssm` (required for the Mamba configs)
 
+### PyTorch troubleshooting on macOS
+
+Several contributors have reported an `ImportError` similar to the
+following when running `pytest` on Apple Silicon machines:
+
+```
+ImportError: dlopen(.../torch/_C.cpython-313-darwin.so, 0x0002): Symbol not found: __ZN6google8protobuf5Arena18CreateMaybeMessageIN10onnx_torch10GraphProtoEJEEEPT_PS1_DpOT0_
+```
+
+The error is triggered when a virtual environment inadvertently links
+against a Homebrew installation of PyTorch (or libtorch) instead of the
+wheel that was installed in the environment. To resolve the issue, remove
+any conflicting Homebrew PyTorch packages and reinstall PyTorch directly
+from the official wheels inside your virtual environment:
+
+```bash
+brew uninstall pytorch libtorch  # remove conflicting libraries
+pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cpu
+```
+
+The CPU wheels are compatible with Apple Silicon for the purposes of the
+unit tests in this repository. If you intend to run GPU workflows, replace
+the `cpu` wheel URL with the variant that matches your CUDA toolkit.
+
 Install (PyPI, planned):
 
 ```bash

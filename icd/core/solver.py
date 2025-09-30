@@ -264,11 +264,28 @@ def _solve_louvain(
     if runtime_budget <= 0.0:
         fallback_reason = fallback_reason or "non_positive_budget"
 
+    modularity_floor = float(getattr(cfg, "louvain_modularity_floor", float("-inf")))
+
     if fallback_reason:
         communities = _fallback_partition(range(n))
+        modularity_value = _modularity(W, communities)
+        if math.isfinite(modularity_floor) and modularity_floor > float("-inf"):
+            remaining_budget = max(0.0, float(time_budget_s))
+            pi_fb, stats_fb = _solve_spectral_refine(
+                W,
+                time_budget_s=remaining_budget,
+                refine_steps=refine_steps,
+                cfg=cfg,
+                seed=seed,
+                clusters=clusters,
+            )
+            stats_fb = dict(stats_fb)
+            stats_fb.setdefault("Q_louvain", modularity_value)
+            stats_fb.setdefault("louvain_runtime_s", 0.0)
+            stats_fb["louvain_fallback"] = fallback_reason
+            return pi_fb, stats_fb
         pi = _cluster_to_permutation(communities)
         stats = eval_cost(W, pi, pi, cfg)
-        modularity_value = _modularity(W, communities)
         extra = {
             "clusters": len(communities),
             "Q_louvain": modularity_value,
@@ -318,7 +335,6 @@ def _solve_louvain(
             raise ValueError("empty partition")
         pi = _cluster_to_permutation(communities)
         stats = eval_cost(W, pi, pi, cfg)
-        modularity_floor = float(getattr(cfg, "louvain_modularity_floor", float("-inf")))
         modularity_value = _modularity(W, communities)
         if modularity_value < modularity_floor:
             remaining_budget = max(0.0, float(time_budget_s) - elapsed)
