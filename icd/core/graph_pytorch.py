@@ -75,7 +75,7 @@ def _infer_feature_dim_from_fx(gm: Any, fallback: int = 0) -> int:
     def _accept_dim(val: int) -> bool:
         # Clamp to a plausible hidden-width window so LM heads (|V|) or long
         # sequence axes do not dominate the vote tally.
-        return 16 <= val <= 32768
+        return 8 <= val <= 32768
     graph = getattr(gm, "graph", None)
     nodes = getattr(graph, "nodes", []) if graph is not None else []
     get_submodule = getattr(gm, "get_submodule", None)
@@ -250,7 +250,11 @@ def build_w_from_pytorch(
         "mm": 1.0,
         "addmm": 1.0,
         "bmm": 0.8,
-        "scaled_dot_product": 1.2,  # attention core
+        # attention cores (cover fused implementations)
+        "scaled_dot_product": 1.2,
+        "scaled_dot_product_attention": 1.2,
+        "flash_attn": 1.2,
+        "flashattention": 1.2,
         "add": 0.25,
         "transpose": 0.1,
         "permute": 0.1,
@@ -285,21 +289,32 @@ def build_w_from_pytorch(
     sec_data: List[float] | None = None
     att_meta: Dict[str, Any] | None = None
     if use_sectioning:
-        # Heuristic head_dim inference from FX shapes
+        # Prefer HuggingFace config metadata when available, then fall back to FX shapes
         head_dim = None
         num_heads = None
-        for n in gm.graph.nodes:
-            tm = n.meta.get("tensor_meta")
-            shp = getattr(tm, "shape", None)
-            if shp and hasattr(shp, "__len__") and len(shp) >= 2:
-                last = int(shp[-1])
-                for hd in (64, 80, 96, 112, 128, 160, 192):
-                    if last % hd == 0 and 1 <= (last // hd) <= 256:
-                        head_dim = int(hd)
-                        num_heads = int(last // hd)
-                        break
-            if head_dim is not None:
-                break
+        try:
+            cfg = getattr(model, "config", None)
+            if cfg is not None:
+                nh = int(getattr(cfg, "num_attention_heads", 0) or 0)
+                hs = int(getattr(cfg, "hidden_size", 0) or 0)
+                if nh > 0 and hs > 0 and hs % nh == 0:
+                    head_dim = hs // nh
+                    num_heads = nh
+        except Exception:
+            pass
+        if head_dim is None:
+            for n in gm.graph.nodes:
+                tm = n.meta.get("tensor_meta")
+                shp = getattr(tm, "shape", None)
+                if shp and hasattr(shp, "__len__") and len(shp) >= 2:
+                    last = int(shp[-1])
+                    for hd in (64, 80, 96, 112, 128, 160, 192):
+                        if last % hd == 0 and 1 <= (last // hd) <= 256:
+                            head_dim = int(hd)
+                            num_heads = int(last // hd)
+                            break
+                if head_dim is not None:
+                    break
         if head_dim is None:
             head_dim = int(section_default)
         section_size = head_dim
