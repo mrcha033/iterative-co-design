@@ -184,9 +184,12 @@ def build_w(source: str = "mock", **cfg) -> CSRMatrix:
 
     Supported sources:
     - "mock": synthetic blocky matrix for testing.
+    - "pytorch": heuristic banded matrix from FX tracing.
+    - "profiling": memory access profiling-based graph (NEW - mechanistically sound).
     - "trace": placeholder raises NotImplementedError (spec-first approach).
 
     cfg (mock): d(int), blocks(int), noise(float), seed(int), normalize(str|None)
+    cfg (profiling): model, example_inputs, hidden_size, profiling config
     """
     source = (source or "mock").lower()
     if source == "mock":
@@ -223,6 +226,52 @@ def build_w(source: str = "mock", **cfg) -> CSRMatrix:
             csr = _normalize_sym(csr)
         elif normalize == "row":
             csr = _normalize_row(csr)
+        d = csr.shape[0]
+        cap = cfg.get("nnz_cap", None)
+        if cap is None:
+            cap = int(min(0.05 * d * d, 50_000_000))
+        csr = _cap_and_prune(csr, int(cap))
+        return csr
+    elif source == "profiling":
+        # NEW: Profiling-based graph construction (mechanistically sound)
+        model = cfg.get("model")
+        example_inputs = cfg.get("example_inputs")
+        hidden_size = cfg.get("hidden_size")
+
+        if model is None or example_inputs is None:
+            raise ValueError("graph.source='profiling' requires 'model' and 'example_inputs' in cfg")
+        if hidden_size is None:
+            # Try to infer from model config
+            try:
+                config = getattr(model, "config", None)
+                if config is not None:
+                    hidden_size = getattr(config, "hidden_size", None)
+            except Exception:
+                pass
+        if hidden_size is None:
+            raise ValueError("graph.source='profiling' requires 'hidden_size' (cannot infer from model)")
+
+        # Lazy import
+        from .graph_profiling import build_w_from_profiling, ProfilingConfig
+
+        profiling_cfg_data = cfg.get("profiling", {})
+        profiling_cfg = ProfilingConfig.from_dict(profiling_cfg_data)
+        method = cfg.get("profiling_method", "torch_profiler")
+
+        csr = build_w_from_profiling(
+            model, example_inputs,
+            hidden_size=int(hidden_size),
+            method=method,
+            config=profiling_cfg,
+        )
+
+        # Normalize and cap
+        normalize = cfg.get("normalize", "sym")
+        if normalize == "sym":
+            csr = _normalize_sym(csr)
+        elif normalize == "row":
+            csr = _normalize_row(csr)
+
         d = csr.shape[0]
         cap = cfg.get("nnz_cap", None)
         if cap is None:

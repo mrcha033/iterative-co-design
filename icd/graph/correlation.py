@@ -88,6 +88,7 @@ class CorrelationConfig:
     nnz_cap: Optional[int] = None
     whiten: bool = False
     transfer_batch_size: Optional[int] = None
+    expected_dim: Optional[int] = None  # Force dimension to match model hidden_size
 
 
 class _ActivationStats:
@@ -179,8 +180,21 @@ class ActivationCollector:
             tensor = tensor.to(dtype=self.dtype)
             if tensor.ndim == 1:
                 tensor = tensor.unsqueeze(0)
-            tensor = tensor.reshape(tensor.shape[0], -1)
-            stats = self._get_stats(name, tensor.shape[1], tensor.device)
+
+            # For 3D tensors (batch, seq, features), take last dimension as features
+            # For 2D tensors (batch, features), use as-is
+            # For higher dims, flatten
+            if tensor.ndim == 3:
+                feature_dim = tensor.shape[2]
+                # Average over sequence to get (batch, features)
+                tensor = tensor.mean(dim=1)
+            elif tensor.ndim == 2:
+                feature_dim = tensor.shape[1]
+            else:
+                tensor = tensor.reshape(tensor.shape[0], -1)
+                feature_dim = tensor.shape[1]
+
+            stats = self._get_stats(name, feature_dim, tensor.device)
             batch_size = self.transfer_batch_size or tensor.shape[0]
             if batch_size <= 0:
                 batch_size = tensor.shape[0]
@@ -202,6 +216,19 @@ class ActivationCollector:
         if not self._stats:
             raise RuntimeError("No activations captured")
         covariances = [stats.covariance() for stats in self._stats.values()]
+
+        # Check if all covariances have the same shape
+        shapes = [cov.shape for cov in covariances]
+        if len(set(shapes)) > 1:
+            # Different dimensions - only aggregate those matching the most common dimension
+            from collections import Counter
+            shape_counts = Counter(shapes)
+            most_common_shape, _ = shape_counts.most_common(1)[0]
+            filtered_covs = [cov for cov in covariances if cov.shape == most_common_shape]
+            if not filtered_covs:
+                raise RuntimeError("No valid covariance matrices found")
+            covariances = filtered_covs
+
         base = covariances[0].clone()
         for cov in covariances[1:]:
             base += cov

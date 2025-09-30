@@ -893,6 +893,23 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
                 _ensure_dir(corr_dir)
                 save_correlation_artifacts(corr_dir, cov, correlation_meta)
                 W_iter = correlation_to_csr(cov, cfg=corr_cfg_obj)
+
+                # Validate correlation graph dimensions match base graph
+                if W_iter.shape[0] != W.shape[0]:
+                    expected_dim = W.shape[0]
+                    actual_dim = W_iter.shape[0]
+                    logger.warning(
+                        "[IASP] Correlation graph dimension mismatch: expected D=%d (from base graph), "
+                        "got D=%d (from activations). Falling back to base graph W.",
+                        expected_dim,
+                        actual_dim,
+                    )
+                    W_iter = W
+                    correlation_meta["dimension_mismatch"] = {
+                        "expected": expected_dim,
+                        "actual": actual_dim,
+                        "fallback": "base_graph",
+                    }
                 correlation_meta["nnz"] = W_iter.nnz()
                 correlation_meta["normalize"] = corr_cfg_obj.normalize
                 correlation_meta["auto_enabled"] = auto_enable_correlation

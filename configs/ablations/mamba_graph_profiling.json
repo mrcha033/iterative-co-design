@@ -1,0 +1,76 @@
+{
+  "task": "wt103",
+  "description": "Ablation: Profiling-based graph (ACTUAL memory access patterns - NEW)",
+  "pipeline": {
+    "mode": "iterative",
+    "repeats": 200,
+    "warmup_iter": 40,
+    "fixed_clock": true,
+    "runner": "icd.runtime.runners_hf.hf_causal_lm_runner",
+    "runner_context": {
+      "model_loader": "icd.experiments.hf.load_hf_causal_lm",
+      "model_loader_kwargs": {
+        "model_name": "state-spaces/mamba-2.8b-hf",
+        "sequence_length": 1024,
+        "batch_size": 1,
+        "prompt": [
+          "The quick brown fox jumps over the lazy dog",
+          "In a distant galaxy, explorers uncovered"
+        ],
+        "device": "cuda"
+      }
+    }
+  },
+  "graph": {
+    "source": "profiling",
+    "normalize": "sym",
+    "profiling_method": "torch_profiler",
+    "loader": "icd.experiments.hf.load_hf_causal_lm",
+    "loader_kwargs": {
+      "model_name": "state-spaces/mamba-2.8b-hf",
+      "sequence_length": 1024,
+      "batch_size": 1,
+      "prompt": [
+        "The quick brown fox jumps over the lazy dog",
+        "In a distant galaxy, explorers uncovered"
+      ],
+      "device": "cuda"
+    },
+    "profiling": {
+      "samples": 10,
+      "temporal_window_ms": 0.1,
+      "min_coaccesses": 2,
+      "normalize": true,
+      "cache_line_size": 64,
+      "weight_by_frequency": true,
+      "weight_by_size": true
+    },
+    "nnz_cap": 2000000
+  },
+  "solver": {
+    "time_budget_s": 120,
+    "refine_steps": 600,
+    "k_blocks": 4,
+    "rng_seed": 0
+  },
+  "pair": {
+    "baseline_methods": ["dense", "iterative"]
+  },
+  "transform": {
+    "sparsity": {"enable": false},
+    "quant": {"enable": false},
+    "kv": {"enable": false}
+  },
+  "measure": {
+    "ncu_enable": false,
+    "power_enable": true,
+    "nvtx_enable": false
+  },
+  "quality": {
+    "enable": false
+  },
+  "report": {
+    "out_dir": "runs/ablations/mamba_graph_profiling",
+    "formats": ["html", "csv"]
+  }
+}
