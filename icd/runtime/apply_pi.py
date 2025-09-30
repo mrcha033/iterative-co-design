@@ -79,7 +79,7 @@ def PWP_inv(W: torch.Tensor, pi: torch.LongTensor, pinv: torch.LongTensor) -> to
     expected_pi = inv_perm(pinv)
     if not torch.equal(expected_pi.to(device=pi.device, dtype=pi.dtype), pi):
         raise ValueError("pi and pinv must be inverse permutations")
-    return reindex_rows(reindex_cols(W, pinv), pinv)
+    return reindex_rows(reindex_cols(W, pinv), pi)
 
 
 def PTWP(W: torch.Tensor, pi: torch.LongTensor) -> torch.Tensor:

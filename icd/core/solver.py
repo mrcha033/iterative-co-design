@@ -227,47 +227,60 @@ def _solve_louvain(
     clusters: Sequence[Sequence[int]] | None,
 ) -> Tuple[List[int], Dict[str, float]]:
     pi_id, stats_id = _identity_stats(W, cfg)
+    fallback_reason: str | None = None
     try:
         import networkx as nx
     except ImportError:  # pragma: no cover - optional dependency
-        return _solve_spectral_refine(
-            W,
-            time_budget_s=time_budget_s,
-            refine_steps=refine_steps,
-            cfg=cfg,
-            seed=seed,
-            clusters=clusters,
-        )
+        nx = None  # type: ignore[assignment]
+        fallback_reason = "missing_networkx"
+    else:
+        if not hasattr(nx, "algorithms"):
+            fallback_reason = "missing_algorithms"
 
-    if not hasattr(nx, "algorithms"):
-        return _solve_spectral_refine(
-            W,
-            time_budget_s=time_budget_s,
-            refine_steps=refine_steps,
-            cfg=cfg,
-            seed=seed,
-            clusters=clusters,
-        )
+    n = W.shape[0]
 
-    nx_error = getattr(nx, "NetworkXError", Exception)
+    def _fallback_partition(nodes: Iterable[int]) -> List[set[int]]:
+        ordered = sorted(int(node) for node in nodes)
+        if not ordered:
+            return []
+        buckets: List[set[int]] = []
+        current: List[int] = []
+        for node in ordered:
+            current.append(node)
+            if len(current) >= 2:
+                buckets.append(set(current))
+                current = []
+        if current:
+            if buckets:
+                buckets[-1].update(current)
+            else:
+                buckets.append(set(current))
+        return buckets
 
     runtime_budget = min(
         float(time_budget_s),
         float(getattr(cfg, "louvain_time_budget_s", float("inf"))),
     )
     if runtime_budget <= 0.0:
-        return _solve_spectral_refine(
-            W,
-            time_budget_s=time_budget_s,
-            refine_steps=refine_steps,
-            cfg=cfg,
-            seed=seed,
-            clusters=clusters,
-        )
+        fallback_reason = fallback_reason or "non_positive_budget"
+
+    if fallback_reason:
+        communities = _fallback_partition(range(n))
+        pi = _cluster_to_permutation(communities)
+        stats = eval_cost(W, pi, pi, cfg)
+        modularity_value = _modularity(W, communities)
+        extra = {
+            "clusters": len(communities),
+            "Q_louvain": modularity_value,
+            "louvain_runtime_s": 0.0,
+            "louvain_fallback": fallback_reason,
+        }
+        return _finalize_stats(pi, stats, method="louvain", reference=stats_id, extra=extra)
+
+    nx_error = getattr(nx, "NetworkXError", Exception)
 
     try:
         G = nx.Graph()
-        n = W.shape[0]
         G.add_nodes_from(range(n))
         for i in range(n):
             start, end = W.indptr[i], W.indptr[i + 1]
@@ -282,25 +295,7 @@ def _solve_louvain(
         if G.number_of_edges() == 0:
             raise ValueError("graph has no edges")
         start_time = time.perf_counter()
-        fallback_reason = None
-
-        def _fallback_partition() -> List[set[int]]:
-            nodes = sorted(int(node) for node in G.nodes())
-            if not nodes:
-                return []
-            buckets: List[set[int]] = []
-            current: List[int] = []
-            for node in nodes:
-                current.append(node)
-                if len(current) >= 2:
-                    buckets.append(set(current))
-                    current = []
-            if current:
-                if buckets:
-                    buckets[-1].update(current)
-                else:
-                    buckets.append(set(current))
-            return buckets
+        local_fallback: str | None = None
 
         try:
             communities = nx.algorithms.community.louvain_communities(
@@ -310,11 +305,11 @@ def _solve_louvain(
                 resolution=getattr(cfg, "modularity_gamma", 1.0),
             )
         except ImportError as exc:
-            fallback_reason = str(exc) or "missing_louvain_dependency"
-            communities = _fallback_partition()
+            local_fallback = str(exc) or "missing_louvain_dependency"
+            communities = _fallback_partition(G.nodes)
         except AttributeError as exc:
-            fallback_reason = str(exc) or "missing_louvain_algorithm"
-            communities = _fallback_partition()
+            local_fallback = str(exc) or "missing_louvain_algorithm"
+            communities = _fallback_partition(G.nodes)
         elapsed = time.perf_counter() - start_time
         tolerance = 1e-6
         if elapsed > runtime_budget + tolerance:
@@ -326,14 +321,27 @@ def _solve_louvain(
         modularity_floor = float(getattr(cfg, "louvain_modularity_floor", float("-inf")))
         modularity_value = _modularity(W, communities)
         if modularity_value < modularity_floor:
-            raise ValueError("louvain modularity below floor")
+            remaining_budget = max(0.0, float(time_budget_s) - elapsed)
+            pi_fb, stats_fb = _solve_spectral_refine(
+                W,
+                time_budget_s=remaining_budget,
+                refine_steps=refine_steps,
+                cfg=cfg,
+                seed=seed,
+                clusters=clusters,
+            )
+            stats_fb = dict(stats_fb)
+            stats_fb.setdefault("Q_louvain", modularity_value)
+            stats_fb.setdefault("louvain_runtime_s", elapsed)
+            stats_fb["louvain_fallback"] = "modularity_below_floor"
+            return pi_fb, stats_fb
         extra = {
             "clusters": len(communities),
             "Q_louvain": modularity_value,
             "louvain_runtime_s": elapsed,
         }
-        if fallback_reason:
-            extra["louvain_fallback"] = fallback_reason
+        if local_fallback:
+            extra["louvain_fallback"] = local_fallback
         return _finalize_stats(pi, stats, method="louvain", reference=stats_id, extra=extra)
     except (TimeoutError, ValueError, nx_error, AttributeError):
         return _solve_spectral_refine(
