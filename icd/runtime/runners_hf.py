@@ -36,20 +36,33 @@ def _collect_mamba_modules_from_model(model: Any) -> List[Dict[str, Any]]:
     if model is None or not hasattr(model, "named_modules"):
         return modules
     for name, module in model.named_modules():  # type: ignore[attr-defined]
-        if not all(hasattr(module, attr) for attr in ("A", "B", "C")):
-            continue
-        try:
-            entry: Dict[str, Any] = {
-                "A": _wrap_mamba_weight_holder(getattr(module, "A")),
-                "B": _wrap_mamba_weight_holder(getattr(module, "B")),
-                "C": _wrap_mamba_weight_holder(getattr(module, "C")),
-                "_module_name": name,
-            }
-            if hasattr(module, "x0"):
-                entry["x0"] = getattr(module, "x0")
-            modules.append(entry)
-        except Exception:
-            continue
+        # Check for original mamba-ssm structure (A, B, C)
+        if all(hasattr(module, attr) for attr in ("A", "B", "C")):
+            try:
+                entry: Dict[str, Any] = {
+                    "A": _wrap_mamba_weight_holder(getattr(module, "A")),
+                    "B": _wrap_mamba_weight_holder(getattr(module, "B")),
+                    "C": _wrap_mamba_weight_holder(getattr(module, "C")),
+                    "_module_name": name,
+                }
+                if hasattr(module, "x0"):
+                    entry["x0"] = getattr(module, "x0")
+                modules.append(entry)
+            except Exception:
+                continue
+        # Check for HuggingFace Mamba structure (MambaMixer with in_proj, x_proj, out_proj)
+        elif all(hasattr(module, attr) for attr in ("in_proj", "x_proj", "out_proj")):
+            try:
+                entry: Dict[str, Any] = {
+                    "A": _wrap_mamba_weight_holder(getattr(module, "in_proj")),
+                    "B": _wrap_mamba_weight_holder(getattr(module, "x_proj")),
+                    "C": _wrap_mamba_weight_holder(getattr(module, "out_proj")),
+                    "_module_name": name,
+                    "_hf_mamba": True,  # Flag for HF Mamba
+                }
+                modules.append(entry)
+            except Exception:
+                continue
     return modules
 from icd.utils.imports import load_object
 
