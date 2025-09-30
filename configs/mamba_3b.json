@@ -69,9 +69,9 @@
     "kv": {"enable": false}
   },
   "measure": {
-    "ncu_enable": false,
-    "power_enable": false,
-    "nvtx_enable": true
+    "ncu_enable": true,
+    "power_enable": true,
+    "nvtx_enable": false
   },
   "quality": {
     "enable": true,

@@ -1,0 +1,65 @@
+{
+  "task": "imagenet",
+  "pipeline": {
+    "mode": "iterative",
+    "repeats": 600,
+    "warmup_iter": 50,
+    "fixed_clock": true,
+    "runner": "icd.runtime.runners.mock_inference",
+    "runner_context": {}
+  },
+  "graph": {
+    "source": "pytorch",
+    "normalize": "sym",
+    "loader": "icd.experiments.vision.load_efficientnet",
+    "loader_kwargs": {
+      "variant": "efficientnet_b0",
+      "weights": true,
+      "batch_size": 32,
+      "device": "cuda"
+    },
+    "correlation": {
+      "enable": true,
+      "samples": 32,
+      "layers": ["features.3", "features.5", "features.7"],
+      "whiten": true,
+      "transfer_batch_size": 4
+    },
+    "nnz_cap": 2000000
+  },
+  "solver": {
+    "time_budget_s": 120,
+    "refine_steps": 1000,
+    "k_blocks": 4,
+    "rng_seed": 0,
+    "method": "louvain"
+  },
+  "pair": {
+    "baseline_methods": ["linear", "louvain"]
+  },
+  "transform": {
+    "sparsity": {"enable": false},
+    "quant": {"enable": false},
+    "kv": {"enable": false}
+  },
+  "measure": {
+    "ncu_enable": true,
+    "power_enable": true,
+    "nvtx_enable": false
+  },
+  "quality": {
+    "enable": false,
+    "task": "imagenet",
+    "batch_size": 64,
+    "max_samples": 1000
+  },
+  "gates": {
+    "iter.latency_rel": -0.15,
+    "iter.l2_pp": 10.0,
+    "iter.ept_rel": -0.12
+  },
+  "report": {
+    "out_dir": "runs/efficientnet_b0",
+    "formats": ["html", "csv"]
+  }
+}

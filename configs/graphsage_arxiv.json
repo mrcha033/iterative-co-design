@@ -1,0 +1,62 @@
+{
+  "task": "ogbn-arxiv",
+  "pipeline": {
+    "mode": "iterative",
+    "repeats": 500,
+    "warmup_iter": 30,
+    "fixed_clock": true,
+    "runner": "icd.runtime.runners.mock_inference",
+    "runner_context": {}
+  },
+  "graph": {
+    "source": "pytorch",
+    "normalize": "sym",
+    "loader": "icd.experiments.graph.load_pyg_graphsage",
+    "loader_kwargs": {
+      "dataset_name": "ogbn-arxiv",
+      "hidden_channels": 256,
+      "num_layers": 3,
+      "device": "cuda"
+    },
+    "correlation": {
+      "enable": true,
+      "samples": 16,
+      "whiten": true
+    },
+    "nnz_cap": 3000000
+  },
+  "solver": {
+    "time_budget_s": 180,
+    "refine_steps": 1500,
+    "k_blocks": 4,
+    "rng_seed": 0,
+    "method": "louvain"
+  },
+  "pair": {
+    "baseline_methods": ["linear", "louvain"]
+  },
+  "transform": {
+    "sparsity": {"enable": false},
+    "quant": {"enable": false},
+    "kv": {"enable": false}
+  },
+  "measure": {
+    "ncu_enable": true,
+    "power_enable": true,
+    "nvtx_enable": false
+  },
+  "quality": {
+    "enable": false,
+    "task": "node_classification",
+    "metric": "accuracy"
+  },
+  "gates": {
+    "iter.latency_rel": -0.15,
+    "iter.l2_pp": 8.0,
+    "iter.ept_rel": -0.12
+  },
+  "report": {
+    "out_dir": "runs/graphsage_arxiv",
+    "formats": ["html", "csv"]
+  }
+}
