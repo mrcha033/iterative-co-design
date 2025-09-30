@@ -26,6 +26,7 @@ __all__ = [
     "PWP_inv",
     "apply_pi_to_bert",
     "apply_pi_to_mamba",
+    "apply_pi_to_mamba_hf",
     "perm_signature",
     "perm_signature_from_iterable",
     "StableHLOCapability",
@@ -419,6 +420,26 @@ def apply_pi_to_bert(model: nn.Module, pi: torch.LongTensor) -> None:
     model.config.pi_signature = signature
 
 
+def _expand_permutation_for_intermediate(pi: torch.LongTensor, expansion_factor: int) -> torch.LongTensor:
+    """Expand hidden_size permutation to intermediate_size permutation.
+
+    Uses block expansion: each element in pi is expanded to expansion_factor consecutive elements.
+    E.g., pi=[2,0,1] with expansion=2 → [4,5, 0,1, 2,3]
+
+    This preserves locality: dimensions that were adjacent in hidden space remain adjacent in intermediate space.
+    """
+    device = pi.device
+    dtype = pi.dtype
+    hidden_size = pi.numel()
+
+    # Create block expansion: [0,0,1,1,2,2,...] + [0,1,0,1,0,1,...]
+    pi_expanded = pi.repeat_interleave(expansion_factor) * expansion_factor
+    offsets = torch.arange(expansion_factor, device=device, dtype=dtype).repeat(hidden_size)
+    pi_inner = pi_expanded + offsets
+
+    return pi_inner
+
+
 def apply_pi_to_mamba(module_dict: Mapping[str, Any], pi: torch.LongTensor) -> None:
     required = {"A", "B", "C"}
     missing = required.difference(module_dict.keys())
@@ -468,6 +489,95 @@ def apply_pi_to_mamba(module_dict: Mapping[str, Any], pi: torch.LongTensor) -> N
         x0.data.copy_(reindex_vec(x0.data, pi))
     elif isinstance(x0, torch.Tensor):
         module_dict["x0"] = reindex_vec(x0, pi)
+
+
+def apply_pi_to_mamba_hf(module_dict: Mapping[str, Any], pi: torch.LongTensor) -> None:
+    """Apply permutation to HuggingFace Transformers Mamba (MambaMixer).
+
+    HF Mamba has different structure than original mamba-ssm:
+    - in_proj: hidden_size → intermediate_size * 2
+    - x_proj: intermediate_size → dt_rank + state_size * 2
+    - out_proj: intermediate_size → hidden_size
+    - A_log: parameter (intermediate_size, state_size)
+    - D: parameter (intermediate_size,)
+
+    The permutation pi operates on hidden_size and is expanded to intermediate_size.
+    """
+    required = {"A", "B", "C"}  # These are mapped to in_proj, x_proj, out_proj
+    missing = required.difference(module_dict.keys())
+    if missing:
+        raise ValueError(f"missing required modules for HF Mamba: {sorted(missing)}")
+
+    # A is mapped to in_proj
+    in_proj = module_dict["A"]
+    weight = getattr(in_proj, "weight", None)
+    if weight is None:
+        raise ValueError("in_proj must expose a weight parameter")
+
+    # Infer dimensions
+    intermediate_size_2x = weight.shape[0]  # in_proj outputs intermediate_size * 2
+    hidden_size = weight.shape[1]
+
+    if intermediate_size_2x % 2 != 0:
+        raise ValueError(f"in_proj output dimension {intermediate_size_2x} must be even (intermediate_size * 2)")
+
+    intermediate_size = intermediate_size_2x // 2
+    expansion_factor = intermediate_size // hidden_size
+
+    if expansion_factor * hidden_size != intermediate_size:
+        raise ValueError(
+            f"intermediate_size ({intermediate_size}) must be an integer multiple of hidden_size ({hidden_size})"
+        )
+
+    device = weight.device
+    pi = _validate_perm(pi.to(device=device, dtype=torch.long), int(hidden_size))
+    pinv = inv_perm(pi)
+
+    # Expand pi for intermediate dimension
+    pi_inner = _expand_permutation_for_intermediate(pi, expansion_factor)
+    pi_inner_inv = inv_perm(pi_inner)
+
+    # 1. in_proj: hidden_size → intermediate_size * 2
+    #    Permute output (rows): first half and second half separately
+    pi_inner_2x = torch.cat([pi_inner, pi_inner + intermediate_size])
+    in_proj.weight.data.copy_(reindex_rows(in_proj.weight.data, pi_inner_2x))
+    if getattr(in_proj, "bias", None) is not None:
+        in_proj.bias.data.copy_(reindex_vec(in_proj.bias.data, pi_inner_2x))
+
+    # 2. x_proj (B): intermediate_size → dt_rank + state_size * 2
+    #    Permute input (columns)
+    x_proj = module_dict["B"]
+    x_proj.weight.data.copy_(reindex_cols(x_proj.weight.data, pi_inner))
+    if getattr(x_proj, "bias", None) is not None:
+        x_proj.bias.data = x_proj.bias.data.contiguous()
+
+    # 3. out_proj (C): intermediate_size → hidden_size
+    #    Permute input (columns) with pi_inner and output (rows) with pi
+    out_proj = module_dict["C"]
+    out_proj.weight.data.copy_(reindex_cols(reindex_rows(out_proj.weight.data, pi), pi_inner))
+    if getattr(out_proj, "bias", None) is not None:
+        out_proj.bias.data.copy_(reindex_vec(out_proj.bias.data, pi))
+
+    # 4. Handle module-level parameters if present
+    module_ref = module_dict.get("_module_ref")
+    if module_ref is not None:
+        # A_log: (intermediate_size, state_size) - permute rows
+        if hasattr(module_ref, "A_log"):
+            module_ref.A_log.data.copy_(reindex_rows(module_ref.A_log.data, pi_inner))
+
+        # D: (intermediate_size,) - permute vector
+        if hasattr(module_ref, "D"):
+            module_ref.D.data.copy_(reindex_vec(module_ref.D.data, pi_inner))
+
+        # conv1d: permute channels (intermediate_size)
+        if hasattr(module_ref, "conv1d"):
+            conv = module_ref.conv1d
+            if hasattr(conv, "weight"):
+                # Conv1d weight shape: (out_channels, in_channels, kernel_size)
+                # Permute both in and out channels since they're both intermediate_size
+                conv.weight.data.copy_(reindex_rows(reindex_cols(conv.weight.data, pi_inner), pi_inner))
+            if getattr(conv, "bias", None) is not None:
+                conv.bias.data.copy_(reindex_vec(conv.bias.data, pi_inner))
 
 
 def _contains_proxy(obj) -> bool:

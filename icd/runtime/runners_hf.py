@@ -15,7 +15,7 @@ from icd.adapters.quant import (
     repack_linear_after_permutation,
 )
 from icd.adapters.sparsity import SparsityConfig, apply_sparsity_from_config
-from icd.runtime.apply_pi import apply_pi_to_bert, apply_pi_to_mamba, perm_signature_from_iterable
+from icd.runtime.apply_pi import apply_pi_to_bert, apply_pi_to_mamba, apply_pi_to_mamba_hf, perm_signature_from_iterable
 
 
 def _wrap_mamba_weight_holder(obj: Any) -> Any:
@@ -59,6 +59,7 @@ def _collect_mamba_modules_from_model(model: Any) -> List[Dict[str, Any]]:
                     "C": _wrap_mamba_weight_holder(getattr(module, "out_proj")),
                     "_module_name": name,
                     "_hf_mamba": True,  # Flag for HF Mamba
+                    "_module_ref": module,  # Reference to actual module for A_log, D, conv1d
                 }
                 modules.append(entry)
             except Exception:
@@ -151,11 +152,17 @@ def _apply_pi_sequence(
         if modules is None:
             raise RuntimeError("runner context missing 'mamba_modules' for Mamba permutation application")
         if isinstance(modules, Mapping):
-            apply_pi_to_mamba(modules, pi_tensor)
+            if modules.get("_hf_mamba"):
+                apply_pi_to_mamba_hf(modules, pi_tensor)
+            else:
+                apply_pi_to_mamba(modules, pi_tensor)
         else:
             any_applied = False
             for entry in modules:
-                apply_pi_to_mamba(entry, pi_tensor)
+                if entry.get("_hf_mamba"):
+                    apply_pi_to_mamba_hf(entry, pi_tensor)
+                else:
+                    apply_pi_to_mamba(entry, pi_tensor)
                 any_applied = True
             if not any_applied:
                 raise RuntimeError("no applicable Mamba modules found for permutation application")
