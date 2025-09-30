@@ -71,6 +71,8 @@ def _infer_feature_dim_from_fx(gm: Any, fallback: int = 0) -> int:
     dims_last: List[int] = []
     dims_linear: List[int] = []
     dims_matmul: List[int] = []
+    def _accept_dim(val: int) -> bool:
+        return 16 <= val <= 32768
     graph = getattr(gm, "graph", None)
     nodes = getattr(graph, "nodes", []) if graph is not None else []
     get_submodule = getattr(gm, "get_submodule", None)
@@ -86,8 +88,10 @@ def _infer_feature_dim_from_fx(gm: Any, fallback: int = 0) -> int:
         ):
             try:
                 sub = get_submodule(node.target)
-                if isinstance(sub, nn.Linear) and getattr(sub, "out_features", 0) > 0:
-                    dims_linear.append(int(sub.out_features))
+                if isinstance(sub, nn.Linear):
+                    of = int(getattr(sub, "out_features", 0) or 0)
+                    if of > 0 and _accept_dim(of):
+                        dims_linear.append(of)
                     continue
             except Exception:
                 pass
@@ -100,7 +104,7 @@ def _infer_feature_dim_from_fx(gm: Any, fallback: int = 0) -> int:
                 if shape is not None and hasattr(shape, "__len__") and len(shape) >= 2:
                     try:
                         last = int(shape[-1])
-                        if last > 0:
+                        if last > 0 and _accept_dim(last):
                             dims_matmul.append(last)
                         continue
                     except Exception:
@@ -110,15 +114,20 @@ def _infer_feature_dim_from_fx(gm: Any, fallback: int = 0) -> int:
         if shape is not None and hasattr(shape, "__len__") and len(shape) >= 2:
             try:
                 last = int(shape[-1])
-                if last > 0:
+                if last > 0 and _accept_dim(last):
                     dims_last.append(last)
             except Exception:
                 pass
 
+    def _score(val: int) -> int:
+        if isinstance(fallback, int) and fallback > 0:
+            return -abs(val - fallback)
+        return -val
+
     for votes in (dims_linear, dims_matmul, dims_last):
         if votes:
             counts = Counter(votes)
-            inferred, _ = max(counts.items(), key=lambda kv: (kv[1], -kv[0]))
+            inferred, _ = max(counts.items(), key=lambda kv: (kv[1], _score(kv[0])))
             if inferred > 0:
                 return inferred
     return fallback
@@ -400,8 +409,6 @@ def _infer_feature_dim_from_tensor(t: Any) -> int:
     try:
         if hasattr(t, 'dim') and hasattr(t, 'shape') and t.dim() >= 2:
             return int(t.shape[-1])
-        if hasattr(t, 'numel'):
-            return int(t.numel())
     except Exception:
         pass
     return 0
