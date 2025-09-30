@@ -420,24 +420,84 @@ def apply_pi_to_bert(model: nn.Module, pi: torch.LongTensor) -> None:
     model.config.pi_signature = signature
 
 
-def _expand_permutation_for_intermediate(pi: torch.LongTensor, expansion_factor: int) -> torch.LongTensor:
-    """Expand hidden_size permutation to intermediate_size permutation.
+def _expand_permutation_for_intermediate(pi: torch.LongTensor, intermediate_size: int) -> torch.LongTensor:
+    """Expand a hidden-dimension permutation to the intermediate dimension.
 
-    Uses block expansion: each element in pi is expanded to expansion_factor consecutive elements.
-    E.g., pi=[2,0,1] with expansion=2 → [4,5, 0,1, 2,3]
+    HuggingFace's Mamba blocks allow ``intermediate_size`` that is not necessarily an
+    integer multiple of the hidden size (``expand`` may be fractional).  The expansion
+    therefore proceeds by moving whole *blocks* of intermediate indices that correspond
+    to each hidden index.  For hidden index ``h`` the block is::
 
-    This preserves locality: dimensions that were adjacent in hidden space remain adjacent in intermediate space.
+        [⌊h · intermediate_size / hidden_size⌋, ⌊(h + 1) · intermediate_size / hidden_size⌋)
+
+    Concatenating the blocks in the order provided by ``pi`` yields the desired
+    intermediate-dimension permutation while preserving locality inside each block.
     """
+
     device = pi.device
     dtype = pi.dtype
-    hidden_size = pi.numel()
+    hidden_size = int(pi.numel())
 
-    # Create block expansion: [0,0,1,1,2,2,...] + [0,1,0,1,0,1,...]
-    pi_expanded = pi.repeat_interleave(expansion_factor) * expansion_factor
-    offsets = torch.arange(expansion_factor, device=device, dtype=dtype).repeat(hidden_size)
-    pi_inner = pi_expanded + offsets
+    if hidden_size <= 0:
+        raise ValueError("hidden_size inferred from permutation must be positive")
+    if intermediate_size < hidden_size:
+        raise ValueError(
+            "intermediate_size must be at least as large as hidden_size for expansion"
+        )
 
-    return pi_inner
+    pi_long = pi.to(dtype=torch.long)
+    starts = torch.div(pi_long * intermediate_size, hidden_size, rounding_mode="floor")
+    ends = torch.div((pi_long + 1) * intermediate_size, hidden_size, rounding_mode="floor")
+
+    segments = [
+        torch.arange(int(start.item()), int(end.item()), device=device, dtype=dtype)
+        for start, end in zip(starts, ends)
+    ]
+
+    if segments:
+        expanded = torch.cat(segments)
+    else:
+        expanded = torch.empty(0, device=device, dtype=dtype)
+
+    if int(expanded.numel()) != int(intermediate_size):
+        raise ValueError(
+            "expanded permutation does not cover the full intermediate dimension"
+        )
+
+    return expanded
+
+
+def _infer_hidden_permutation_from_intermediate(
+    pi_inner: torch.LongTensor, hidden_size: int, intermediate_size: int
+) -> torch.LongTensor:
+    """Recover a hidden-dimension permutation from an intermediate permutation."""
+
+    if hidden_size <= 0:
+        raise ValueError("hidden_size must be positive when inferring permutation")
+    if int(pi_inner.numel()) != int(intermediate_size):
+        raise ValueError("intermediate permutation length does not match intermediate_size")
+
+    device = pi_inner.device
+    total = int(pi_inner.numel())
+
+    idxs = torch.arange(hidden_size + 1, device=device, dtype=torch.long)
+    boundaries = torch.div(idxs * intermediate_size, hidden_size, rounding_mode="floor")
+    starts = boundaries[:-1]
+    ends = boundaries[1:]
+
+    first_positions = torch.full((hidden_size,), total, device=device, dtype=torch.long)
+
+    for h, (start, end) in enumerate(zip(starts.tolist(), ends.tolist())):
+        mask = (pi_inner >= start) & (pi_inner < end)
+        if not torch.any(mask):
+            raise ValueError(
+                "intermediate permutation missing indices for hidden dimension {h}".format(h=h)
+            )
+        pos = torch.nonzero(mask, as_tuple=False).min()
+        first_positions[h] = pos.item()
+
+    order = torch.argsort(first_positions)
+    return order.to(device=device, dtype=torch.long)
 
 
 def apply_pi_to_mamba(module_dict: Mapping[str, Any], pi: torch.LongTensor) -> None:
@@ -522,24 +582,33 @@ def apply_pi_to_mamba_hf(module_dict: Mapping[str, Any], pi: torch.LongTensor) -
         raise ValueError(f"in_proj output dimension {intermediate_size_2x} must be even (intermediate_size * 2)")
 
     intermediate_size = intermediate_size_2x // 2
-    expansion_factor = intermediate_size // hidden_size
+    device = weight.device
 
-    if expansion_factor * hidden_size != intermediate_size:
+    pi = pi.to(device=device, dtype=torch.long)
+    pi_length = int(pi.numel())
+    hidden_size_int = int(hidden_size)
+    intermediate_size_int = int(intermediate_size)
+
+    if pi_length == hidden_size_int:
+        pi_hidden = _validate_perm(pi, hidden_size_int)
+        pi_inner = _expand_permutation_for_intermediate(pi_hidden, intermediate_size_int)
+    elif pi_length == intermediate_size_int:
+        pi_inner = _validate_perm(pi, intermediate_size_int)
+        pi_hidden = _infer_hidden_permutation_from_intermediate(
+            pi_inner, hidden_size_int, intermediate_size_int
+        )
+    else:
         raise ValueError(
-            f"intermediate_size ({intermediate_size}) must be an integer multiple of hidden_size ({hidden_size})"
+            "permutation length {} does not match hidden_size {} or intermediate_size {}".format(
+                pi_length, hidden_size_int, intermediate_size_int
+            )
         )
 
-    device = weight.device
-    pi = _validate_perm(pi.to(device=device, dtype=torch.long), int(hidden_size))
-    pinv = inv_perm(pi)
-
-    # Expand pi for intermediate dimension
-    pi_inner = _expand_permutation_for_intermediate(pi, expansion_factor)
-    pi_inner_inv = inv_perm(pi_inner)
+    pi = pi_hidden
 
     # 1. in_proj: hidden_size → intermediate_size * 2
     #    Permute output (rows): first half and second half separately
-    pi_inner_2x = torch.cat([pi_inner, pi_inner + intermediate_size])
+    pi_inner_2x = torch.cat([pi_inner, pi_inner + intermediate_size_int])
     in_proj.weight.data.copy_(reindex_rows(in_proj.weight.data, pi_inner_2x))
     if getattr(in_proj, "bias", None) is not None:
         in_proj.bias.data.copy_(reindex_vec(in_proj.bias.data, pi_inner_2x))
