@@ -10,6 +10,7 @@ Notes
 - Returns CSRMatrix compatible with icd.core.graph.CSRMatrix.
 """
 
+from collections import Counter
 from typing import Any, Dict, List, Tuple
 
 try:
@@ -19,6 +20,62 @@ except Exception:  # pragma: no cover - optional dependency
     TORCH_AVAILABLE = False
 
 from .graph import CSRMatrix
+
+
+def _maybe_override_feature_dim_from_config(model: Any, current_dim: int) -> tuple[int, str | None]:
+    """Use HuggingFace config metadata to refine feature dimension when available."""
+
+    config = getattr(model, "config", None)
+    if config is None:
+        return current_dim, None
+
+    try:
+        model_type = str(getattr(config, "model_type", ""))
+    except Exception:
+        model_type = ""
+
+    hidden_size = getattr(config, "hidden_size", None)
+    if isinstance(hidden_size, int) and hidden_size > 0:
+        if model_type.lower() == "mamba" and hidden_size != current_dim:
+            return hidden_size, "hf_config.hidden_size"
+        if current_dim <= 0:
+            return hidden_size, "hf_config.hidden_size"
+
+    return current_dim, None
+
+
+def _infer_feature_dim_from_fx(gm: Any, fallback: int = 0) -> int:
+    """Infer feature dimension from FX trace metadata.
+
+    Falls back to the provided ``fallback`` when inference fails. Chooses the
+    most common positive last-dimension size observed across FX nodes.
+    """
+
+    if gm is None:
+        return fallback
+
+    dims: List[int] = []
+    graph = getattr(gm, "graph", None)
+    nodes = getattr(graph, "nodes", []) if graph is not None else []
+    for node in nodes:
+        meta = getattr(node, "meta", {})
+        tensor_meta = meta.get("tensor_meta") if isinstance(meta, dict) else getattr(meta, "tensor_meta", None)
+        shape = getattr(tensor_meta, "shape", None)
+        if shape is None or not hasattr(shape, "__len__") or len(shape) < 2:
+            continue
+        try:
+            last = int(shape[-1])
+        except Exception:
+            continue
+        if last > 0:
+            dims.append(last)
+
+    if not dims:
+        return fallback
+
+    counts = Counter(dims)
+    inferred, _ = max(counts.items(), key=lambda kv: (kv[1], kv[0]))
+    return inferred if inferred > 0 else fallback
 
 
 def _fallback_w(
@@ -109,9 +166,21 @@ def build_w_from_pytorch(
         pass
 
     # 3) Infer feature dim D
-    D = _infer_feature_dim_from_fx(gm, fallback=_infer_feature_dim_from_tensor(ex[0]))
+    fallback_dim = _infer_feature_dim_from_tensor(ex[0])
+    D = _infer_feature_dim_from_fx(gm, fallback=fallback_dim)
+    feature_dim_source = "fx"
+    if D == fallback_dim and fallback_dim > 0:
+        feature_dim_source = "tensor"
     if D <= 0:
         D = 256
+        feature_dim_source = "default"
+
+    D, override_source = _maybe_override_feature_dim_from_config(model, D)
+    if override_source is not None:
+        feature_dim_source = override_source
+    if D <= 0:
+        D = 256
+        feature_dim_source = "default"
 
     # 4) Op-based weight accumulation (coarse, but op-aware)
     total_weight = 0.0
@@ -243,6 +312,8 @@ def build_w_from_pytorch(
             "notes": "v0.9 last-dim heuristic",
             "shapes": used_meta,
             "trace_hash": trace_hash,
+            "feature_dim": D,
+            "feature_dim_source": feature_dim_source,
         },
     }
     if att_meta is not None:
