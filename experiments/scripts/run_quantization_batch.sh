@@ -19,7 +19,8 @@ cd "$PROJECT_ROOT"
 source venv/bin/activate || source "$PROJECT_ROOT/venv/bin/activate"
 
 RUNS=6
-CONFIG="configs/mamba.json"
+# Use mamba_3b.json for Mamba-2.8B (paper model)
+CONFIG="configs/mamba_3b.json"
 
 run_quant_experiment() {
     local strategy=$1

@@ -40,7 +40,8 @@ echo "Phase 1: Table 1 - Mamba-2.8B (4h)"
 echo "========================================"
 
 RUNS=5
-CONFIG="configs/mamba.json"
+# Use mamba_3b.json for Mamba-2.8B (paper model)
+CONFIG="configs/mamba_3b.json"
 
 for run in $(seq 1 $RUNS); do
     echo "Run $run/$RUNS..."
