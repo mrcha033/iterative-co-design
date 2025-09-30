@@ -610,4 +610,47 @@ def fit_permutation(
     )
 
 
-__all__ = ["fit_permutation"]
+def compute_perm_from_w(
+    W: CSRMatrix,
+    *,
+    time_budget_s: float | None = None,
+    refine_steps: int | None = None,
+    cfg: CostConfig | None = None,
+    seed: int | None = None,
+    clusters: Sequence[Sequence[int]] | None = None,
+    method: str | None = None,
+) -> List[int]:
+    """Convenience wrapper that returns only the permutation for ``W``.
+
+    The helper delegates to :func:`fit_permutation` while ensuring that the
+    resulting permutation length matches the feature dimension ``D`` encoded in
+    ``W``.  Callers may override solver parameters via keyword arguments.  The
+    returned permutation is a Python ``list`` compatible with downstream
+    runners that expect JSON-serialisable payloads.
+    """
+
+    kwargs: Dict[str, Any] = {}
+    if time_budget_s is not None:
+        kwargs["time_budget_s"] = float(time_budget_s)
+    if refine_steps is not None:
+        kwargs["refine_steps"] = int(refine_steps)
+    if cfg is not None:
+        kwargs["cfg"] = cfg
+    if seed is not None:
+        kwargs["seed"] = int(seed)
+    if clusters is not None:
+        kwargs["clusters"] = clusters
+    if method is not None:
+        kwargs["method"] = method
+
+    pi, _ = fit_permutation(W, **kwargs)
+    if len(pi) != int(W.shape[0]):
+        raise ValueError(
+            "permutation length {} does not match W.shape[0] {}".format(
+                len(pi), int(W.shape[0])
+            )
+        )
+    return pi
+
+
+__all__ = ["fit_permutation", "compute_perm_from_w"]

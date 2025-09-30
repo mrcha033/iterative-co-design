@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import shutil
@@ -39,6 +40,8 @@ from icd.graph import (
     cluster_graph,
     save_correlation_artifacts,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def evaluate_acceptance(delta_J: float, epsilon_J: float, retry_budget: int) -> dict[str, bool]:
@@ -157,6 +160,37 @@ def _write_json(path: str, obj: Dict[str, Any]) -> None:
 def _read_json(path: str) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _infer_seq_len_for_diag(example_inputs: Any) -> Optional[int]:
+    """Best-effort sequence length probe for diagnostic logging."""
+
+    def _from_single(obj: Any) -> Optional[int]:
+        try:
+            shape = getattr(obj, "shape", None)
+            if shape is None or not hasattr(shape, "__len__"):
+                return None
+            if len(shape) >= 2:
+                return int(shape[-2])
+        except Exception:
+            return None
+        return None
+
+    if example_inputs is None:
+        return None
+    if isinstance(example_inputs, dict):
+        for value in example_inputs.values():
+            inferred = _infer_seq_len_for_diag(value)
+            if inferred is not None:
+                return inferred
+        return None
+    if isinstance(example_inputs, (list, tuple)):
+        for item in example_inputs:
+            inferred = _infer_seq_len_for_diag(item)
+            if inferred is not None:
+                return inferred
+        return None
+    return _from_single(example_inputs)
 
 
 def _parse_torch_dtype(value: Any) -> Any:
@@ -588,22 +622,45 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
 
     W = build_w(source=source, **graph_kwargs)
     emit("W_BUILT", True, {"nnz": W.nnz(), "shape": W.shape, "source": W.meta.get("source")})
+
+    pt_meta = W.meta.get("pytorch") if isinstance(W.meta, dict) else None
+    if pt_meta:
+        feature_dim = int(pt_meta.get("feature_dim", W.shape[0]))
+        feature_dim_source = pt_meta.get("feature_dim_source")
+        config_like = getattr(graph_model, "config", None)
+        if config_like is None:
+            config_like = graph_model
+        hidden_size = getattr(config_like, "hidden_size", None) if config_like is not None else None
+        seq_len = _infer_seq_len_for_diag(
+            graph_kwargs.get("example_inputs", graph_example_inputs)
+        )
+        intermediate_meta = pt_meta.get("intermediate", {})
+        logger.info(
+            "[IASP] D=%s src=%s hs=%s seq=%s inter=%s",
+            feature_dim,
+            feature_dim_source,
+            hidden_size,
+            seq_len,
+            intermediate_meta,
+        )
     w_path = os.path.join(out_dir, "W.csr.npz")
     save_w_npz(w_path, W)
     # Always write a simple meta snapshot for W
     meta_path = os.path.join(out_dir, "w.meta.json")
     # Prefer nested mock seed when present
-    _write_json(
-        meta_path,
-        {
-            "D": W.shape[0],
-            "nnz": W.nnz(),
-            "normalize": gcfg.get("normalize", "sym"),
-            "format": W.meta.get("format"),
-            "source": W.meta.get("source"),
-            "seed": gcfg.get("mock", {}).get("seed", gcfg.get("seed", 0)),
-        },
-    )
+    base_meta: Dict[str, Any] = {
+        "D": W.shape[0],
+        "nnz": W.nnz(),
+        "normalize": gcfg.get("normalize", "sym"),
+        "format": W.meta.get("format"),
+        "source": W.meta.get("source"),
+        "seed": gcfg.get("mock", {}).get("seed", gcfg.get("seed", 0)),
+    }
+    if pt_meta:
+        base_meta["feature_dim"] = int(pt_meta.get("feature_dim", W.shape[0]))
+        if pt_meta.get("feature_dim_source"):
+            base_meta["feature_dim_source"] = pt_meta.get("feature_dim_source")
+    _write_json(meta_path, base_meta)
     # Write meta/ops json for PyTorch source
     if W.meta.get("source") == "pytorch":
         import hashlib, json as _json

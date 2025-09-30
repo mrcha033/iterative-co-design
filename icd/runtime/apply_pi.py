@@ -44,6 +44,28 @@ class PermutationApplicationError(RuntimeError):
     """Raised when a permutation cannot be applied to a module."""
 
 
+def _log_perm_application(
+    target: str,
+    pi: torch.LongTensor,
+    *,
+    hidden_size: object | None = None,
+    intermediate_size: object | None = None,
+) -> None:
+    """Emit a standard diagnostic line for permutation application."""
+
+    try:
+        length = int(pi.numel())
+    except Exception:
+        length = "?"
+    logger.info(
+        "[IASP] applying perm len=%s to %s expect(hs)=%s expect(inter)=%s",
+        length,
+        target,
+        hidden_size,
+        intermediate_size,
+    )
+
+
 def inv_perm(pi: torch.LongTensor) -> torch.LongTensor:
     """Return the inverse permutation of ``pi``."""
 
@@ -390,6 +412,15 @@ def apply_pi_to_bert(model: nn.Module, pi: torch.LongTensor) -> None:
     pi = _validate_perm(pi.to(device=device, dtype=torch.long), config.hidden_size)
     pinv = inv_perm(pi)
 
+    intermediate_size = getattr(config, "intermediate_size", None)
+    model_name = getattr(config, "model_type", None) or type(model).__name__
+    _log_perm_application(
+        model_name,
+        pi,
+        hidden_size=getattr(config, "hidden_size", None),
+        intermediate_size=intermediate_size,
+    )
+
     modules = _resolve_bert_modules(model)
     skip_weight_ptrs = _collect_embedding_weight_ptrs(modules.embeddings)
 
@@ -525,6 +556,21 @@ def apply_pi_to_mamba(module_dict: Mapping[str, Any], pi: torch.LongTensor) -> N
         raise ValueError("unable to infer hidden dimension from module 'A'")
 
     device = weight.device
+    intermediate_dim = None
+    try:
+        B_weight = getattr(module_dict.get("B"), "weight", None)
+        if B_weight is not None and hasattr(B_weight, "shape") and len(B_weight.shape) >= 1:
+            intermediate_dim = int(B_weight.shape[0])
+    except Exception:
+        intermediate_dim = None
+
+    _log_perm_application(
+        str(module_dict.get("_module_name", "mamba")),
+        pi,
+        hidden_size=int(hidden_dim) if hidden_dim is not None else None,
+        intermediate_size=intermediate_dim,
+    )
+
     pi = _validate_perm(pi.to(device=device, dtype=torch.long), int(hidden_dim))
     pinv = inv_perm(pi)
 
@@ -598,9 +644,20 @@ def apply_pi_to_mamba_hf(module_dict: Mapping[str, Any], pi: torch.LongTensor) -
     hidden_size_int = int(hidden_size)
     intermediate_size_int = int(intermediate_size)
 
+    _log_perm_application(
+        str(module_dict.get("_module_name", "hf_mamba")),
+        pi,
+        hidden_size=hidden_size_int,
+        intermediate_size=intermediate_size_int,
+    )
+
     if pi_length == hidden_size_int:
         pi_hidden = _validate_perm(pi, hidden_size_int)
-        pi_inner = _expand_permutation_for_intermediate(pi_hidden, intermediate_size_int)
+        if intermediate_size_int % hidden_size_int == 0 and hidden_size_int > 0:
+            factor = intermediate_size_int // hidden_size_int
+            pi_inner = pi_hidden.repeat_interleave(int(factor))
+        else:
+            pi_inner = _expand_permutation_for_intermediate(pi_hidden, intermediate_size_int)
     elif pi_length == intermediate_size_int:
         pi_inner = _validate_perm(pi, intermediate_size_int)
         pi_hidden = _infer_hidden_permutation_from_intermediate(

@@ -40,10 +40,9 @@ def _maybe_override_feature_dim_from_config(model: Any, current_dim: int) -> tup
     hidden_size = getattr(config, "hidden_size", None)
     d_model = getattr(config, "d_model", None)
     if isinstance(hidden_size, int) and hidden_size > 0:
-        if hidden_size != current_dim:
+        if hidden_size != current_dim or current_dim <= 0:
             return hidden_size, "hf_config.hidden_size"
-        if current_dim <= 0:
-            return hidden_size, "hf_config.hidden_size"
+        return current_dim, "hf_config.hidden_size"
     if isinstance(d_model, int) and d_model > 0 and current_dim <= 0:
         return d_model, "hf_config.d_model"
 

@@ -41,6 +41,44 @@ def _wrap_mamba_weight_holder(obj: Any) -> Any:
     raise TypeError("Unsupported Mamba weight holder; expected tensor-like with 'data'.")
 
 
+def _expected_dims_for_module(module: Any) -> tuple[Any | None, Any | None]:
+    config_like = getattr(module, "config", None)
+    if config_like is None:
+        config_like = module
+    hidden = getattr(config_like, "hidden_size", None) if config_like is not None else None
+    intermediate = (
+        getattr(config_like, "intermediate_size", None) if config_like is not None else None
+    )
+    return hidden, intermediate
+
+
+def _expected_dims_for_mamba_entry(entry: Mapping[str, Any]) -> tuple[Any | None, Any | None]:
+    module_ref = entry.get("_module_ref")
+    if module_ref is not None:
+        hidden, intermediate = _expected_dims_for_module(module_ref)
+    else:
+        hidden = None
+        intermediate = None
+
+    if hidden is None:
+        weight = getattr(entry.get("A"), "weight", None)
+        if weight is not None and hasattr(weight, "shape") and len(weight.shape) >= 1:
+            try:
+                hidden = int(weight.shape[0])
+            except Exception:
+                hidden = None
+
+    if intermediate is None:
+        weight = getattr(entry.get("B"), "weight", None)
+        if weight is not None and hasattr(weight, "shape") and len(weight.shape) >= 2:
+            try:
+                intermediate = int(weight.shape[1])
+            except Exception:
+                intermediate = None
+
+    return hidden, intermediate
+
+
 def _collect_mamba_modules_from_model(model: Any) -> List[Dict[str, Any]]:
     modules: List[Dict[str, Any]] = []
     if model is None or not hasattr(model, "named_modules"):
@@ -179,9 +217,13 @@ def _apply_pi_sequence(
             try:
                 applied_successfully = _apply_entry(modules)
             except PermutationApplicationError as exc:
+                hidden, intermediate = _expected_dims_for_mamba_entry(modules)
                 logger.warning(
-                    "Skipping Mamba permutation for %s: %s",
+                    "[IASP] skip %s (len(perm)=%s, expect hs=%s inter=%s): %s",
                     _module_name(modules),
+                    int(pi_tensor.numel()),
+                    hidden,
+                    intermediate,
                     exc,
                 )
         else:
@@ -192,9 +234,13 @@ def _apply_pi_sequence(
                     if _apply_entry(entry):
                         applied_successfully = True
                 except PermutationApplicationError as exc:
+                    hidden, intermediate = _expected_dims_for_mamba_entry(entry)
                     logger.warning(
-                        "Skipping Mamba permutation for %s: %s",
+                        "[IASP] skip %s (len(perm)=%s, expect hs=%s inter=%s): %s",
                         _module_name(entry),
+                        int(pi_tensor.numel()),
+                        hidden,
+                        intermediate,
                         exc,
                     )
             if not attempted:
