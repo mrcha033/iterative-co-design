@@ -70,10 +70,10 @@ This document assesses all experiment scripts referenced in the README and ident
 
 ### Phase 3: Mechanistic Analysis
 
-#### ❌ **run_mechanism_deepdive.sh**
+#### ✅ **run_mechanism_deepdive.sh**
 - **Referenced in:** README Phase 3.1
 - **Purpose:** Deep dive into Modularity-Cache-Latency chain (Table 3)
-- **Status:** ❌ MISSING
+- **Status:** ✅ Added at `experiments/scripts/run_mechanism_deepdive.sh`
 - **Needed for:** Mechanistic validation of causal chain
 - **Priority:** HIGH (needed for paper claims)
 
@@ -144,9 +144,9 @@ This document assesses all experiment scripts referenced in the README and ident
 - **Status:** ❌ MISSING
 - **Priority:** HIGH (needed for paper figure)
 
-#### ❌ **extract_mechanism_metrics.py**
+#### ✅ **extract_mechanism_metrics.py**
 - **Purpose:** Extract metrics for Table 3
-- **Status:** ❌ MISSING
+- **Status:** ✅ Added at `scripts/extract_mechanism_metrics.py`
 - **Priority:** HIGH
 
 #### ❌ **plot_synthetic_validation.py**

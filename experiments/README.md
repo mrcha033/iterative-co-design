@@ -129,6 +129,7 @@ bash experiments/scripts/run_memory_hierarchy.sh
 - `experiments/mechanism/mamba_deepdive/results.csv` - Modularity, L2 hit rate, latency
 - `experiments/mechanism/synthetic/validation_results.json`
 - `experiments/mechanism/memory_hierarchy/hierarchy_metrics.json`
+- `experiments/results/table3_mamba_deepdive.csv` (summary) and `experiments/results/table3_mamba_deepdive_raw.csv`
 
 ---
 
