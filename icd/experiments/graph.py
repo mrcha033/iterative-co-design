@@ -1,158 +1,266 @@
-"""Graph neural network loaders for GCN, GraphSAGE, and other GNN architectures.
-
-Provides loaders for PyTorch Geometric models with OGB dataset integration.
-"""
+"""Graph experiment loaders for PyTorch Geometric models."""
 
 from __future__ import annotations
 
-import logging
+import importlib
 from typing import Any, Tuple
 
-__all__ = ["load_gcn", "load_graphsage"]
+from icd.utils.imports import load_object
 
-logger = logging.getLogger(__name__)
+from ._torch_utils import resolve_device, resolve_dtype
+
+__all__ = ["load_pyg_gcn", "load_pyg_graphsage", "load_gcn", "load_graphsage"]
 
 
-def load_gcn(
-    *,
-    dataset: str = "ogbn-arxiv",
-    hidden_channels: int = 256,
-    num_layers: int = 3,
-    device: str | None = None,
-    dtype: str | None = None,
-    **kwargs: Any,
-) -> Tuple[Any, Tuple[Any, ...]]:
-    """Load GCN model on OGB dataset.
+def _import_pyg_modules():
+    """Import PyTorch Geometric dependencies with a helpful error."""
 
-    Args:
-        dataset: OGB dataset name (default: "ogbn-arxiv").
-        hidden_channels: Hidden layer dimension.
-        num_layers: Number of GCN layers.
-        device: Target device.
-        dtype: Data type.
-        **kwargs: Additional arguments.
-
-    Returns:
-        Tuple of (model, (x, edge_index))
-    """
     try:
-        import torch
-        import torch_geometric.nn as geom_nn
-        from ogb.nodeproppred import PygNodePropPredDataset
-    except ImportError as exc:  # pragma: no cover
+        torch = importlib.import_module("torch")
+        datasets_mod = importlib.import_module("torch_geometric.datasets")
+        models_mod = importlib.import_module("torch_geometric.nn.models")
+    except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency
         raise RuntimeError(
-            "torch_geometric and ogb are required for graph loaders. "
-            "Install with: pip install torch_geometric ogb"
+            "torch and torch_geometric are required for the graph experiment loaders"
         ) from exc
 
-    logger.info(f"Loading GCN on {dataset}")
+    return torch, datasets_mod, models_mod
 
-    # Load dataset
-    dataset_obj = PygNodePropPredDataset(name=dataset, root=kwargs.get("data_root", "data"))
-    data = dataset_obj[0]
 
-    # Create model
-    class GCN(torch.nn.Module):
-        def __init__(self, in_channels, hidden_channels, out_channels, num_layers):
-            super().__init__()
-            self.convs = torch.nn.ModuleList()
-            self.convs.append(geom_nn.GCNConv(in_channels, hidden_channels))
-            for _ in range(num_layers - 2):
-                self.convs.append(geom_nn.GCNConv(hidden_channels, hidden_channels))
-            self.convs.append(geom_nn.GCNConv(hidden_channels, out_channels))
+def _canonicalize_dataset_class(dataset_name: str) -> str:
+    """Return the torch_geometric.datasets attribute for a dataset name."""
 
-        def forward(self, x, edge_index):
-            for conv in self.convs[:-1]:
-                x = conv(x, edge_index).relu()
-            return self.convs[-1](x, edge_index)
+    dataset_key = dataset_name.replace("-", "_").lower()
+    if dataset_key.startswith("ogbn_"):
+        suffix = dataset_key.split("_", 1)[1]
+        return "Ogbn" + "".join(part.capitalize() for part in suffix.split("_"))
+    return "Planetoid"
 
-    model = GCN(
-        in_channels=data.x.shape[1],
-        hidden_channels=hidden_channels,
-        out_channels=dataset_obj.num_classes,
-        num_layers=num_layers,
+
+def _load_dataset(
+    dataset_name: str,
+    *,
+    data_root: str,
+    datasets_mod: Any,
+    dataset_loader: str | None,
+    dataset_loader_kwargs: dict[str, Any] | None,
+) -> Any:
+    """Instantiate a PyG dataset for the requested graph benchmark."""
+
+    kwargs: dict[str, Any] = dict(dataset_loader_kwargs or {})
+    kwargs.setdefault("root", data_root)
+
+    if dataset_loader:
+        loader = load_object(dataset_loader)
+        call_kwargs = dict(kwargs)
+        call_kwargs.setdefault("dataset_name", dataset_name)
+        call_kwargs.setdefault("name", dataset_name)
+        return loader(**call_kwargs)
+
+    attr_name = _canonicalize_dataset_class(dataset_name)
+    loader = getattr(datasets_mod, attr_name, None)
+    if loader is None:
+        raise ValueError(
+            f"torch_geometric.datasets does not provide a loader named '{attr_name}'"
+        )
+
+    call_kwargs = dict(kwargs)
+    if attr_name == "Planetoid":
+        call_kwargs.setdefault("name", dataset_name)
+    return loader(**call_kwargs)
+
+
+def _prepare_example_tensors(data: Any, *, device: str, torch_dtype: Any) -> Tuple[Any, Any]:
+    """Move node features and edges to the requested device/dtype."""
+
+    x = getattr(data, "x", None)
+    edge_index = getattr(data, "edge_index", None)
+    if x is None or edge_index is None:
+        raise ValueError("dataset example must contain 'x' features and 'edge_index' graph structure")
+
+    if hasattr(x, "to"):
+        x = x.to(device=device, dtype=torch_dtype)
+    if hasattr(edge_index, "to"):
+        edge_index = edge_index.to(device=device)
+
+    return x, edge_index
+
+
+def _infer_in_out_channels(dataset: Any, data: Any) -> tuple[int, int]:
+    """Derive model input/output sizes from the dataset."""
+
+    features = getattr(data, "x", None)
+    if features is None or not hasattr(features, "shape") or len(features.shape) < 2:
+        raise ValueError("graph datasets must expose node features with shape (nodes, channels)")
+
+    in_channels = int(features.shape[1])
+    num_classes = getattr(dataset, "num_classes", None)
+    if num_classes is None:
+        raise ValueError("dataset object must define 'num_classes' for graph loaders")
+
+    return in_channels, int(num_classes)
+
+
+def _resolve_model_loader(
+    *,
+    default_attr: str,
+    models_mod: Any,
+    model_loader: str | None,
+) -> Any:
+    """Return the callable used to instantiate the graph neural network."""
+
+    if model_loader:
+        return load_object(model_loader)
+
+    loader = getattr(models_mod, default_attr, None)
+    if loader is None:
+        raise ValueError(
+            f"torch_geometric.nn.models does not provide a '{default_attr}' constructor"
+        )
+    return loader
+
+
+def _load_pyg_model(
+    *,
+    default_model_attr: str,
+    dataset_name: str,
+    hidden_channels: int,
+    num_layers: int,
+    device: str | None,
+    dtype: str | None,
+    dropout: float | None,
+    aggr: str | None,
+    data_root: str,
+    model_loader: str | None,
+    model_loader_kwargs: dict[str, Any] | None,
+    dataset_loader: str | None,
+    dataset_loader_kwargs: dict[str, Any] | None,
+) -> Tuple[Any, Tuple[Any, ...]]:
+    """Shared implementation for the PyTorch Geometric experiment loaders."""
+
+    torch, datasets_mod, models_mod = _import_pyg_modules()
+    torch_dtype = resolve_dtype(dtype, torch)
+    device_name = resolve_device(device, torch)
+
+    dataset = _load_dataset(
+        dataset_name,
+        data_root=data_root,
+        datasets_mod=datasets_mod,
+        dataset_loader=dataset_loader,
+        dataset_loader_kwargs=dataset_loader_kwargs,
+    )
+    if len(dataset) == 0:  # pragma: no cover - defensive
+        raise ValueError(f"dataset '{dataset_name}' returned no samples")
+
+    data = dataset[0]
+    in_channels, out_channels = _infer_in_out_channels(dataset, data)
+
+    loader = _resolve_model_loader(
+        default_attr=default_model_attr,
+        models_mod=models_mod,
+        model_loader=model_loader,
     )
 
-    # Move to device
-    if device:
-        device_obj = torch.device(device)
-        model = model.to(device_obj)
-        data = data.to(device_obj)
+    model_kwargs: dict[str, Any] = dict(model_loader_kwargs or {})
+    model_kwargs.setdefault("in_channels", in_channels)
+    model_kwargs.setdefault("hidden_channels", hidden_channels)
+    model_kwargs.setdefault("num_layers", num_layers)
+    model_kwargs.setdefault("out_channels", out_channels)
+    if dropout is not None:
+        model_kwargs.setdefault("dropout", dropout)
+    if aggr is not None:
+        model_kwargs.setdefault("aggr", aggr)
 
-    model.eval()
+    model = loader(**model_kwargs)
+    if hasattr(model, "to"):
+        model = model.to(device=device_name, dtype=torch_dtype)
+    if hasattr(model, "eval"):
+        model = model.eval()
 
-    return model, (data.x, data.edge_index)
+    example = _prepare_example_tensors(data, device=device_name, torch_dtype=torch_dtype)
+    return model, example
 
 
-def load_graphsage(
+def load_pyg_gcn(
     *,
-    dataset: str = "ogbn-arxiv",
+    dataset_name: str = "ogbn-arxiv",
+    hidden_channels: int = 256,
+    num_layers: int = 3,
+    dropout: float | None = None,
+    device: str | None = None,
+    dtype: str | None = None,
+    data_root: str = "data",
+    model_loader: str | None = None,
+    model_loader_kwargs: dict[str, Any] | None = None,
+    dataset_loader: str | None = None,
+    dataset_loader_kwargs: dict[str, Any] | None = None,
+) -> Tuple[Any, Tuple[Any, ...]]:
+    """Load a Graph Convolutional Network and example batch via PyTorch Geometric."""
+
+    return _load_pyg_model(
+        default_model_attr="GCN",
+        dataset_name=dataset_name,
+        hidden_channels=hidden_channels,
+        num_layers=num_layers,
+        device=device,
+        dtype=dtype,
+        dropout=dropout,
+        aggr=None,
+        data_root=data_root,
+        model_loader=model_loader,
+        model_loader_kwargs=model_loader_kwargs,
+        dataset_loader=dataset_loader,
+        dataset_loader_kwargs=dataset_loader_kwargs,
+    )
+
+
+def load_pyg_graphsage(
+    *,
+    dataset_name: str = "ogbn-arxiv",
     hidden_channels: int = 256,
     num_layers: int = 3,
     aggr: str = "mean",
+    dropout: float | None = None,
     device: str | None = None,
     dtype: str | None = None,
-    **kwargs: Any,
+    data_root: str = "data",
+    model_loader: str | None = None,
+    model_loader_kwargs: dict[str, Any] | None = None,
+    dataset_loader: str | None = None,
+    dataset_loader_kwargs: dict[str, Any] | None = None,
 ) -> Tuple[Any, Tuple[Any, ...]]:
-    """Load GraphSAGE model on OGB dataset.
+    """Load a GraphSAGE model and example batch via PyTorch Geometric."""
 
-    Args:
-        dataset: OGB dataset name (default: "ogbn-arxiv").
-        hidden_channels: Hidden layer dimension.
-        num_layers: Number of GraphSAGE layers.
-        aggr: Aggregation function ("mean", "max", "add").
-        device: Target device.
-        dtype: Data type.
-        **kwargs: Additional arguments.
-
-    Returns:
-        Tuple of (model, (x, edge_index))
-    """
-    try:
-        import torch
-        import torch_geometric.nn as geom_nn
-        from ogb.nodeproppred import PygNodePropPredDataset
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError(
-            "torch_geometric and ogb are required for graph loaders. "
-            "Install with: pip install torch_geometric ogb"
-        ) from exc
-
-    logger.info(f"Loading GraphSAGE on {dataset} (aggr={aggr})")
-
-    # Load dataset
-    dataset_obj = PygNodePropPredDataset(name=dataset, root=kwargs.get("data_root", "data"))
-    data = dataset_obj[0]
-
-    # Create model
-    class GraphSAGE(torch.nn.Module):
-        def __init__(self, in_channels, hidden_channels, out_channels, num_layers, aggr="mean"):
-            super().__init__()
-            self.convs = torch.nn.ModuleList()
-            self.convs.append(geom_nn.SAGEConv(in_channels, hidden_channels, aggr=aggr))
-            for _ in range(num_layers - 2):
-                self.convs.append(geom_nn.SAGEConv(hidden_channels, hidden_channels, aggr=aggr))
-            self.convs.append(geom_nn.SAGEConv(hidden_channels, out_channels, aggr=aggr))
-
-        def forward(self, x, edge_index):
-            for conv in self.convs[:-1]:
-                x = conv(x, edge_index).relu()
-            return self.convs[-1](x, edge_index)
-
-    model = GraphSAGE(
-        in_channels=data.x.shape[1],
+    return _load_pyg_model(
+        default_model_attr="GraphSAGE",
+        dataset_name=dataset_name,
         hidden_channels=hidden_channels,
-        out_channels=dataset_obj.num_classes,
         num_layers=num_layers,
+        device=device,
+        dtype=dtype,
+        dropout=dropout,
         aggr=aggr,
+        data_root=data_root,
+        model_loader=model_loader,
+        model_loader_kwargs=model_loader_kwargs,
+        dataset_loader=dataset_loader,
+        dataset_loader_kwargs=dataset_loader_kwargs,
     )
 
-    # Move to device
-    if device:
-        device_obj = torch.device(device)
-        model = model.to(device_obj)
-        data = data.to(device_obj)
 
-    model.eval()
+def load_gcn(*, dataset: str = "ogbn-arxiv", **kwargs: Any) -> Tuple[Any, Tuple[Any, ...]]:
+    """Backward compatible alias for :func:`load_pyg_gcn`."""
 
-    return model, (data.x, data.edge_index)
+    kwargs = dict(kwargs)
+    if "dataset_name" not in kwargs:
+        kwargs["dataset_name"] = dataset
+    return load_pyg_gcn(**kwargs)
+
+
+def load_graphsage(*, dataset: str = "ogbn-arxiv", **kwargs: Any) -> Tuple[Any, Tuple[Any, ...]]:
+    """Backward compatible alias for :func:`load_pyg_graphsage`."""
+
+    kwargs = dict(kwargs)
+    if "dataset_name" not in kwargs:
+        kwargs["dataset_name"] = dataset
+    return load_pyg_graphsage(**kwargs)

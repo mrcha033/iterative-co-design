@@ -14,7 +14,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
-__all__ = ["PowerMonitor", "is_nvml_available", "measure_power"]
+__all__ = [
+    "PowerMonitor",
+    "is_nvml_available",
+    "measure_power",
+    "measure_ept_stub",
+    "compute_energy_per_token",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -337,3 +343,35 @@ def compute_energy_per_token(
         return None
 
     return energy_j / num_tokens
+
+
+def measure_ept_stub(
+    tokens: int,
+    duration_s: Optional[float] = None,
+    note: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Emit a schema-compatible EpT payload when NVML is unavailable.
+
+    Downstream reporting expects EpT data even when we cannot access the GPU
+    power sensors (e.g. in CI).  The stub mirrors the keys produced by the real
+    measurement pipeline so consumers can rely on a stable contract while still
+    being able to differentiate stubbed runs via the ``status`` field.
+    """
+
+    result: Dict[str, Any] = {
+        "status": "stub",
+        "tokens": int(tokens),
+        "duration_s": float(duration_s) if duration_s is not None else None,
+        "ept_j_per_tok": float("nan"),
+        "power_stats": {
+            "status": "unavailable",
+            "mean_watts": float("nan"),
+            "total_energy_joules": float("nan"),
+            "num_samples": 0,
+        },
+    }
+
+    if note is not None:
+        result["note"] = note
+
+    return result
