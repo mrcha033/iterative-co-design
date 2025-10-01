@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 from typing import Any, Dict
 
 from icd.runtime.orchestrator import run as run_pipeline
 from icd.runtime.orchestrator import run_pair as run_pipeline_pair
+from icd.runtime.validation import ValidationConfig, run_full_validation
 from icd.errors import ConfigError
 from icd import __version__
 
@@ -56,6 +58,24 @@ def main(argv: list[str] | None = None) -> int:
     pairp.add_argument("--out", required=True, help="Output directory for pair run root")
     pairp.add_argument("--dry-run", action="store_true", help="Validate config and exit")
     pairp.add_argument("--print-schema", action="store_true", help="Print minimal input schema and exit")
+    validatep = sub.add_parser("validate", help="Run full hardware validation pipeline")
+    validatep.add_argument("--out", required=True, help="Output directory for validation artefacts")
+    validatep.add_argument("--device", default="cuda", choices=["cuda", "cpu"], help="Execution device (default: cuda)")
+    validatep.add_argument(
+        "--models",
+        nargs="+",
+        choices=["mamba", "bert", "resnet", "gcn"],
+        default=["mamba", "bert"],
+        help="Models to validate (default: mamba bert)",
+    )
+    validatep.add_argument(
+        "--num-permutations",
+        type=int,
+        default=20,
+        help="Number of permutations for mechanistic validation (default: 20)",
+    )
+    validatep.add_argument("--quick", action="store_true", help="Quick mode (reduced samples, faster)")
+    validatep.add_argument("--skip-matrix", action="store_true", help="Skip experimental matrix stage")
     args = ap.parse_args(argv)
 
     def _print_schema() -> None:
@@ -220,6 +240,18 @@ def main(argv: list[str] | None = None) -> int:
             # Placeholder for offline calibration; intentionally no-op per decision
             print("Calibration CLI is stubbed (offline-only, disabled by default).")
             return 0
+        elif args.cmd == "validate":
+            logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+            validation_config = ValidationConfig(
+                output_dir=args.out,
+                device=args.device,
+                models=args.models,
+                num_permutations=args.num_permutations,
+                quick=args.quick,
+                skip_matrix=args.skip_matrix,
+            )
+            result = run_full_validation(validation_config)
+            return result.returncode
     except ConfigError as e:
         print(f"ConfigError: {e}")
         return 2

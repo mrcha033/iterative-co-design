@@ -178,13 +178,21 @@ Update your configuration files to use real measurements:
 # Prerequisites check
 python scripts/check_hardware_setup.py
 
-# Run validation
+# Run the fully integrated pipeline (preferred)
+icd validate --out results/full_validation --device cuda
+
+# Or run the mechanistic validation script directly
 python scripts/validate_mechanistic_claim.py \
     --config configs/mamba.json \
     --device cuda \
     --num-permutations 20 \
     --output results/validation_$(date +%Y%m%d).json
 ```
+
+The `icd validate` command wraps the entire pipeline described in this document,
+including mechanistic validation, the experimental matrix, table aggregation, and
+summary reporting. It accepts the same high-level options as the standalone
+scripts (for example `--quick`, `--skip-matrix`, and `--models`).
 
 ### Step 4: Verify Results Match Paper Claims
 
