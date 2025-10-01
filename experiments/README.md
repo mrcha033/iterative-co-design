@@ -179,7 +179,10 @@ python scripts/run_autotvm.py --model mamba-2.8b --trials 3000 --out experiments
 python scripts/run_autotvm.py --model bert-large --trials 3000 --out experiments/tvm/bert/
 
 # Compare results
-python scripts/compare_tvm_baseline.py experiments/tvm/ experiments/table1/ --output experiments/tvm/comparison.csv
+python scripts/compare_tvm_results.py \
+    experiments/table1/iter/metrics.json \
+    experiments/tvm/bert/metadata.json \
+    --output experiments/tvm/comparison.csv
 ```
 
 ---

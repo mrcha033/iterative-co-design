@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import os
+import pathlib
 import shutil
 import time
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ from icd.core.graph import build_w, save_w_npz
 from icd.core.solver import fit_permutation
 from icd.core.cost import CostConfig, eval_cost
 from icd.measure.report import write_csv_report, write_html_report
+from icd.measure.latency import LatencyMeasurer
 from icd.measure.ncu_wrapper import parse_l2_hit_from_section_json
 from icd.measure.profiling import NVMLPowerLogger, energy_per_token_j, nvtx_range
 from icd.measure.quality import eval_sst2, eval_wt103_ppl
@@ -138,6 +140,153 @@ def _evaluate_quality_metrics(
         )
         return {"ppl": ppl}
     return None
+
+
+def _prepare_example_for_tvm(example_inputs: Any) -> Any:
+    if torch is None:
+        return example_inputs
+    if isinstance(example_inputs, torch.Tensor):
+        return example_inputs.detach().cpu()
+    if isinstance(example_inputs, dict):
+        return {k: _prepare_example_for_tvm(v) for k, v in example_inputs.items()}
+    if isinstance(example_inputs, (list, tuple)):
+        converted = [_prepare_example_for_tvm(v) for v in example_inputs]
+        return type(example_inputs)(converted)
+    return example_inputs
+
+
+def _to_numpy_inputs(example_inputs: Any) -> Any:
+    if torch is not None and isinstance(example_inputs, torch.Tensor):
+        return example_inputs.detach().cpu().numpy()
+    if isinstance(example_inputs, dict):
+        return {k: _to_numpy_inputs(v) for k, v in example_inputs.items()}
+    if isinstance(example_inputs, (list, tuple)):
+        converted = [_to_numpy_inputs(v) for v in example_inputs]
+        return type(example_inputs)(converted)
+    return example_inputs
+
+
+def _name_tvm_inputs(example_inputs: Any) -> List[Tuple[str, Any]]:
+    if isinstance(example_inputs, dict):
+        return [(str(k), v) for k, v in example_inputs.items()]
+    if isinstance(example_inputs, (list, tuple)):
+        return [(f"input_{idx}", value) for idx, value in enumerate(example_inputs)]
+    return [("input_0", example_inputs)]
+
+
+def _maybe_run_tvm_baseline(
+    measure_cfg: Dict[str, Any],
+    out_dir: str,
+    graph_model: Any,
+    graph_example_inputs: Any,
+    repeats: int,
+    warmup: int,
+    fixed_clock: bool,
+) -> Dict[str, Any] | None:
+    if not measure_cfg.get("tvm_enable"):
+        return None
+    if graph_model is None or graph_example_inputs is None:
+        return {
+            "enabled": True,
+            "status": "missing_inputs",
+            "detail": "graph model/example inputs are required",
+        }
+
+    try:
+        from icd.adapters.tvm_export import ExportConfig, compile_pytorch_module, verify_runtime
+    except Exception as exc:  # pragma: no cover - optional dependency
+        return {"enabled": True, "status": "error", "detail": str(exc)}
+
+    tvm_config = ExportConfig(
+        example_input=_prepare_example_for_tvm(graph_example_inputs),
+        target=str(measure_cfg.get("tvm_target", "llvm")),
+        tuning_trials=int(measure_cfg.get("tvm_trials", 0)),
+        tuning_log=(
+            pathlib.Path(measure_cfg["tvm_log"]) if measure_cfg.get("tvm_log") else None
+        ),
+        use_ansor=bool(measure_cfg.get("tvm_use_ansor", False)),
+    )
+
+    artifacts_dir: Optional[pathlib.Path]
+    if measure_cfg.get("tvm_artifacts_dir"):
+        artifacts_dir = pathlib.Path(measure_cfg["tvm_artifacts_dir"])
+    else:
+        artifacts_dir = pathlib.Path(out_dir) / "tvm"
+
+    try:
+        model_copy = copy.deepcopy(graph_model)
+    except Exception:
+        model_copy = graph_model
+
+    tvm_module = compile_pytorch_module(model_copy, tvm_config, artifacts_dir=artifacts_dir)
+    if tvm_module is None:
+        return {
+            "enabled": True,
+            "status": "missing_dependencies",
+            "detail": "TVM export skipped due to missing dependencies",
+        }
+
+    numpy_inputs = _to_numpy_inputs(_prepare_example_for_tvm(graph_example_inputs))
+    named_inputs = _name_tvm_inputs(numpy_inputs)
+    # Set inputs once; TVM caches them internally between runs.
+    for name, value in named_inputs:
+        tvm_module.set_input(name, value)
+
+    measurer = LatencyMeasurer(
+        warmup_iter=int(measure_cfg.get("tvm_warmup", warmup)),
+        repeats=int(measure_cfg.get("tvm_repeats", repeats)),
+        fixed_clock=fixed_clock,
+        sync_gpu=False,
+    )
+
+    def _run() -> None:
+        tvm_module.run()
+
+    latency = measurer.measure_callable(_run)
+
+    reference = None
+    if torch is not None:
+        try:
+            inputs_cpu = _prepare_example_for_tvm(graph_example_inputs)
+            model_for_ref = model_copy
+            if isinstance(inputs_cpu, dict):
+                with torch.no_grad():
+                    ref = model_for_ref(**inputs_cpu)
+            else:
+                args = inputs_cpu if isinstance(inputs_cpu, (list, tuple)) else (inputs_cpu,)
+                with torch.no_grad():
+                    ref = model_for_ref(*args)
+            if isinstance(ref, torch.Tensor):
+                reference = [ref.detach().cpu().numpy()]
+            elif isinstance(ref, (list, tuple)):
+                reference = [r.detach().cpu().numpy() for r in ref if isinstance(r, torch.Tensor)]
+        except Exception:
+            reference = None
+
+    verification = None
+    try:
+        if reference is not None:
+            outputs = verify_runtime(tvm_module, named_inputs, reference=reference)
+            verification = {
+                "checked": True,
+                "outputs": {k: [float(x) for x in v.flatten()[:3]] for k, v in outputs.items()},
+            }
+        else:
+            verify_runtime(tvm_module, named_inputs)
+            verification = {"checked": True, "outputs": None}
+    except Exception as exc:
+        verification = {"checked": False, "detail": str(exc)}
+
+    return {
+        "enabled": True,
+        "status": "ok",
+        "target": tvm_config.target,
+        "tuning_trials": tvm_config.tuning_trials,
+        "use_ansor": tvm_config.use_ansor,
+        "artifacts_dir": str(artifacts_dir),
+        "latency": latency,
+        "verification": verification,
+    }
 
 
 @dataclass
@@ -1200,6 +1349,18 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         except Exception as e:
             errors.append({"stage": "power", "kind": "error", "detail": str(e)})
 
+    tvm_baseline: Dict[str, Any] | None = None
+    if not no_measure:
+        tvm_baseline = _maybe_run_tvm_baseline(
+            measure_cfg,
+            out_dir,
+            graph_model,
+            graph_example_inputs,
+            repeats,
+            warmup,
+            bool(pipeline_cfg.get("fixed_clock", True)),
+        )
+
     throughput = None
     if tokens is not None and isinstance(tokens, (int, float)) and mean == mean and mean > 0.0:
         throughput = float(tokens * 1000.0 / mean)
@@ -1303,6 +1464,9 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         metrics["correlation"] = correlation_meta
     if clustering_meta:
         metrics["clustering"] = clustering_meta
+
+    if isinstance(tvm_baseline, dict):
+        metrics["tvm_baseline"] = tvm_baseline
 
     if isinstance(quality_values, dict):
         for key, value in quality_values.items():

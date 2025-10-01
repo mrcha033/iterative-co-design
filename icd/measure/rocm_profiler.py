@@ -30,6 +30,8 @@ class ROCmProfilerConfig:
     metrics: List[str] = field(default_factory=lambda: ["SQ_WAVES", "VALUUtil"])
     kernel_regex: Optional[str] = None
     additional_args: List[str] = field(default_factory=list)
+    args: List[str] = field(default_factory=list)
+    working_dir: Optional[pathlib.Path] = None
 
 
 class ROCmProfiler:
@@ -46,14 +48,17 @@ class ROCmProfiler:
             "--hsatrace",
             "--stats",
             "--basenames",
-            "--output", str(self.config.output_dir / "rocprof"),
+            "--output",
+            str(self.config.output_dir / "rocprof"),
         ]
         for metric in self.config.metrics:
             cmd.extend(["--metric", metric])
         if self.config.kernel_regex:
             cmd.extend(["--kernel-regex", self.config.kernel_regex])
         cmd.extend(self.config.additional_args)
+        cmd.append("--")
         cmd.append(str(self.config.binary))
+        cmd.extend(self.config.args)
         LOGGER.debug("Constructed rocprof command: %s", " ".join(cmd))
         return cmd
 
@@ -62,7 +67,12 @@ class ROCmProfiler:
 
         cmd = self.build_command()
         try:
-            subprocess.run(cmd, check=True, env=env)
+            subprocess.run(
+                cmd,
+                check=True,
+                env=env,
+                cwd=str(self.config.working_dir) if self.config.working_dir else None,
+            )
         except FileNotFoundError as exc:
             raise ROCmProfilerError(
                 "rocprof executable not found. Ensure ROCm is installed and rocprof is on PATH."

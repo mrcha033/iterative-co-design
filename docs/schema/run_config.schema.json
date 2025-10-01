@@ -89,7 +89,15 @@
       "properties": {
         "ncu_enable": {"type": "boolean"},
         "power_enable": {"type": "boolean"},
-        "power_sample_hz": {"type": "integer", "minimum": 1}
+        "power_sample_hz": {"type": "integer", "minimum": 1},
+        "tvm_enable": {"type": "boolean"},
+        "tvm_trials": {"type": "integer", "minimum": 0},
+        "tvm_target": {"type": "string"},
+        "tvm_use_ansor": {"type": "boolean"},
+        "tvm_log": {"type": "string"},
+        "tvm_artifacts_dir": {"type": "string"},
+        "tvm_repeats": {"type": "integer", "minimum": 1},
+        "tvm_warmup": {"type": "integer", "minimum": 0}
       }
     },
     "cache": {

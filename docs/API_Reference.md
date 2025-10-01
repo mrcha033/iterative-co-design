@@ -169,56 +169,44 @@ class LatencyMeasurer:
         self,
         warmup_iter: int = 50,
         repeats: int = 1000,
-        fixed_clock: bool = True
+        fixed_clock: bool = True,
+        sync_gpu: bool = True,
     ):
-        self.warmup_iter = warmup_iter
-        self.repeats = repeats
-        self.fixed_clock = fixed_clock
+        ...
+
+    def measure(self, model: torch.nn.Module, inputs: Any, device: str | None = None) -> Dict[str, Any]:
+        ...
+
+    def measure_callable(self, fn: Callable[[], None]) -> Dict[str, Any]:
+        ...
 ```
 
-**Methods**:
+**Returned fields** (`Dict[str, Any]`):
 
-##### measure
-
-```python
-def measure(
-    self,
-    model: torch.nn.Module,
-    inputs: torch.Tensor,
-    device: str = "cuda"
-) -> Dict[str, Any]
-```
-
-**Returns**:
-```python
-{
-    "mean": 12.34,              # Mean latency (ms)
-    "std": 0.67,                # Standard deviation
-    "p50": 12.1,                # Median latency
-    "p95": 13.8,                # 95th percentile
-    "p99": 14.2,                # 99th percentile
-    "ci95": (11.8, 12.9),       # 95% confidence interval
-    "outliers": 3,              # Number of outliers removed
-    "raw_samples": [...]        # All timing samples
-}
-```
+- `mean`, `std`, `p50`, `p95`, `p99`: latency statistics in milliseconds.
+- `ci95`: `(lower, upper)` tuple (95% confidence interval).
+- `outliers`: count of samples outside the Tukey IQR fence (1.5×IQR).
+- `raw_samples`: sorted raw latency samples (milliseconds).
+- `warmup_iter`, `repeats`, `fixed_clock`: metadata copied from the measurer.
+- `device`: populated when using :meth:`measure` with a PyTorch module.
 
 **Example**:
 ```python
 from icd.measure.latency import LatencyMeasurer
 import torch
 
-# Setup model and inputs
 model = torch.nn.Linear(256, 128).cuda()
 inputs = torch.randn(32, 256).cuda()
 
-# Configure measurement
 measurer = LatencyMeasurer(warmup_iter=100, repeats=2000)
 
-# Measure latency
 results = measurer.measure(model, inputs)
 print(f"Latency: {results['mean']:.2f} ± {results['std']:.2f} ms")
 print(f"95% CI: [{results['ci95'][0]:.2f}, {results['ci95'][1]:.2f}] ms")
+
+# Measuring an arbitrary callable (e.g., TVM GraphModule.run)
+tvm_stats = measurer.measure_callable(lambda: tvm_graph_module.run())
+print(f"TVM mean latency: {tvm_stats['mean']:.2f} ms")
 ```
 
 ### icd.measure.l2_ncu

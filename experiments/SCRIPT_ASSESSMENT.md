@@ -125,10 +125,10 @@ This document assesses all experiment scripts referenced in the README and ident
 - **Status:** ❌ MISSING
 - **Priority:** LOW (out of scope for initial submission)
 
-#### ❌ **compare_tvm_baseline.py**
+#### ✅ **compare_tvm_results.py**
 - **Referenced in:** README Phase 6
 - **Purpose:** Compare against TVM results
-- **Status:** ❌ MISSING
+- **Status:** ✅ Added at `scripts/compare_tvm_results.py`
 - **Priority:** LOW
 
 ### Analysis & Figures

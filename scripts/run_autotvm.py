@@ -13,9 +13,12 @@ import importlib
 import json
 import logging
 import pathlib
-from typing import Any
+from typing import Any, Dict, Iterable, Tuple
 
-from icd.adapters.tvm_export import ExportConfig, compile_pytorch_module
+import torch
+
+from icd.adapters.tvm_export import ExportConfig, compile_pytorch_module, verify_runtime
+from icd.measure.latency import LatencyMeasurer
 
 LOGGER = logging.getLogger("run_autotvm")
 
@@ -38,6 +41,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tuning-log", type=pathlib.Path, default=None, help="Path to save tuning logs")
     parser.add_argument("--artifacts", type=pathlib.Path, default=None, help="Directory to store compiled artifacts")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
+    parser.add_argument("--measure-repeats", type=int, default=100, help="Latency measurement iterations")
+    parser.add_argument("--measure-warmup", type=int, default=10, help="Latency warmup iterations")
     return parser.parse_args()
 
 
@@ -47,8 +52,6 @@ def main() -> None:
 
     model_factory = resolve_module(args.model)
     model = model_factory()
-
-    import torch
 
     example_input = torch.randn(*args.example_shape)
     config = ExportConfig(
@@ -64,15 +67,100 @@ def main() -> None:
         LOGGER.error("TVM dependencies missing. Aborting.")
         return
 
-    outputs = graph_module.get_output(0).numpy() if graph_module.get_num_outputs() > 0 else None
+    def _prepare_inputs(obj: Any) -> Any:
+        if isinstance(obj, torch.Tensor):
+            return obj.detach().cpu()
+        if isinstance(obj, dict):
+            return {k: _prepare_inputs(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            converted = [_prepare_inputs(v) for v in obj]
+            return type(obj)(converted)
+        return obj
+
+    def _to_numpy(obj: Any) -> Any:
+        if isinstance(obj, torch.Tensor):
+            return obj.detach().cpu().numpy()
+        if isinstance(obj, dict):
+            return {k: _to_numpy(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            converted = [_to_numpy(v) for v in obj]
+            return type(obj)(converted)
+        return obj
+
+    def _name_inputs(obj: Any) -> Iterable[Tuple[str, Any]]:
+        if isinstance(obj, dict):
+            return [(str(k), v) for k, v in obj.items()]
+        if isinstance(obj, (list, tuple)):
+            return [(f"input_{idx}", v) for idx, v in enumerate(obj)]
+        return [("input_0", obj)]
+
+    prepared_inputs = _prepare_inputs(example_input)
+    named_inputs = list(_name_inputs(_to_numpy(prepared_inputs)))
+    for key, value in named_inputs:
+        graph_module.set_input(key, value)
+
+    measurer = LatencyMeasurer(warmup_iter=args.measure_warmup, repeats=args.measure_repeats, fixed_clock=True, sync_gpu=False)
+    latency = measurer.measure_callable(graph_module.run)
+
+    verification: Dict[str, Any]
+    reference_outputs = None
+    with torch.no_grad():
+        model_cpu = model.eval().cpu()
+        if isinstance(prepared_inputs, dict):
+            ref = model_cpu(**prepared_inputs)
+        else:
+            args_tuple = prepared_inputs if isinstance(prepared_inputs, (list, tuple)) else (prepared_inputs,)
+            ref = model_cpu(*args_tuple)
+        if isinstance(ref, torch.Tensor):
+            reference_outputs = [ref.detach().cpu().numpy()]
+        elif isinstance(ref, (list, tuple)):
+            reference_outputs = [r.detach().cpu().numpy() for r in ref if isinstance(r, torch.Tensor)]
+
+    try:
+        verify_runtime(graph_module, named_inputs, reference=reference_outputs)
+        verification = {"checked": True}
+    except Exception as exc:  # pragma: no cover - depends on TVM runtime
+        LOGGER.error("TVM verification failed: %s", exc)
+        verification = {"checked": False, "detail": str(exc)}
+
+    outputs = None
+    if graph_module.get_num_outputs() > 0:
+        outputs = graph_module.get_output(0).numpy().tolist()
+
     summary = {
         "config": config.as_dict(),
-        "outputs_sample": outputs.tolist() if outputs is not None else None,
+        "latency": latency,
+        "verification": verification,
+        "outputs_sample": outputs,
+        "artifacts": str(args.artifacts) if args.artifacts else None,
     }
+
     if args.artifacts:
         summary_path = args.artifacts / "summary.json"
-        summary_path.write_text(json.dumps(summary, indent=2))
+        summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True))
         LOGGER.info("Wrote summary to %s", summary_path)
+
+        metadata_path = args.artifacts / "metadata.json"
+        metadata: Dict[str, Any] = {}
+        if metadata_path.exists():
+            try:
+                metadata = json.loads(metadata_path.read_text())
+            except json.JSONDecodeError:
+                metadata = {}
+        metadata.update({
+            "config": config.as_dict(),
+            "latency": latency,
+            "verification": verification,
+        })
+        metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
+        LOGGER.info("Updated metadata at %s", metadata_path)
+
+    LOGGER.info(
+        "TVM latency: %.3f ms (repeats=%d, warmup=%d)",
+        latency.get("mean"),
+        args.measure_repeats,
+        args.measure_warmup,
+    )
 
 
 if __name__ == "__main__":

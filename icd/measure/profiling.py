@@ -103,7 +103,13 @@ class NVMLPowerLogger:
         return False
 
 
-def run_with_ncu(command: Iterable[str], metrics: Optional[Iterable[str]] = None) -> dict[str, float]:
+def run_with_ncu(
+    command: Iterable[str],
+    metrics: Optional[Iterable[str]] = None,
+    *,
+    env: Optional[dict[str, str]] = None,
+    cwd: Optional[str] = None,
+) -> dict[str, float]:
     """Run a command with Nsight Compute and parse metrics.
 
     Parameters
@@ -127,7 +133,7 @@ def run_with_ncu(command: Iterable[str], metrics: Optional[Iterable[str]] = None
     ] + list(command)
 
     try:
-        output = subprocess.check_output(args, text=True)
+        output = subprocess.check_output(args, text=True, env=env, cwd=cwd)
     except Exception:
         return {}
 

@@ -142,6 +142,21 @@ def main(argv: list[str] | None = None) -> int:
                     errs.append(f"measure.{k} must be boolean if set")
             if "power_sample_hz" in meas and (not isinstance(meas.get("power_sample_hz"), int) or meas.get("power_sample_hz") <= 0):
                 errs.append("measure.power_sample_hz must be positive integer if set")
+            for k in ("tvm_enable", "tvm_use_ansor"):
+                if k in meas and not isinstance(meas.get(k), bool):
+                    errs.append(f"measure.{k} must be boolean if set")
+            if "tvm_trials" in meas and (not isinstance(meas.get("tvm_trials"), int) or meas.get("tvm_trials") < 0):
+                errs.append("measure.tvm_trials must be non-negative integer if set")
+            if "tvm_repeats" in meas and (not isinstance(meas.get("tvm_repeats"), int) or meas.get("tvm_repeats") < 1):
+                errs.append("measure.tvm_repeats must be positive integer if set")
+            if "tvm_warmup" in meas and (not isinstance(meas.get("tvm_warmup"), int) or meas.get("tvm_warmup") < 0):
+                errs.append("measure.tvm_warmup must be non-negative integer if set")
+            if "tvm_target" in meas and not isinstance(meas.get("tvm_target"), str):
+                errs.append("measure.tvm_target must be string if set")
+            if "tvm_log" in meas and not isinstance(meas.get("tvm_log"), str):
+                errs.append("measure.tvm_log must be string path if set")
+            if "tvm_artifacts_dir" in meas and not isinstance(meas.get("tvm_artifacts_dir"), str):
+                errs.append("measure.tvm_artifacts_dir must be string path if set")
         # Cache
         cache = cfg.get("cache", {})
         if cache:

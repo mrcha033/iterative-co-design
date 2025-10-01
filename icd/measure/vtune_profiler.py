@@ -7,7 +7,7 @@ import logging
 import pathlib
 import subprocess
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 LOGGER = logging.getLogger(__name__)
 
@@ -23,6 +23,8 @@ class VTuneProfilerConfig:
     analysis_type: str = "gpu-hotspots"
     result_name: str = "vtune_result"
     env: Dict[str, str] = field(default_factory=dict)
+    args: List[str] = field(default_factory=list)
+    working_dir: Optional[pathlib.Path] = None
 
 
 class VTuneProfiler:
@@ -33,19 +35,27 @@ class VTuneProfiler:
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
 
     def build_command(self) -> List[str]:
-        return [
+        cmd = [
             "vtune",
             "-collect",
             self.config.analysis_type,
             "-result-dir",
             str(self.config.output_dir / self.config.result_name),
-            str(self.config.binary),
         ]
+        cmd.append("--")
+        cmd.append(str(self.config.binary))
+        cmd.extend(self.config.args)
+        return cmd
 
     def run(self) -> pathlib.Path:
         cmd = self.build_command()
         try:
-            subprocess.run(cmd, check=True, env=self.config.env)
+            subprocess.run(
+                cmd,
+                check=True,
+                env=self.config.env if self.config.env else None,
+                cwd=str(self.config.working_dir) if self.config.working_dir else None,
+            )
         except FileNotFoundError as exc:
             raise VTuneProfilerError(
                 "VTune CLI not found. Install Intel VTune Profiler and ensure `vtune` is available."
