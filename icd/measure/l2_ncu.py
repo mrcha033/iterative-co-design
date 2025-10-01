@@ -220,88 +220,142 @@ def collect_l2_metrics(
 
     try:
         import torch
-        import pickle
 
         # Create a profiling script that loads model and runs inference
         script_path = ncu_output.parent / "profile_script.py"
-        model_path = ncu_output.parent / "model_state.pkl"
+        model_path = ncu_output.parent / "profile_model.pt"
+        inputs_path = ncu_output.parent / "profile_inputs.pt"
+
+        def _to_cpu(obj):
+            if isinstance(obj, dict):
+                return {k: _to_cpu(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)):
+                return [_to_cpu(v) for v in obj]
+            if hasattr(obj, "detach"):
+                obj = obj.detach()
+            return obj.cpu() if hasattr(obj, "cpu") else obj
 
         # Save model and inputs for the subprocess
-        # We'll save them as pickled tensors to avoid model reloading
         try:
-            # Move model and inputs to CPU for pickling, save device info
-            device_str = str(next(model.parameters()).device) if hasattr(model, 'parameters') else 'cuda'
+            device_str: str = "cpu"
 
-            # Save input tensors
-            if isinstance(inputs, (tuple, list)):
-                inputs_cpu = [inp.cpu() if hasattr(inp, 'cpu') else inp for inp in inputs]
+            if hasattr(model, "parameters"):
+                try:
+                    device_str = str(next(model.parameters()).device)
+                except StopIteration:
+                    pass
+            if device_str == "cpu" and hasattr(model, "buffers"):
+                try:
+                    device_str = str(next(model.buffers()).device)
+                except StopIteration:
+                    pass
+
+            if hasattr(model, "to"):
+                model.to("cpu")
+
+            torch.save(model, model_path)
+
+            input_is_tuple = isinstance(inputs, tuple)
+            if isinstance(inputs, dict):
+                input_args = []
+                input_kwargs = _to_cpu(inputs)
+            elif isinstance(inputs, (list, tuple)):
+                input_args = [_to_cpu(inp) for inp in inputs]
+                input_kwargs = {}
             else:
-                inputs_cpu = inputs.cpu() if hasattr(inputs, 'cpu') else inputs
+                input_args = [_to_cpu(inputs)]
+                input_kwargs = {}
 
-            with open(model_path, 'wb') as f:
-                pickle.dump({
-                    'inputs': inputs_cpu,
-                    'device': device_str,
-                }, f)
+            inputs_payload = {
+                "inputs": input_args,
+                "kwargs": input_kwargs,
+                "device": device_str,
+                "input_is_tuple": input_is_tuple,
+            }
+            torch.save(inputs_payload, inputs_path)
 
-            logger.info(f"Saved model inputs to {model_path}")
+            if device_str != "cpu" and hasattr(model, "to"):
+                model.to(device_str)
+
+            logger.info(f"Saved profiling artifacts to {model_path} and {inputs_path}")
         except Exception as e:
-            logger.warning(f"Failed to pickle model/inputs: {e}. Trying direct profiling.")
-            # Fall back to in-process profiling (less accurate but may work)
+            logger.warning(f"Failed to serialize model/inputs: {e}. Trying direct profiling.")
             model_path = None
+            inputs_path = None
 
         # Create the profiling script
         with open(script_path, "w") as f:
-            if model_path:
-                f.write(f"""
-import sys
+            if model_path and inputs_path:
+                f.write(
+                    f"""
 import torch
-import pickle
 
-# Disable CUDA caching to get cleaner profiling
-torch.cuda.empty_cache()
+model = torch.load({str(model_path)!r}, map_location="cpu")
+data = torch.load({str(inputs_path)!r})
 
-# Load inputs
-with open("{model_path}", 'rb') as f:
-    data = pickle.load(f)
-    inputs = data['inputs']
-    device = data['device']
+device = torch.device(data.get("device", "cpu"))
+inputs = data.get("inputs", [])
+kwargs = data.get("kwargs", {{}})
+input_is_tuple = data.get("input_is_tuple", False)
 
-# Move inputs to device
-if isinstance(inputs, (tuple, list)):
-    inputs = [inp.to(device) if hasattr(inp, 'to') else inp for inp in inputs]
-else:
-    inputs = inputs.to(device) if hasattr(inputs, 'to') else inputs
+def _move_to_device(value, target_device):
+    if isinstance(value, dict):
+        return {{k: _move_to_device(v, target_device) for k, v in value.items()}}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_move_to_device(v, target_device) for v in value)
+    if hasattr(value, "to"):
+        return value.to(target_device)
+    return value
 
-# Warmup (important for consistent profiling)
-for _ in range(5):
-    if isinstance(inputs, (tuple, list)):
-        _ = torch.nn.functional.linear(inputs[0], inputs[0])
+inputs = _move_to_device(inputs, device)
+kwargs = _move_to_device(kwargs, device)
+
+if input_is_tuple and not isinstance(inputs, tuple):
+    inputs = tuple(inputs)
+
+model = model.to(device)
+model.eval()
+
+use_cuda = device.type == "cuda" and torch.cuda.is_available()
+if use_cuda:
+    torch.cuda.empty_cache()
+
+with torch.no_grad():
+    for _ in range(5):
+        if kwargs:
+            _ = model(*inputs, **kwargs)
+        else:
+            _ = model(*inputs)
+        if use_cuda:
+            torch.cuda.synchronize()
+    if kwargs:
+        output = model(*inputs, **kwargs)
     else:
-        _ = torch.nn.functional.linear(inputs, inputs)
-    torch.cuda.synchronize()
+        output = model(*inputs)
+    if use_cuda:
+        torch.cuda.synchronize()
 
-# Profile region - simple operation to test infrastructure
-# In real usage, this would be model(inputs), but we profile a representative op
-if isinstance(inputs, (tuple, list)):
-    output = torch.nn.functional.linear(inputs[0], inputs[0])
-else:
-    output = torch.nn.functional.linear(inputs, inputs)
-
-torch.cuda.synchronize()
 print("Profiling complete")
-""")
+"""
+                )
             else:
-                # Minimal profiling script if pickling failed
-                f.write("""
+                # Minimal profiling script if serialization failed
+                f.write(
+                    """
 import torch
-torch.cuda.empty_cache()
-# Minimal operation for profiling test
-x = torch.randn(256, 256, device='cuda')
-y = torch.mm(x, x)
-torch.cuda.synchronize()
+
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+    x = torch.randn(256, 256, device="cuda")
+    y = torch.mm(x, x)
+    torch.cuda.synchronize()
+else:
+    x = torch.randn(256, 256)
+    y = torch.mm(x, x)
+
 print("Profiling complete")
-""")
+"""
+                )
 
         # Build ncu command
         cmd = [
