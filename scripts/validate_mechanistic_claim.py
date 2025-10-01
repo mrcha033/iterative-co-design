@@ -24,10 +24,27 @@ from typing import Any, Dict, List, Tuple
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import matplotlib
-matplotlib.use('Agg')  # Non-interactive backend
-import matplotlib.pyplot as plt
 import numpy as np
+import torch
+
+try:
+    import matplotlib
+
+    matplotlib.use('Agg')  # Non-interactive backend
+    import matplotlib.pyplot as plt
+except ImportError:  # pragma: no cover - optional dependency for plotting
+    matplotlib = None  # type: ignore[assignment]
+    plt = None  # type: ignore[assignment]
+
+from icd.measure.cuda_latency import measure_latency_with_stats
+from icd.measure.l2_ncu import collect_l2_metrics
+from icd.runtime.apply_pi import (
+    PermutationApplicationError,
+    apply_pi_to_bert,
+    apply_pi_to_mamba,
+    apply_pi_to_mamba_hf,
+)
+from icd.runtime.runners_hf import _collect_mamba_modules_from_model
 
 logging.basicConfig(
     level=logging.INFO,
@@ -163,6 +180,47 @@ def generate_permutations_with_varying_modularity(
     return permutations
 
 
+def _tensor_from_permutation(model: Any, permutation: List[int]) -> torch.LongTensor:
+    try:
+        device = next(model.parameters()).device  # type: ignore[attr-defined]
+    except StopIteration:
+        device = torch.device("cpu")
+    except AttributeError:
+        device = torch.device("cpu")
+    return torch.as_tensor(permutation, device=device, dtype=torch.long)
+
+
+def _apply_permutation_to_model(model: Any, pi_tensor: torch.LongTensor) -> None:
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+
+    if model_type == "mamba":
+        modules = _collect_mamba_modules_from_model(model)
+        if not modules:
+            raise RuntimeError("no applicable Mamba modules found for permutation application")
+
+        applied = False
+        for entry in modules:
+            try:
+                if entry.get("_hf_mamba"):
+                    apply_pi_to_mamba_hf(entry, pi_tensor)
+                else:
+                    apply_pi_to_mamba(entry, pi_tensor)
+                applied = True
+            except PermutationApplicationError as exc:
+                logger.warning(
+                    "Permutation rejected for module %s: %s",
+                    entry.get("_module_name", "<unnamed>"),
+                    exc,
+                )
+
+        if not applied:
+            raise RuntimeError("permutation rejected for all collected Mamba modules")
+
+        return
+
+    apply_pi_to_bert(model, pi_tensor)
+
+
 def measure_cache_and_latency_for_permutation(
     model: Any,
     inputs: Any,
@@ -185,27 +243,24 @@ def measure_cache_and_latency_for_permutation(
         Tuple of (l2_hit_rate_pct, mean_latency_ms).
         Returns (NaN, NaN) if measurement fails.
     """
-    from icd.measure.cuda_latency import measure_latency_with_stats
-    from icd.measure.l2_ncu import collect_l2_metrics
+    original_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    pi_tensor = _tensor_from_permutation(model, permutation)
 
     try:
-        # Apply permutation to model (if applicable)
-        # NOTE: This requires model-specific weight reordering
-        # For now, we'll measure without reordering to validate infrastructure
-        # TODO: Implement permutation application for specific architectures
+        _apply_permutation_to_model(model, pi_tensor)
 
-        # Measure latency
         latency_stats = measure_latency_with_stats(
-            model, inputs,
+            model,
+            inputs,
             num_repeats=num_samples,
             warmup=num_warmup,
             device=device,
         )
         mean_latency = latency_stats.get("mean", float("nan"))
 
-        # Measure L2 cache (if NCU available)
         cache_metrics = collect_l2_metrics(
-            model, inputs,
+            model,
+            inputs,
             output_dir=None,
         )
         l2_hit_rate = cache_metrics.get("l2_hit_rate_pct", float("nan"))
@@ -215,6 +270,12 @@ def measure_cache_and_latency_for_permutation(
     except Exception as e:
         logger.error(f"Measurement failed: {e}")
         return float("nan"), float("nan")
+    finally:
+        try:
+            with torch.no_grad():
+                model.load_state_dict(original_state, strict=True)
+        except Exception as restore_error:  # pragma: no cover - defensive
+            logger.error(f"Failed to restore original model parameters: {restore_error}")
 
 
 def run_validation(
@@ -341,6 +402,10 @@ def run_validation(
 
 def plot_validation_results(results: Dict[str, Any], output_path: Path) -> None:
     """Generate visualization of validation results."""
+    if plt is None:
+        logger.warning("Matplotlib not available; skipping validation plot generation.")
+        return
+
     measurements = results["measurements"]
 
     Q_vals = [m["modularity_Q"] for m in measurements if not np.isnan(m["modularity_Q"])]

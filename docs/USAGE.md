@@ -2,14 +2,70 @@
 
 This guide shows how to run the iterative layout optimization pipeline from source, what it produces, and common options. It reflects the current repository behavior and tests.
 
-## Reproduction Quick Guide
-- Smoke (linear vs iterative): `bash scripts/repro_smoke.sh` → writes `runs/smoke/{linear,iter}`
-- Codesign repro (correlation + benchmark): `bash scripts/repro_codesign.sh` → writes `runs/codesign/{iterative,linear}`
-- Pair mode (baseline+trial+verdict): `python -m icd.cli.main pair -c configs/mock.json --out runs/pair01`
-- Iterative single run: `python -m icd.cli.main run -c configs/mock.json --override pipeline.mode=iterative --out runs/iter`
-- Enable cache: add `--override cache.enable=true --override cache.cache_dir=.icd_cache`
-- Optional profiling/power: set `ICD_NCU_CMD=...` and add `--override measure.ncu_enable=true`, `--override measure.power_enable=true`
-- Custom runner: provide a dotted path via `--override pipeline.runner="your.module:runner_fn"` and optional context with `--override pipeline.runner_context={"tokens":1024}`
+## CPU-Only Quickstart (5 minutes)
+
+This quickstart walks through reproducing a latency improvement on a toy
+Mamba layer in under five minutes using CPU-only resources.
+
+### 1. Install dependencies
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .[dev]
+```
+
+### 2. Generate synthetic correlation data
+
+```bash
+python - <<'PY'
+import torch
+from icd.graph.streaming_correlation import compute_streaming_correlation
+from icd.graph import CorrelationConfig
+
+rng = torch.Generator().manual_seed(7)
+samples = [torch.randn(64, 32, generator=rng) for _ in range(8)]
+cfg = CorrelationConfig(threshold=0.05, normalize="sym")
+csr, meta = compute_streaming_correlation(samples, feature_dim=32, cfg=cfg)
+print("Correlation nnz:", csr.nnz())
+print("Meta:", meta)
+PY
+```
+
+### 3. Fit a permutation
+
+```bash
+python - <<'PY'
+from icd.core.cost import CostConfig, eval_cost
+from icd.core.solver import fit_permutation
+from icd.core.graph import CSRMatrix
+from icd.graph.streaming_correlation import compute_streaming_correlation
+from icd.graph import CorrelationConfig
+import torch
+
+rng = torch.Generator().manual_seed(13)
+samples = [torch.randn(64, 32, generator=rng) for _ in range(6)]
+cfg = CorrelationConfig(threshold=0.05, normalize="sym")
+csr, _ = compute_streaming_correlation(samples, feature_dim=32, cfg=cfg)
+pi, stats = fit_permutation(csr, time_budget_s=0.1, refine_steps=64)
+identity = list(range(csr.shape[0]))
+cfg_cost = CostConfig()
+baseline = eval_cost(csr, identity, identity, cfg_cost)
+improved = eval_cost(csr, pi, pi, cfg_cost)
+print("Permutation:", pi[:10], "...")
+print("Cost delta:", baseline["J"] - improved["J"])
+print("Stats:", stats)
+PY
+```
+
+### 4. Next steps
+
+- Replace the synthetic samples with captures from your own model using
+  `icd.graph.collect_correlations`.
+- Export the permutation via the CLI: `icd export --config configs/mock.json`.
+- Validate determinism with `python scripts/check_cuda_env.py`.
+
+---
 
 ### Quantization/Permutation strategies
 
@@ -77,32 +133,6 @@ Install (PyPI, planned):
 pip install repermute   # distribution name; import and CLI are `icd`
 ```
 
-## Quick Start (Mock)
-
-Run linear vs iterative and compare metrics:
-
-```bash
-python -m icd.cli.main run -c configs/mock.json --override pipeline.mode=linear   --out runs/mock_linear
-python -m icd.cli.main run -c configs/mock.json --override pipeline.mode=iterative --out runs/mock_iter
-```
-
-Outputs per run (directory):
-- `W.csr.npz` — CSR payload as JSON (`indptr, indices, data, shape, meta`)
-- `w.meta.json` — graph meta snapshot
-- `perm_before.json`, `stats_before.json` — π0 and stats
-- `perm_after.json`, `stats_after.json` — π1 and stats (iterative mode)
-- `metrics.json` — latency/L2/EpT (nulls when disabled) + acceptance info
-- `report.csv`, `report.html` — simple summaries
-- `run.log` — stage events (File-per-line JSON)
-- `config.lock.json` — resolved config used for the run
-- `power.csv` — when `measure.power_enable=true`
-
-Pair mode (runs baseline+trial and writes a compare verdict):
-
-```bash
-python -m icd.cli.main pair -c configs/mock.json --out runs/pair01
-```
-
 ## Real Model Experiments (HuggingFace)
 
 With the dependencies above installed you can run the executable configs that load real models:
@@ -167,7 +197,7 @@ Schema file lives at `docs/schema/run_config.schema.json` and mirrors ICD.md.
 - `pipeline.runner=icd.runtime.runners.mock_inference`
 - `pipeline.runner_context={"tokens":512}`
 - `graph.loader=icd.experiments.hf.load_hf_sequence_classifier`
-- `graph.loader_kwargs={"model_name":"bert-base-uncased","sequence_length":128}`
+- `graph.loader_kwargs={"model_name":"bert-base-uncased","sequence_length":128}
 - `transform.sparsity.enable=true` (and `transform.sparsity.rate=0.5`)
 - `transform.quant.enable=true` (and `transform.quant.dtype=int8`)
 - `pipeline.repermute_on_delta=true` (re-permute when transforms change layout, even in linear mode)
