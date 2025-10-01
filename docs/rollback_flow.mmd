@@ -1,6 +1,0 @@
-graph TD
-    Start["Start measurement"] --> CheckDelta["ΔJ <= -ε?"]
-    CheckDelta -- Yes --> Accept["Accept iterative permutation"]
-    CheckDelta -- No --> RetryBudget{Retry budget remaining?}
-    RetryBudget -- Yes --> Remeasure["Trigger re-run"] --> Start
-    RetryBudget -- No --> Restore["Restore perm_before"] --> Notify["Emit rollback notice"] --> End
