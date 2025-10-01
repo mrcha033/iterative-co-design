@@ -1,5 +1,29 @@
 # Iterative HW–SW Co-Design — Layout Re-Optimization (ICD)
 
+## 🚨 NEW: Real Measurement Infrastructure (2025-10-01)
+
+**The critical gap has been closed.** This project now includes **complete real hardware profiling infrastructure** to generate publication-quality empirical data. See [VALIDATION_README.md](docs/VALIDATION_README.md) for:
+- ✅ Real L2 cache profiling (Nsight Compute integration)
+- ✅ CUDA-based latency measurement (microsecond precision)
+- ✅ Mechanistic validation (Modularity → Cache → Latency)
+- ✅ End-to-end data generation scripts
+
+**Quick Start for Validation**:
+```bash
+# Check prerequisites
+python scripts/check_hardware_setup.py
+
+# Validate core claim on GPU
+python scripts/validate_mechanistic_claim.py --config configs/mamba.json
+
+# Generate all paper data (4-8 hours on A100/H100)
+python scripts/generate_paper_data.py --output results/paper_data
+```
+
+See **[docs/VALIDATION_README.md](docs/VALIDATION_README.md)** for complete validation guide.
+
+---
+
 ## System Overview & Architecture Analysis
 
 This repository implements a production-grade, scientifically rigorous pipeline for **iterative hardware-software co-design** through memory layout re-optimization. The system orchestrates a complex workflow: `permute → transform(S/Q/K) → re-permute → measure → accept/rollback`, with emphasis on determinism, comprehensive observability, and CI/CD portability.
@@ -380,12 +404,24 @@ tests/
 - **CI Matrix** (`docs/CI_Matrix.md`): Automated testing strategy
 
 ### Quick Navigation
+
+**🎯 NEW - Validation & Real Data Generation**:
+- **Validation Guide**: `docs/VALIDATION_README.md` - Run real measurements, generate paper data
+- **Hardware Integration**: `docs/Hardware_Profiling_Integration.md` - Complete profiling setup
+- **Gap Analysis**: `docs/Gap_Analysis.md` - What was missing, what's been fixed
+
+**Core Documentation**:
 - Quick start and CLI usage: see `docs/USAGE.md`
 - Product requirements and interfaces: see `docs/PRD.md` and `docs/ICD.md`
 - Architecture and operating procedures: see `docs/SAS.md` and `docs/SOP.md`
 - Graph/Adapters/Kernel/Runtime specs: see `docs/Graph_Construction_Spec.md`, `docs/S_Q_K_Adapter_Spec.md`, `docs/Kernel_Contract.md`, `docs/Runtime_Memory_Plan.md`
 - Observability/Contrib/Schema: see `docs/Observability_Spec.md`, `docs/SBOM_Contrib.md`, `docs/schema/run_config.schema.json`
-- Executable experiments: `configs/mock.json` (mock), `configs/bert.json` (HF BERT-base), `configs/mamba.json` (HF Mamba-130M), `configs/bert_large.json` (HF BERT-large), `configs/mamba_3b.json` (HF Mamba-2.8B), configs/resnet50.json` (TorchVision ResNet-50), `configs/gcn_arxiv.json` (PyG GCN on OGBN-ArXiv)
+
+**Experiments & Validation**:
+- **Validation Scripts**: `scripts/check_hardware_setup.py`, `scripts/validate_mechanistic_claim.py`, `scripts/generate_paper_data.py`
+- Executable experiments: `configs/mock.json` (mock), `configs/bert.json` (HF BERT-base), `configs/mamba.json` (HF Mamba-130M), `configs/bert_large.json` (HF BERT-large), `configs/mamba_3b.json` (HF Mamba-2.8B), `configs/resnet50.json` (TorchVision ResNet-50), `configs/gcn_arxiv.json` (PyG GCN on OGBN-ArXiv)
+
+**Other**:
 - IR bridge PoC: see `bridge/README.md`
 - Contribution guidelines: see `CONTRIBUTING.md`
 
@@ -710,6 +746,42 @@ Why “repermute”?
 - The project centers on re‑permutation after state transforms (S/Q/K) to improve memory locality. The distribution name `repermute` is descriptive and discoverable on PyPI, while the import package and CLI remain the short, memorable `icd` to reflect the broader “Iterative HW–SW Co‑Design” scope.
 
 ## Reproducing Results (End‑to‑End)
+
+### 🎯 NEW: Generating Real Paper Data (GPU Required)
+
+To generate **real empirical data** for the paper (replaces mock data):
+
+```bash
+# 1. Check prerequisites (CUDA, Nsight Compute, dependencies)
+python scripts/check_hardware_setup.py
+
+# 2. Validate mechanistic claim (30 min on A100)
+python scripts/validate_mechanistic_claim.py \
+    --config configs/mamba.json \
+    --device cuda \
+    --output validation_results.json
+
+# 3. Generate ALL paper data (4-8 hours)
+python scripts/generate_paper_data.py \
+    --output results/paper_data \
+    --models mamba bert
+
+# 4. Review results
+cat results/paper_data/SUMMARY_REPORT.json
+```
+
+**What you get**:
+- ✅ Real L2 cache hit rates (measured via Nsight Compute)
+- ✅ Real GPU latencies (CUDA events, microsecond precision)
+- ✅ Correlation data (Q ↔ L2 ↔ Latency)
+- ✅ Publication-ready tables and figures
+- ✅ Statistical validation of paper claims
+
+**See [docs/VALIDATION_README.md](docs/VALIDATION_README.md) for complete guide.**
+
+---
+
+### Mock Pipeline (CI/Testing, No GPU Required)
 
 This section shows how to reproduce the core experiment (linear vs iterative) from a fresh checkout, what artifacts to expect, and how to enable optional profiling and power logging.
 
