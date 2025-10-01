@@ -421,33 +421,116 @@ def main():
 
     logger.info(f"Loading model from config: {args.config}")
 
-    # Load model and build graph
-    # This requires integration with existing ICD infrastructure
-    # For now, provide template
-
     try:
         from icd.core.graph import build_w
-        from icd.experiments.hf import load_hf_model
+        from icd.utils.imports import load_object
 
         # Load configuration
         with open(args.config) as f:
             config = json.load(f)
 
+        # Extract graph configuration
+        graph_config = config.get("graph", {})
+        if not graph_config:
+            logger.error("No 'graph' section in config file")
+            return 1
+
+        # Load model using the loader specified in config
+        loader_name = graph_config.get("loader")
+        loader_kwargs = graph_config.get("loader_kwargs", {})
+
+        if not loader_name:
+            logger.error("No 'loader' specified in graph config")
+            logger.info("Expected config format: {'graph': {'loader': 'icd.experiments.hf.load_hf_causal_lm', 'loader_kwargs': {...}}}")
+            return 1
+
+        # Override device from command line
+        if "device" in loader_kwargs:
+            loader_kwargs["device"] = args.device
+
+        logger.info(f"Loading model using {loader_name}...")
+        loader_fn = load_object(loader_name)
+
+        try:
+            model, example_inputs = loader_fn(**loader_kwargs)
+            logger.info(f"Model loaded successfully on {args.device}")
+            logger.info(f"Example inputs: {len(example_inputs)} tensor(s)")
+        except Exception as e:
+            logger.error(f"Failed to load model: {e}")
+            logger.error("Check that model name and loader kwargs are correct in config")
+            return 1
+
         # Build W matrix
         logger.info("Building co-access graph...")
-        # NOTE: This needs model loading integration
-        # W = build_w(config["graph"])
 
-        logger.error("Model loading integration pending. See scripts/validate_mechanistic_claim.py for template.")
-        logger.info("\nTo complete validation:")
-        logger.info("1. Ensure CUDA and NCU are available")
-        logger.info("2. Load model and inputs")
-        logger.info("3. Run: python scripts/validate_mechanistic_claim.py --config configs/mamba.json")
+        # Prepare build_w config
+        build_w_config = dict(graph_config)
+        build_w_config["model"] = model
+        build_w_config["example_inputs"] = example_inputs
 
+        # Extract source (default to "pytorch" for HF models)
+        source = build_w_config.get("source", "pytorch")
+
+        try:
+            W = build_w(source=source, **build_w_config)
+            logger.info(f"Graph built: {W.shape[0]} nodes, {W.nnz()} edges")
+        except Exception as e:
+            logger.error(f"Failed to build graph: {e}")
+            logger.error("This may happen if the model structure is not compatible with the graph builder")
+            logger.info("You can try using source='mock' for testing the validation infrastructure")
+            return 1
+
+        # Run validation
+        logger.info(f"\nStarting validation with {args.num_permutations} permutations...")
+
+        results = run_validation(
+            model=model,
+            inputs=example_inputs,
+            W=W,
+            device=args.device,
+            num_permutations=args.num_permutations,
+            output_path=args.output,
+        )
+
+        # Check if validation succeeded
+        if "error" in results:
+            logger.error(f"Validation failed: {results['error']}")
+            return 1
+
+        # Report results
+        logger.info("\n" + "=" * 80)
+        logger.info("VALIDATION COMPLETE")
+        logger.info("=" * 80)
+
+        correlations = results.get("correlations", {})
+        validated = results.get("paper_claim_validated", False)
+
+        logger.info(f"\nCorrelations measured:")
+        logger.info(f"  Modularity ↔ L2:       {correlations.get('modularity_vs_l2', float('nan')):+.3f}")
+        logger.info(f"  L2 ↔ Latency:          {correlations.get('l2_vs_latency', float('nan')):+.3f}")
+        logger.info(f"  Modularity ↔ Latency:  {correlations.get('modularity_vs_latency', float('nan')):+.3f}")
+
+        if validated:
+            logger.info("\n✅ Paper claim VALIDATED (|r| > 0.7, negative correlation)")
+        else:
+            logger.info("\n⚠️  Paper claim NOT validated (|r| < 0.7 or wrong sign)")
+            logger.info("    This may indicate:")
+            logger.info("    - L2 cache profiling needs GPU hardware")
+            logger.info("    - Model-specific permutation application needed")
+            logger.info("    - Theoretical predictions don't match this architecture")
+
+        logger.info(f"\nResults saved to: {args.output}")
+        logger.info("=" * 80)
+
+        return 0
+
+    except KeyboardInterrupt:
+        logger.info("\nValidation interrupted by user")
         return 1
-
     except Exception as e:
-        logger.error(f"Validation setup failed: {e}")
+        logger.error(f"Validation failed with unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
         return 1
 
 
