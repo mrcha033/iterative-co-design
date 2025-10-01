@@ -592,14 +592,55 @@ def fit_permutation(
     seed: int = 0,
     clusters: Sequence[Sequence[int]] | None = None,
     method: str = "spectral_refine",
+    k: int | None = None,
 ) -> Tuple[List[int], Dict[str, float]]:
-    """Compute permutation using configurable heuristics and return stats."""
+    """Compute permutation using configurable heuristics and return stats.
+
+    Args:
+        W: Weighted adjacency matrix
+        time_budget_s: Time budget for solver
+        refine_steps: Number of refinement steps
+        cfg: Cost configuration
+        seed: Random seed
+        clusters: Pre-computed clusters (optional)
+        method: Solver method ("spectral_refine", "louvain", etc.)
+        k: Number of clusters (used for spectral clustering when clusters=None)
+
+    Returns:
+        Tuple of (permutation, stats_dict)
+    """
 
     cfg = cfg or CostConfig()
     solver_key = str(method or "spectral_refine").lower()
     solver = _SOLVER_REGISTRY.get(solver_key)
     if solver is None:
         raise ValueError(f"Unknown solver method: {method}")
+
+    # If k is specified and no clusters provided, generate k clusters via spectral
+    if k is not None and clusters is None and solver_key in ("spectral_refine", "spectral"):
+        try:
+            import numpy as np
+            from sklearn.cluster import SpectralClustering
+
+            # Convert to dense for sklearn
+            W_dense = W.to_dense()
+            W_np = np.array(W_dense, dtype=float)
+
+            # Apply spectral clustering
+            sc = SpectralClustering(n_clusters=k, affinity='precomputed', random_state=seed)
+            labels = sc.fit_predict(W_np)
+
+            # Convert labels to cluster sequences
+            clusters_list = [[] for _ in range(k)]
+            for node_id, label in enumerate(labels):
+                clusters_list[label].append(node_id)
+
+            # Filter empty clusters
+            clusters = [c for c in clusters_list if len(c) > 0]
+        except ImportError:
+            # sklearn not available, fall back to default behavior
+            pass
+
     return solver(
         W,
         time_budget_s=time_budget_s,

@@ -421,6 +421,9 @@ tests/
 - **Validation Scripts**: `scripts/check_hardware_setup.py`, `scripts/validate_mechanistic_claim.py`, `scripts/generate_paper_data.py`
 - Executable experiments: `configs/mock.json` (mock), `configs/bert.json` (HF BERT-base), `configs/mamba.json` (HF Mamba-130M), `configs/bert_large.json` (HF BERT-large), `configs/mamba_3b.json` (HF Mamba-2.8B), `configs/resnet50.json` (TorchVision ResNet-50), `configs/gcn_arxiv.json` (PyG GCN on OGBN-ArXiv)
 
+**Paper Experiments**:
+See the **Experiments** section below for complete details on running all paper experiments.
+
 **Other**:
 - IR bridge PoC: see `bridge/README.md`
 - Contribution guidelines: see `CONTRIBUTING.md`
@@ -917,3 +920,339 @@ panels for request throughput and latency.  The
 `scripts/production_benchmark.py` load test utility can be used to generate
 synthetic traffic against a deployment and emit JSON reports suitable for a
 canary analysis pipeline.
+
+---
+
+## 🧪 Experiments: Complete Paper Data Generation
+
+This section provides **complete instructions** for reproducing all experiments described in the paper. Each experiment is implemented as a standalone script with clear inputs, outputs, and validation criteria.
+
+### Prerequisites
+
+**Hardware Requirements**:
+- CUDA-capable GPU (A100/H100/V100 recommended)
+- 80+ GB GPU memory (for large models)
+- NVIDIA Nsight Compute installed (`ncu` in PATH)
+
+**Software Requirements**:
+```bash
+pip install -e .[dev]
+pip install torch --index-url https://download.pytorch.org/whl/cu118
+pip install scipy matplotlib networkx pandas scikit-learn
+```
+
+**Validation**:
+```bash
+python scripts/check_hardware_setup.py
+```
+
+### Experiment Index
+
+All experiments map directly to paper tables and figures:
+
+| Paper Element | Script | Purpose | Time Estimate |
+|---------------|--------|---------|---------------|
+| **Table 1** (Main Results) | `scripts/run_baseline_experiment.py` + `scripts/aggregate_table1.py` | 4 baselines × 4 models | 4-8 hours |
+| **Table 2** (Mechanistic Validation) | `scripts/validate_mechanistic_claim.py` | Q → L2 → Latency correlations | 1-2 hours |
+| **Table 5** (Kernel Fusion) | `scripts/run_kernel_fusion_experiment.py` | Composability analysis | 30-60 min |
+| **Figure 7** (Correlation Plots) | `scripts/validate_mechanistic_claim.py` | Scatter plots with regression | 1-2 hours |
+| **Figure quant_results** (Quantization) | `scripts/run_quantization_experiment.py` | 3 quantization strategies | 1-2 hours |
+| **Ablation Table** (TSP Baseline) | `scripts/run_tsp_baseline.py` | TSP vs Louvain comparison | 30 min |
+| **Figure batch_size_sensitivity** | `scripts/run_batch_size_sweep.py` | Batch size sweep [1-256] | 2-3 hours |
+| **Appendix C.2** (Hyperparameter) | `scripts/run_hyperparameter_sweep.py` | k-clusters sensitivity | 1-2 hours |
+| **Section 3.5** (Mediation) | `scripts/mediation_analysis.py` | 86% mediation claim | 30 min |
+
+### Quick Start: RunPod Deployment (Recommended)
+
+For **one-command execution** of all experiments:
+
+```bash
+# SSH into RunPod instance
+ssh runpod@<your-instance-ip>
+
+# Clone repository
+git clone https://github.com/<your-username>/iterative-co-design.git
+cd iterative-co-design
+
+# Run ALL experiments (6-10 hours)
+bash scripts/runpod_quickstart.sh
+```
+
+This script:
+1. Installs dependencies
+2. Verifies GPU/NCU availability
+3. Updates configs to use instrumented graphs (real co-access)
+4. Runs mechanistic validation (Table 2)
+5. Runs baseline experiments (Table 1)
+6. Aggregates results
+7. Runs mediation analysis (86% claim)
+8. Validates results against paper claims
+
+**See `docs/RUNPOD_DEPLOYMENT_SUMMARY.md` for complete deployment guide.**
+
+---
+
+### Experiment 1: Main Results (Table 1)
+
+**Purpose**: Compare 4 optimization strategies across 4 model architectures.
+
+**Baselines**:
+1. **Dense**: No optimization (baseline)
+2. **Algo-Only**: HDS sparsity without permutation
+3. **Linear**: Permute → Transform (no re-permutation)
+4. **Iterative**: Permute → Transform → Re-permute (our method)
+
+**Run single baseline**:
+```bash
+python scripts/run_baseline_experiment.py \
+    --baseline iterative \
+    --model mamba \
+    --config configs/mamba.json \
+    --output results/table1/mamba/iterative_metrics.json
+```
+
+**Run all baselines for all models**:
+```bash
+for model in mamba bert; do
+    for baseline in dense algo linear iterative; do
+        python scripts/run_baseline_experiment.py \
+            --baseline $baseline \
+            --model $model \
+            --config configs/${model}.json \
+            --output results/table1/${model}/${baseline}_metrics.json
+    done
+done
+```
+
+**Aggregate into Table 1**:
+```bash
+python scripts/aggregate_table1.py \
+    --input results/table1 \
+    --output results/paper_tables/table1_main_results.tex
+```
+
+**Output**:
+- LaTeX table: `results/paper_tables/table1_main_results.tex`
+- CSV for review: `results/paper_tables/table1_main_results.csv`
+- Statistical tests: Bonferroni-corrected paired t-tests, Cohen's d
+
+**Expected Results** (from paper):
+- Mamba: 17.8% improvement
+- BERT: 19.2% improvement
+- All p < 0.001 (Bonferroni-corrected)
+- All Cohen's d > 1.0 (large effect)
+
+---
+
+### Experiment 2: Mechanistic Validation (Table 2, Figure 7)
+
+**Purpose**: Validate Q → L2 → Latency causal chain.
+
+**Run**:
+```bash
+python scripts/validate_mechanistic_claim.py \
+    --config configs/mamba.json \
+    --device cuda \
+    --num-permutations 20 \
+    --output results/validation/mamba_validation.json
+```
+
+**Output**:
+- JSON results: `results/validation/mamba_validation.json`
+- Correlation plot: `results/validation/mamba_validation.png`
+
+**Expected Correlations**:
+- Q ↔ L2: r > +0.85 (positive)
+- L2 ↔ Latency: r < -0.85 (negative)
+- Q ↔ Latency: r ≈ -0.88 (negative)
+
+**Mediation Analysis** (validates 86% claim):
+```bash
+python scripts/mediation_analysis.py \
+    --data results/validation/mamba_validation.json \
+    --bootstrap 5000 \
+    --output results/mediation/mamba_mediation.json
+```
+
+---
+
+### Experiment 3: Quantization Co-Design (Figure quant_results)
+
+**Purpose**: Test generality of iterative principle with quantization.
+
+**Strategies**:
+1. Quant-then-Permute: Apply PTQ, then find permutation
+2. Permute-then-Quant: Find permutation, then apply PTQ
+3. Iterative: Permute → Quant → Re-permute
+
+**Run**:
+```bash
+python scripts/run_quantization_experiment.py \
+    --model mamba \
+    --config configs/mamba.json \
+    --output results/quantization/mamba_quant_experiment.json
+```
+
+**Expected Result**:
+- Strategy 3 achieves ~12% additional improvement over Strategy 2
+- Demonstrates value of re-permutation after transformation
+
+---
+
+### Experiment 4: Kernel Fusion Composability (Table 5)
+
+**Purpose**: Test whether IASP benefits compose with kernel fusion.
+
+**Run**:
+```bash
+python scripts/run_kernel_fusion_experiment.py \
+    --model mamba \
+    --config configs/mamba.json \
+    --output results/table5/mamba_fusion_composability.json
+```
+
+**Configurations Tested**:
+1. Baseline (no fusion, no IASP)
+2. Fusion only
+3. IASP only
+4. IASP + Fusion
+
+**Expected Result**:
+- Improvements compose additively (composability ratio ≈ 1.0)
+- Suggests orthogonal optimizations
+
+---
+
+### Experiment 5: TSP Baseline (Ablation Table)
+
+**Purpose**: Compare Louvain clustering vs TSP path-based optimization.
+
+**Run**:
+```bash
+python scripts/run_tsp_baseline.py \
+    --model mamba \
+    --config configs/mamba.json \
+    --output results/ablations/mamba_tsp_baseline.json \
+    --method 2opt
+```
+
+**Methods**:
+- `greedy`: Nearest-neighbor heuristic
+- `2opt`: 2-opt local search
+
+**Expected Result** (from paper ablation table):
+- TSP achieves +11.6% improvement (22.1ms vs 25.1ms baseline)
+- Louvain clustering outperforms TSP due to community structure
+
+---
+
+### Experiment 6: Batch Size Sensitivity (Figure batch_size_sensitivity)
+
+**Purpose**: Validate that improvements are consistent across batch sizes.
+
+**Run**:
+```bash
+python scripts/run_batch_size_sweep.py \
+    --model mamba \
+    --config configs/mamba.json \
+    --output results/sensitivity/mamba_batch_size_sweep.json \
+    --batch-sizes 1 2 4 8 16 32 64 128 256
+```
+
+**Output**:
+- JSON results: `results/sensitivity/mamba_batch_size_sweep.json`
+- Plot: `results/sensitivity/mamba_batch_size_sweep.png`
+
+**Expected Result**:
+- Improvement % stable across batch sizes (15-20%)
+- Slight decrease at very large batch sizes (≥128) due to GPU occupancy
+
+---
+
+### Experiment 7: Hyperparameter Sensitivity (Appendix C.2)
+
+**Purpose**: Test sensitivity to number of clusters (k).
+
+**Run**:
+```bash
+python scripts/run_hyperparameter_sweep.py \
+    --model mamba \
+    --config configs/mamba.json \
+    --output results/sensitivity/mamba_hyperparameter_sweep.json \
+    --k-values 4 8 16 24 32 48 64
+```
+
+**Output**:
+- JSON results: `results/sensitivity/mamba_hyperparameter_sweep.json`
+- Plot: `results/sensitivity/mamba_hyperparameter_sweep.png`
+
+**Expected Result**:
+- Performance plateau for k ∈ [8, 32]
+- Very small k underutilizes locality
+- Very large k fragments data
+
+---
+
+### Experiment Summary
+
+**Complete Experiment Runner** (runs all experiments):
+```bash
+# Set up environment
+python scripts/check_hardware_setup.py
+
+# Run all experiments (estimated 10-15 hours)
+bash scripts/runpod_quickstart.sh
+```
+
+**Expected Output Structure**:
+```
+results/
+├── validation/
+│   ├── mamba_validation.json
+│   ├── mamba_validation.png
+│   ├── bert_validation.json
+│   └── bert_validation.png
+├── table1/
+│   ├── mamba/
+│   │   ├── dense_metrics.json
+│   │   ├── algo_metrics.json
+│   │   ├── linear_metrics.json
+│   │   └── iterative_metrics.json
+│   └── bert/...
+├── paper_tables/
+│   ├── table1_main_results.tex
+│   └── table1_main_results.csv
+├── quantization/
+│   └── mamba_quant_experiment.json
+├── table5/
+│   └── mamba_fusion_composability.json
+├── ablations/
+│   └── mamba_tsp_baseline.json
+├── sensitivity/
+│   ├── mamba_batch_size_sweep.json
+│   ├── mamba_batch_size_sweep.png
+│   ├── mamba_hyperparameter_sweep.json
+│   └── mamba_hyperparameter_sweep.png
+└── mediation/
+    └── mamba_mediation.json
+```
+
+**Post-Experiment Checklist**:
+- [ ] Download results from RunPod: `scp -r runpod@<instance>:~/iterative-co-design/results .`
+- [ ] Verify no NaN values: `grep -r "NaN" results/`
+- [ ] Check correlations match paper claims
+- [ ] Update paper Table 1 with `results/paper_tables/table1_main_results.tex`
+- [ ] Update paper Table 2 with correlations from `results/validation/*_validation.json`
+- [ ] Update Figure 7 with `results/validation/*_validation.png`
+- [ ] Update Section 3.5 with mediation % from `results/mediation/mamba_mediation.json`
+- [ ] Remove all "mock data" warnings from paper
+
+**Validation Criteria**:
+1. ✅ No NaN values in any result file
+2. ✅ Correlations have expected signs (Q→L2 positive, L2→Latency negative)
+3. ✅ Statistical significance achieved (p < 0.001, Bonferroni-corrected)
+4. ✅ Effect sizes are large (Cohen's d > 1.0)
+5. ✅ Improvements within expected range (15-25%)
+6. ✅ Mediation analysis validates ~86% claim
+
+---

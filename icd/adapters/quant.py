@@ -29,6 +29,7 @@ __all__ = [
     "apply_quant_from_config",
     "repack_linear_after_permutation",
     "apply_quant",
+    "apply_post_training_quantization",
 ]
 
 
@@ -224,3 +225,33 @@ def apply_quant(
 
     warnings.warn(f"Unknown quantization method '{method}'. No changes applied.")
     return model, meta
+
+
+def apply_post_training_quantization(
+    model: nn.Module,
+    *,
+    dtype: str = "int8",
+    calibration_samples: int = 100,
+) -> nn.Module:
+    """Apply post-training quantization (wrapper for experiment scripts).
+
+    Args:
+        model: PyTorch model to quantize
+        dtype: Quantization dtype ("int8", "int4", "fp16")
+        calibration_samples: Number of calibration samples (unused for PTQ)
+
+    Returns:
+        Quantized model
+    """
+    if dtype in ("int8", "qint8"):
+        quantized, _ = apply_quant(model, method="dynamic", dtype="qint8")
+        return quantized or model
+    elif dtype in ("int4", "4bit"):
+        cfg = QuantConfig(type="bnb-4bit")
+        return apply_quant_from_config(model, cfg)
+    elif dtype in ("fp16", "float16", "half"):
+        quantized, _ = apply_quant(model, method="fp16")
+        return quantized or model
+    else:
+        warnings.warn(f"Unknown dtype '{dtype}', returning model unchanged")
+        return model

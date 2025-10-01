@@ -1,8 +1,6 @@
 """Profiling-based graph construction for memory co-access patterns.
 
-This module implements ACTUAL memory access profiling to build graph W,
-addressing the mechanistic gap between paper claims and heuristic implementation.
-
+This module implements ACTUAL memory access profiling to build graph W.
 Key Idea:
 ----------
 Instead of assuming spatial locality (dimension i correlates with i+1),

@@ -725,6 +725,75 @@ def _contains_proxy(obj) -> bool:
     return False
 
 
+def apply_pi_to_resnet(model: nn.Module, pi: torch.LongTensor) -> None:
+    """Apply permutation to ResNet model.
+
+    For ResNet, we permute the channel dimensions in convolutional layers.
+    The permutation operates on the channel dimension (typically dim=1 for conv layers).
+
+    Args:
+        model: ResNet model
+        pi: Permutation indices
+    """
+    pi = pi.to(device=next(model.parameters()).device, dtype=torch.long)
+
+    # Apply permutation to convolutional layers
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Conv2d):
+            # Permute output channels
+            if hasattr(module, 'weight'):
+                # Conv2d weight shape: (out_channels, in_channels, H, W)
+                weight = module.weight.data
+                num_out_channels = weight.shape[0]
+
+                # Only permute if permutation size matches output channels
+                if pi.numel() == num_out_channels:
+                    module.weight.data = weight[pi]
+
+                    if module.bias is not None:
+                        module.bias.data = module.bias.data[pi]
+
+        elif isinstance(module, nn.BatchNorm2d):
+            # Permute batch norm parameters
+            num_features = module.num_features
+            if pi.numel() == num_features:
+                if module.weight is not None:
+                    module.weight.data = module.weight.data[pi]
+                if module.bias is not None:
+                    module.bias.data = module.bias.data[pi]
+                if module.running_mean is not None:
+                    module.running_mean.data = module.running_mean.data[pi]
+                if module.running_var is not None:
+                    module.running_var.data = module.running_var.data[pi]
+
+
+def apply_pi_to_gcn(model: nn.Module, pi: torch.LongTensor) -> None:
+    """Apply permutation to GCN model.
+
+    For GCN, we permute the hidden dimension in linear layers.
+
+    Args:
+        model: GCN model
+        pi: Permutation indices
+    """
+    pi = pi.to(device=next(model.parameters()).device, dtype=torch.long)
+
+    # Apply permutation to linear layers in GCN
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Linear):
+            # Permute output dimension
+            if hasattr(module, 'weight'):
+                weight = module.weight.data
+                num_out_features = weight.shape[0]
+
+                # Only permute if permutation size matches output features
+                if pi.numel() == num_out_features:
+                    module.weight.data = weight[pi]
+
+                    if module.bias is not None:
+                        module.bias.data = module.bias.data[pi]
+
+
 class _FXForwardGuard:
     __slots__ = ("_orig_forward",)
 

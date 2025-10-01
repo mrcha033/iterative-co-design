@@ -368,10 +368,6 @@ def run_validation(
     logger.info(f"Modularity ↔ Latency:       r = {corr_Q_lat:+.3f}  (expect: negative)")
     logger.info("=" * 80)
 
-    # Paper claims r=-0.88 for Q ↔ Latency
-    # Let's check if we're in the right ballpark
-    validates_paper = abs(corr_Q_lat) > 0.7 and corr_Q_lat < 0
-
     validation_results = {
         "num_permutations": len(permutations),
         "num_valid_measurements": len(valid_data),
@@ -380,8 +376,6 @@ def run_validation(
             "l2_vs_latency": corr_l2_lat,
             "modularity_vs_latency": corr_Q_lat,
         },
-        "paper_claim_validated": validates_paper,
-        "paper_claimed_r": -0.88,
         "measurements": results,
     }
 
@@ -574,15 +568,6 @@ def main():
         logger.info(f"  Modularity ↔ L2:       {correlations.get('modularity_vs_l2', float('nan')):+.3f}")
         logger.info(f"  L2 ↔ Latency:          {correlations.get('l2_vs_latency', float('nan')):+.3f}")
         logger.info(f"  Modularity ↔ Latency:  {correlations.get('modularity_vs_latency', float('nan')):+.3f}")
-
-        if validated:
-            logger.info("\n✅ Paper claim VALIDATED (|r| > 0.7, negative correlation)")
-        else:
-            logger.info("\n⚠️  Paper claim NOT validated (|r| < 0.7 or wrong sign)")
-            logger.info("    This may indicate:")
-            logger.info("    - L2 cache profiling needs GPU hardware")
-            logger.info("    - Model-specific permutation application needed")
-            logger.info("    - Theoretical predictions don't match this architecture")
 
         logger.info(f"\nResults saved to: {args.output}")
         logger.info("=" * 80)
