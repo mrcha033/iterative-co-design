@@ -28,9 +28,11 @@ from __future__ import annotations
 
 import logging
 import time
+import json
+import os
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Callable, DefaultDict, Dict, List, Optional, Set, Tuple
+from typing import Any, DefaultDict, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 try:
     import torch
@@ -85,6 +87,21 @@ class InstrumentedGraphConfig:
     # Layers to instrument (None = all linear layers)
     target_layers: Optional[List[str]] = None
 
+    # Threshold for considering a dimension "active" in a tensor slice.
+    activation_threshold: float = 0.0
+
+    # Limit the number of dimensions stored per access event (None = unlimited).
+    max_dimensions_per_event: Optional[int] = None
+
+    # Persist a truncated access log inside the CSR metadata for downstream analysis.
+    store_access_log: bool = False
+
+    # Maximum number of events to embed in metadata when store_access_log is True.
+    max_events_to_store: int = 512
+
+    # Optional JSONL path to dump the complete access log for offline analysis.
+    trace_output_path: Optional[str] = None
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any] | None) -> "InstrumentedGraphConfig":
         """Create config from dictionary."""
@@ -101,6 +118,15 @@ class InstrumentedGraphConfig:
             cache_line_bytes=int(data.get("cache_line_bytes", 64)),
             per_layer_tracking=bool(data.get("per_layer_tracking", False)),
             target_layers=data.get("target_layers"),
+            activation_threshold=float(data.get("activation_threshold", 0.0)),
+            max_dimensions_per_event=(
+                int(data["max_dimensions_per_event"])
+                if data.get("max_dimensions_per_event") is not None
+                else None
+            ),
+            store_access_log=bool(data.get("store_access_log", False)),
+            max_events_to_store=int(data.get("max_events_to_store", 512)),
+            trace_output_path=data.get("trace_output_path"),
         )
 
 
@@ -151,8 +177,8 @@ class DimensionAccessTracker:
         self.hidden_size = hidden_size
         self.config = config or InstrumentedGraphConfig()
 
-        # Access log: list of (dimension, timestamp_ns, layer_name)
-        self.access_log: List[Tuple[int, int, str]] = []
+        # Access log retains the full set of access events for downstream persistence.
+        self.access_log: List[DimensionAccess] = []
 
         # Per-layer logs (if per_layer_tracking enabled)
         self.per_layer_logs: DefaultDict[str, List[Tuple[int, int]]] = defaultdict(list)
@@ -160,12 +186,15 @@ class DimensionAccessTracker:
         # Statistics
         self.total_accesses = 0
         self.num_samples_recorded = 0
+        # Track any dimensions filtered out because they fell outside the configured range.
+        self._out_of_range_dimensions: Set[int] = set()
 
     def record_access(
         self,
-        dimensions: Set[int],
+        dimensions: Iterable[int],
         timestamp_ns: int,
         layer_name: str = "unknown",
+        operation: str = "readwrite",
     ) -> None:
         """Record that a set of dimensions were accessed at this timestamp.
 
@@ -174,14 +203,33 @@ class DimensionAccessTracker:
             timestamp_ns: Timestamp in nanoseconds (use time.perf_counter_ns()).
             layer_name: Name of layer where access occurred.
         """
-        for dim in dimensions:
+        dims: Sequence[int]
+        if isinstance(dimensions, (list, tuple)):
+            dims = list(dimensions)
+        else:
+            dims = sorted(set(dimensions))
+
+        max_dims = self.config.max_dimensions_per_event
+        if max_dims is not None and len(dims) > max_dims:
+            dims = dims[: max_dims]
+
+        for dim in dims:
             if 0 <= dim < self.hidden_size:
-                self.access_log.append((dim, timestamp_ns, layer_name))
+                event = DimensionAccess(
+                    dimension=dim,
+                    timestamp_ns=timestamp_ns,
+                    layer_name=layer_name,
+                    operation=operation,
+                    access_size_bytes=self.config.cache_line_bytes,
+                )
+                self.access_log.append(event)
 
                 if self.config.per_layer_tracking:
                     self.per_layer_logs[layer_name].append((dim, timestamp_ns))
 
                 self.total_accesses += 1
+            else:
+                self._out_of_range_dimensions.add(int(dim))
 
     def increment_sample_count(self) -> None:
         """Increment sample counter (call after each forward pass)."""
@@ -210,18 +258,30 @@ class DimensionAccessTracker:
             f"across {self.num_samples_recorded} samples"
         )
 
+        if self._out_of_range_dimensions:
+            example_dims = sorted(self._out_of_range_dimensions)
+            sample_preview = example_dims[:5]
+            raise ValueError(
+                "Recorded dimension indices fall outside the configured hidden_size. "
+                f"hidden_size={self.hidden_size}, offending dimensions include {sample_preview}"
+            )
+
         # Sort by timestamp for efficient windowing
-        sorted_accesses = sorted(self.access_log, key=lambda x: x[1])
+        sorted_accesses = sorted(self.access_log, key=lambda x: x.timestamp_ns)
 
         # Count co-accesses within temporal window
         coaccesses: DefaultDict[Tuple[int, int], float] = defaultdict(float)
         window_ns = self.config.temporal_window_ns
 
         # Sliding window algorithm
-        for i, (dim_i, time_i, layer_i) in enumerate(sorted_accesses):
+        for i, access_i in enumerate(sorted_accesses):
+            dim_i = access_i.dimension
+            time_i = access_i.timestamp_ns
             # Look ahead in window
             for j in range(i + 1, len(sorted_accesses)):
-                dim_j, time_j, layer_j = sorted_accesses[j]
+                access_j = sorted_accesses[j]
+                dim_j = access_j.dimension
+                time_j = access_j.timestamp_ns
 
                 # Check if outside window
                 time_diff = time_j - time_i
@@ -321,6 +381,11 @@ class DimensionAccessTracker:
             "min_coaccesses": self.config.min_coaccesses,
         }
 
+        if self.config.store_access_log:
+            meta["instrumented_events"] = self._serialize_access_log(
+                self.config.max_events_to_store
+            )
+
         return CSRMatrix(
             indptr=indptr,
             indices=indices,
@@ -355,44 +420,91 @@ class DimensionAccessTracker:
             meta={"shape": D, "format": "csr", "nnz": D, "source": "instrumented_empty"},
         )
 
+    def _serialize_access_log(self, max_events: int) -> List[Dict[str, Any]]:
+        """Return a JSON-serializable slice of the access log."""
+
+        max_events = max(max_events, 0)
+        events = self.access_log if max_events == 0 else self.access_log[:max_events]
+        return [
+            {
+                "dimension": event.dimension,
+                "timestamp_ns": event.timestamp_ns,
+                "layer": event.layer_name,
+                "op": event.operation,
+                "access_size_bytes": event.access_size_bytes,
+            }
+            for event in events
+        ]
+
 
 def extract_hidden_dimensions(
-    tensor: torch.Tensor,
+    value: Any,
     hidden_size: int,
+    *,
+    activation_threshold: float = 0.0,
+    cache_line_bytes: int = 64,
 ) -> Optional[Set[int]]:
-    """Extract which hidden dimensions are active in this tensor.
+    """Extract which hidden dimensions are active in this tensor-like value.
 
-    For transformers, we care about the last dimension representing hidden_size.
-
-    Args:
-        tensor: Input or output tensor from a layer.
-        hidden_size: Expected hidden dimension size.
-
-    Returns:
-        Set of dimension indices, or None if can't determine.
-
-    Examples:
-        - Shape (batch, seq, hidden_size) → all dims {0..hidden_size-1}
-        - Shape (batch, seq, subset_size) where subset_size < hidden_size → {0..subset_size-1}
+    The helper understands individual tensors as well as tuples/lists of tensors
+    (as produced by some PyTorch modules). It returns the union of all detected
+    indices so the tracker can attribute accesses conservatively.
     """
-    if tensor is None or not isinstance(tensor, torch.Tensor):
+    if value is None:
         return None
 
-    shape = tensor.shape
+    if torch is not None and isinstance(value, torch.Tensor):
+        tensor = value.detach()
+        if tensor.device.type != "cpu":
+            tensor = tensor.to("cpu")
 
-    # Look for dimension matching hidden_size
-    for dim_size in shape:
-        if dim_size == hidden_size:
-            # All dimensions involved
+        shape = tensor.shape
+        hidden_axes = [i for i, dim_size in enumerate(shape) if dim_size == hidden_size]
+
+        if not hidden_axes:
+            # Fallback: treat any dimension smaller than hidden_size as candidates.
+            for dim_size in shape:
+                if 0 < dim_size < hidden_size:
+                    return set(range(dim_size))
             return set(range(hidden_size))
 
-    # Check for subsets (e.g., attention heads)
-    for dim_size in shape:
-        if 0 < dim_size < hidden_size:
-            # Might be subset - return range
-            return set(range(dim_size))
+        axis = hidden_axes[-1]
+        moved = tensor.moveaxis(axis, -1).reshape(-1, hidden_size)
 
-    # Can't determine - return all as conservative estimate
+        if activation_threshold > 0.0:
+            magnitude = moved.abs()
+            mask = magnitude > activation_threshold
+        else:
+            mask = torch.ones_like(moved, dtype=torch.bool)
+
+        if mask.any():
+            dims = torch.nonzero(mask, as_tuple=False)[:, 1].tolist()
+        else:
+            dims = list(range(hidden_size))
+
+        cache_line_dims = max(1, cache_line_bytes // max(1, tensor.element_size()))
+        grouped: Set[int] = set()
+        for dim in dims:
+            start = (int(dim) // cache_line_dims) * cache_line_dims
+            for idx in range(start, min(start + cache_line_dims, hidden_size)):
+                grouped.add(idx)
+
+        return grouped or set(range(hidden_size))
+
+    if isinstance(value, (list, tuple)):
+        dims: Set[int] = set()
+        for item in value:
+            sub_dims = extract_hidden_dimensions(
+                item,
+                hidden_size,
+                activation_threshold=activation_threshold,
+                cache_line_bytes=cache_line_bytes,
+            )
+            if sub_dims:
+                dims.update(sub_dims)
+        return dims or None
+
+    # Fallback: unknown structure, assume all dimensions were touched.
     return set(range(hidden_size))
 
 
@@ -460,26 +572,45 @@ def build_w_from_instrumented_access(
 
         # Hook linear layers and matrix operations
         if isinstance(module, nn.Linear):
-            def make_hook(layer_name: str):
-                def hook(mod: nn.Module, input: Tuple, output: torch.Tensor) -> None:
-                    """Record dimension access for this layer."""
-                    timestamp_ns = time.perf_counter_ns()
+            def hook(
+                mod: nn.Module,
+                module_inputs: Tuple[Any, ...],
+                module_output: torch.Tensor,
+                layer_name: str = name,
+            ) -> None:
+                """Record dimension access for this layer."""
+                timestamp_ns = time.perf_counter_ns()
 
-                    # Extract dimensions from input
-                    if input and len(input) > 0:
-                        dims_input = extract_hidden_dimensions(input[0], hidden_size)
-                        if dims_input:
-                            tracker.record_access(dims_input, timestamp_ns, layer_name)
+                if module_inputs:
+                    dims_input = extract_hidden_dimensions(
+                        module_inputs[0],
+                        hidden_size,
+                        activation_threshold=config.activation_threshold,
+                        cache_line_bytes=config.cache_line_bytes,
+                    )
+                    if dims_input:
+                        tracker.record_access(
+                            dims_input,
+                            timestamp_ns,
+                            layer_name,
+                            operation="read",
+                        )
 
-                    # Extract dimensions from output
-                    dims_output = extract_hidden_dimensions(output, hidden_size)
-                    if dims_output:
-                        # Small offset to show output after input
-                        tracker.record_access(dims_output, timestamp_ns + 1, layer_name)
+                dims_output = extract_hidden_dimensions(
+                    module_output,
+                    hidden_size,
+                    activation_threshold=config.activation_threshold,
+                    cache_line_bytes=config.cache_line_bytes,
+                )
+                if dims_output:
+                    tracker.record_access(
+                        dims_output,
+                        timestamp_ns + 1,
+                        layer_name,
+                        operation="write",
+                    )
 
-                return hook
-
-            hooks.append(module.register_forward_hook(make_hook(name)))
+            hooks.append(module.register_forward_hook(hook))
             hooked_layers += 1
 
     logger.info(f"Hooked {hooked_layers} layers for dimension tracking")
@@ -503,6 +634,27 @@ def build_w_from_instrumented_access(
             hook.remove()
 
     logger.info(f"Recorded {tracker.total_accesses} total dimension accesses")
+
+    if config.trace_output_path:
+        dump_path = os.fspath(config.trace_output_path)
+        directory = os.path.dirname(dump_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with open(dump_path, "w", encoding="utf-8") as f:
+            for event in tracker.access_log:
+                f.write(
+                    json.dumps(
+                        {
+                            "dimension": event.dimension,
+                            "timestamp_ns": event.timestamp_ns,
+                            "layer": event.layer_name,
+                            "operation": event.operation,
+                            "access_size_bytes": event.access_size_bytes,
+                        }
+                    )
+                    + "\n"
+                )
+        logger.info("Instrumented access trace written to %s", dump_path)
 
     # Build co-access graph
     graph_W = tracker.build_coacccess_graph()

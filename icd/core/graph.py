@@ -232,6 +232,48 @@ def build_w(source: str = "mock", **cfg) -> CSRMatrix:
             cap = int(min(0.05 * d * d, 50_000_000))
         csr = _cap_and_prune(csr, int(cap))
         return csr
+    elif source == "instrumented":
+        model = cfg.get("model")
+        example_inputs = cfg.get("example_inputs")
+        hidden_size = cfg.get("hidden_size")
+
+        if model is None or example_inputs is None:
+            raise ValueError("graph.source='instrumented' requires 'model' and 'example_inputs' in cfg")
+
+        if hidden_size is None:
+            config = getattr(model, "config", None)
+            if config is not None:
+                hidden_size = getattr(config, "hidden_size", None)
+        if hidden_size is None:
+            raise ValueError("graph.source='instrumented' requires 'hidden_size' (cannot infer from model)")
+
+        from .graph_instrumented import (
+            InstrumentedGraphConfig,
+            build_w_from_instrumented_access,
+        )
+
+        inst_cfg_data = cfg.get("instrumented", {})
+        inst_cfg = InstrumentedGraphConfig.from_dict(inst_cfg_data)
+
+        csr = build_w_from_instrumented_access(
+            model,
+            example_inputs,
+            hidden_size=int(hidden_size),
+            config=inst_cfg,
+        )
+
+        normalize = cfg.get("normalize", "sym")
+        if normalize == "sym":
+            csr = _normalize_sym(csr)
+        elif normalize == "row":
+            csr = _normalize_row(csr)
+
+        d = csr.shape[0]
+        cap = cfg.get("nnz_cap", None)
+        if cap is None:
+            cap = int(min(0.05 * d * d, 50_000_000))
+        csr = _cap_and_prune(csr, int(cap))
+        return csr
     elif source == "profiling":
         # NEW: Profiling-based graph construction (mechanistically sound)
         model = cfg.get("model")
