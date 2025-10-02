@@ -40,9 +40,10 @@ def _is_valid_dim(val: Any) -> bool:
 def _maybe_override_feature_dim_from_config(model: Any, current_dim: int) -> tuple[int, str | None]:
     """Use configuration metadata to refine the inferred feature dimension.
 
-    HuggingFace Mamba checkpoints expose the width as ``config.d_model`` while
-    ``hidden_size`` reflects the projection output (4096 vs 2560). Prefer
-    ``d_model`` for Mamba so permutations align with mixer hidden width.
+    HuggingFace Mamba checkpoints expose both ``config.d_model`` (state width)
+    and ``hidden_size`` (projection width). The permutation operates on the
+    projection width, so prefer ``hidden_size`` when present and fall back to
+    ``d_model`` only when ``hidden_size`` is missing.
     """
 
     config = getattr(model, "config", None)
@@ -60,8 +61,19 @@ def _maybe_override_feature_dim_from_config(model: Any, current_dim: int) -> tup
     hidden_size = _cfg("hidden_size")
     d_model = _cfg("d_model") or _cfg("model_dim")
 
-    if model_type == "mamba" and _is_valid_dim(d_model):
-        return int(d_model), "hf_config.d_model"
+    if model_type == "mamba":
+        # HuggingFace Mamba checkpoints expose ``d_model`` (state width) alongside
+        # ``hidden_size`` (projection width). The permutation operates over the
+        # projection dimension, which maps to ``hidden_size`` in the mixer
+        # modules. Prefer ``hidden_size`` when it is available so the graph
+        # representation matches the tensors we later permute. Fall back to
+        # ``d_model`` for older checkpoints where ``hidden_size`` might be
+        # missing.
+        if _is_valid_dim(hidden_size):
+            return int(hidden_size), "hf_config.hidden_size"
+        if _is_valid_dim(d_model):
+            return int(d_model), "hf_config.d_model"
+        return current_dim, None
     if _is_valid_dim(hidden_size):
         return int(hidden_size), "hf_config.hidden_size"
     if _is_valid_dim(d_model):
@@ -281,9 +293,16 @@ def build_w_from_pytorch(
     cfg_hs = _config_int("hidden_size")
     cfg_d_model = _config_int("d_model") or _config_int("model_dim")
     model_type = getattr(config, "model_type", None) if config is not None else None
-    if model_type == "mamba" and cfg_d_model > 0:
-        cfg_primary = cfg_d_model
-        cfg_primary_source = "hf_config.d_model"
+    if model_type == "mamba":
+        if cfg_hs > 0:
+            cfg_primary = cfg_hs
+            cfg_primary_source = "hf_config.hidden_size"
+        elif cfg_d_model > 0:
+            cfg_primary = cfg_d_model
+            cfg_primary_source = "hf_config.d_model"
+        else:
+            cfg_primary = 0
+            cfg_primary_source = None
     elif cfg_hs > 0:
         cfg_primary = cfg_hs
         cfg_primary_source = "hf_config.hidden_size"
