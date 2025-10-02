@@ -4,7 +4,7 @@
 Profiles impact across the entire memory hierarchy: L1, L2, DRAM, and bank conflicts.
 
 **REAL HARDWARE IMPLEMENTATION** - Uses Nsight Compute for actual profiling.
-
+~
 Table memory_hierarchy shows:
 - L1 Cache Hit Rate: 85.2% → 88.9% (+3.7 p.p.)
 - L2 Cache Hit Rate: 71.3% → 89.5% (+18.2 p.p.)

@@ -233,6 +233,7 @@ def build_w_from_pytorch(
     fallback_dim = _infer_feature_dim_from_tensor(ex[0])
     D = _infer_feature_dim_from_fx(gm, fallback=fallback_dim)
     feature_dim_source = "fx"
+    feature_dim_overrides: List[str] = []
     if D == fallback_dim and fallback_dim > 0:
         feature_dim_source = "tensor"
     if D <= 0:
@@ -240,20 +241,63 @@ def build_w_from_pytorch(
         feature_dim_source = "default"
 
     seq_len = _infer_seq_len_from_tensor(ex[0])
+    tensor_penultimate = 0
     try:
-        cfg_hs = int(getattr(getattr(model, "config", object()), "hidden_size", 0) or 0)
+        if hasattr(ex[0], "dim") and hasattr(ex[0], "shape") and ex[0].dim() >= 2:
+            tensor_penultimate = int(ex[0].shape[-2])
     except Exception:
-        cfg_hs = 0
+        tensor_penultimate = 0
+
+    config = getattr(model, "config", None)
+    def _config_int(attr: str) -> int:
+        if config is None:
+            return 0
+        try:
+            val = getattr(config, attr, None)
+        except Exception:
+            return 0
+        if isinstance(val, (int, float)):
+            ival = int(val)
+            return ival if ival > 0 else 0
+        return 0
+
+    cfg_hs = _config_int("hidden_size")
+    cfg_d_model = _config_int("d_model") or _config_int("model_dim")
+    cfg_primary = cfg_hs or cfg_d_model
+    cfg_inter = _config_int("intermediate_size")
+
     if seq_len > 0 and cfg_hs > 0 and D == seq_len and cfg_hs != D:
         D = cfg_hs
         feature_dim_source = "hf_config.hidden_size(seq_len_disambiguation)"
+        feature_dim_overrides.append("seq_len_disambiguation")
 
-    D, override_source = _maybe_override_feature_dim_from_config(model, D)
-    if override_source is not None:
+    D_after_config, override_source = _maybe_override_feature_dim_from_config(model, D)
+    if override_source is not None and D_after_config != D:
         feature_dim_source = override_source
+        feature_dim_overrides.append(override_source)
+    D = D_after_config
+
+    if cfg_primary > 0 and D != cfg_primary:
+        D = cfg_primary
+        feature_dim_source = "config.primary_feature_dim"
+        feature_dim_overrides.append("config_primary")
+
+    channel_candidate = tensor_penultimate if tensor_penultimate else seq_len
+    if channel_candidate > 0 and D > channel_candidate:
+        # Channel-first traces expose hidden width as the penultimate dim.
+        channel_has_config_backing = (cfg_primary == channel_candidate) or (
+            cfg_inter > 0 and channel_candidate > 0 and cfg_inter % channel_candidate == 0
+        )
+        ratio = D / float(channel_candidate)
+        if ratio >= 1.2 and (channel_has_config_backing or cfg_primary == 0):
+            D = channel_candidate
+            feature_dim_source = "tensor.channel_first"
+            feature_dim_overrides.append("channel_first")
+
     if D <= 0:
         D = 256
         feature_dim_source = "default"
+        feature_dim_overrides.append("default_fallback")
 
     # 4) Op-based weight accumulation (coarse, but op-aware)
     total_weight = 0.0
@@ -420,6 +464,10 @@ def build_w_from_pytorch(
             "trace_hash": trace_hash,
             "feature_dim": D,
             "feature_dim_source": feature_dim_source,
+            "feature_dim_overrides": feature_dim_overrides,
+            "feature_dim_raw": fallback_dim if fallback_dim > 0 else None,
+            "sequence_dim": seq_len if seq_len > 0 else None,
+            "penultimate_dim": tensor_penultimate if tensor_penultimate > 0 else None,
             "nnz": len(data),
         },
     }
