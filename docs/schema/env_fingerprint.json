@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://icd.ai/schemas/env_fingerprint.json",
+  "title": "EnvironmentFingerprint",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["host", "gpu", "packages"],
+  "properties": {
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostname", "driver"],
+      "properties": {
+        "hostname": {"type": "string"},
+        "driver": {"type": "string"}
+      }
+    },
+    "gpu": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {"type": "string"},
+        "clocks": {
+          "type": "object",
+          "additionalProperties": {"type": "number"}
+        },
+        "temperatures": {
+          "type": "object",
+          "additionalProperties": {"type": "number"}
+        }
+      }
+    },
+    "packages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "version"],
+        "properties": {
+          "name": {"type": "string"},
+          "version": {"type": "string"}
+        }
+      }
+    }
+  }
+}
