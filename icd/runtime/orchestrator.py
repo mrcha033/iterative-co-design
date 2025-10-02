@@ -374,6 +374,10 @@ def _make_correlation_config(data: Dict[str, Any]) -> CorrelationConfig:
     if transfer_batch_size is not None:
         transfer_batch_size = int(transfer_batch_size)
 
+    expected_dim = data.get("expected_dim")
+    if expected_dim is not None:
+        expected_dim = int(expected_dim)
+
     return CorrelationConfig(
         mode=str(data.get("mode", "activation")).lower(),
         layers=data.get("layers"),
@@ -386,6 +390,7 @@ def _make_correlation_config(data: Dict[str, Any]) -> CorrelationConfig:
         nnz_cap=data.get("nnz_cap"),
         whiten=whiten,
         transfer_batch_size=transfer_batch_size,
+        expected_dim=expected_dim,
     )
 
 
@@ -1033,6 +1038,8 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         if model_for_corr is not None and example_inputs_for_corr is not None:
             try:
                 corr_cfg_obj = _make_correlation_config(corr_cfg_data)
+                if W is not None and (corr_cfg_obj.expected_dim is None or corr_cfg_obj.expected_dim <= 0):
+                    corr_cfg_obj.expected_dim = int(W.shape[0])
                 cov, correlation_meta = collect_correlations(
                     model_for_corr,
                     example_inputs_for_corr,

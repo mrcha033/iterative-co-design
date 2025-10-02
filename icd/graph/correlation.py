@@ -142,6 +142,7 @@ class ActivationCollector:
         self._stats: "OrderedDict[str, _ActivationStats]" = OrderedDict()
         self._layer_meta: "OrderedDict[str, MutableMapping[str, object]]" = OrderedDict()
         self._handles: List[Any] = []
+        self._selection_info: Dict[str, object] = {}
 
         for name, module in model.named_modules():
             if not self.targets or name in self.targets:
@@ -212,34 +213,80 @@ class ActivationCollector:
                     inputs = (inputs,)
                 self.model(*inputs)
 
-    def covariance(self) -> Tuple[TorchTensor, List[Dict[str, object]]]:
+    def covariance(
+        self,
+        *,
+        expected_dim: Optional[int] = None,
+    ) -> Tuple[TorchTensor, List[Dict[str, object]]]:
         if not self._stats:
             raise RuntimeError("No activations captured")
-        covariances = [stats.covariance() for stats in self._stats.values()]
-
-        # Check if all covariances have the same shape
+        stats_items = list(self._stats.items())
+        covariances = [stats.covariance() for _, stats in stats_items]
         shapes = [cov.shape for cov in covariances]
-        if len(set(shapes)) > 1:
-            # Different dimensions - only aggregate those matching the most common dimension
-            from collections import Counter
-            shape_counts = Counter(shapes)
-            most_common_shape, _ = shape_counts.most_common(1)[0]
-            filtered_covs = [cov for cov in covariances if cov.shape == most_common_shape]
-            if not filtered_covs:
-                raise RuntimeError("No valid covariance matrices found")
-            covariances = filtered_covs
+        available_shapes = [list(map(int, shape)) for shape in shapes]
 
-        base = covariances[0].clone()
-        for cov in covariances[1:]:
+        selected_indices = list(range(len(covariances)))
+        applied_expected_filter = False
+        expected_shape = None
+        if expected_dim is not None and expected_dim > 0:
+            expected_dim_int = int(expected_dim)
+            expected_shape = (expected_dim_int, expected_dim_int)
+            filtered = [idx for idx, shape in enumerate(shapes) if shape == expected_shape]
+            if filtered:
+                selected_indices = filtered
+                applied_expected_filter = True
+
+        if not selected_indices:
+            selected_indices = list(range(len(covariances)))
+
+        # Align on the dominant shape among selected indices.
+        from collections import Counter
+
+        selected_shapes = [shapes[idx] for idx in selected_indices]
+        if len(set(selected_shapes)) > 1:
+            shape_counts = Counter(selected_shapes)
+            most_common_shape, _ = shape_counts.most_common(1)[0]
+            selected_indices = [idx for idx in selected_indices if shapes[idx] == most_common_shape]
+            selected_shapes = [shapes[idx] for idx in selected_indices]
+
+        if not selected_indices:
+            raise RuntimeError("No valid covariance matrices found")
+
+        selected_covariances = [covariances[idx] for idx in selected_indices]
+        base = selected_covariances[0].clone()
+        for cov in selected_covariances[1:]:
             base += cov
-        cov = base / len(covariances)
+        cov = base / len(selected_covariances)
+        selected_shape = selected_covariances[0].shape
+        matched_expected_dim = bool(
+            expected_shape is not None and selected_shape == expected_shape
+        )
+
         layers_meta: List[Dict[str, object]] = []
-        for name, stats in self._stats.items():
+        for idx, (name, stats) in enumerate(stats_items):
             layer_meta = dict(self._layer_meta.get(name, {}))
             layer_meta.setdefault("name", name)
             layer_meta["count"] = stats.count
+            layer_meta["selected"] = idx in selected_indices
+            if not layer_meta["selected"]:
+                feature_dim = int(layer_meta.get("feature_dim", 0) or 0)
+                if expected_dim is not None and feature_dim != int(expected_dim):
+                    layer_meta.setdefault("ignored_reason", "feature_dim_mismatch")
             layers_meta.append(layer_meta)
+
+        self._selection_info = {
+            "available_shapes": available_shapes,
+            "selected_shape": list(map(int, selected_shape)),
+            "expected_dim": int(expected_dim) if expected_dim is not None else None,
+            "matched_expected_dim": matched_expected_dim,
+            "applied_expected_filter": applied_expected_filter,
+        }
+
         return cov, layers_meta
+
+    @property
+    def selection_info(self) -> Dict[str, object]:
+        return dict(self._selection_info)
 
     def close(self) -> None:
         for handle in self._handles:
@@ -332,12 +379,29 @@ def collect_correlations(
     )
     try:
         collector.run(inputs_iter, cfg.samples)
-        matrix, layers_meta = collector.covariance()
+        matrix, layers_meta = collector.covariance(expected_dim=cfg.expected_dim)
     finally:
         collector.close()
 
     if cfg.whiten:
         matrix = _whiten_covariance(matrix)
+
+    selection_info = collector.selection_info
+    selected_dim = int(matrix.shape[0])
+    available_dims = sorted({
+        int(val)
+        for val in (
+            layer.get("feature_dim")
+            for layer in layers_meta
+        )
+        if isinstance(val, (int, float)) and int(val) > 0
+    })
+
+    for layer_meta in layers_meta:
+        raw_dim = layer_meta.get("feature_dim")
+        feature_dim = int(raw_dim) if isinstance(raw_dim, (int, float)) else 0
+        if feature_dim != selected_dim and not layer_meta.get("ignored_reason"):
+            layer_meta.setdefault("ignored_reason", "feature_dim_mismatch")
 
     meta = {
         "mode": cfg.mode,
@@ -349,6 +413,10 @@ def collect_correlations(
         "seed": cfg.seed,
         "whiten": cfg.whiten,
         "layers": layers_meta,
+        "feature_dim": selected_dim,
+        "expected_dim": int(cfg.expected_dim) if cfg.expected_dim is not None else None,
+        "available_feature_dims": available_dims,
+        "selection": selection_info,
     }
     return matrix.cpu(), meta
 

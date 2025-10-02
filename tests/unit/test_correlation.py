@@ -103,3 +103,47 @@ def test_yaml_config_enables_whiten_and_transfer(monkeypatch):
     assert meta["transfer_batch_size"] == cfg.transfer_batch_size
     assert updates
     assert max(updates) <= cfg.transfer_batch_size
+
+
+class MixedFeatureModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.linear4 = torch.nn.Linear(4, 4, bias=False)
+        torch.nn.init.eye_(self.linear4.weight)
+        self.heads = torch.nn.ModuleList([
+            torch.nn.Linear(4, 3, bias=False),
+            torch.nn.Linear(4, 3, bias=False),
+        ])
+        for head in self.heads:
+            torch.nn.init.eye_(head.weight)
+
+    def forward(self, x):  # type: ignore[override]
+        out = self.linear4(x)
+        # Execute additional heads to surface alternate feature dimensions for hooks.
+        for head in self.heads:
+            head(x)
+        return out
+
+
+def test_expected_dim_filters_layers_with_mismatched_feature_dim():
+    model = MixedFeatureModel()
+    inputs = [(torch.randn(2, 4),) for _ in range(3)]
+
+    cfg = CorrelationConfig(
+        samples=len(inputs),
+        expected_dim=4,
+        layers=["linear4", "heads.0", "heads.1"],
+    )
+
+    matrix, meta = collect_correlations(model, inputs, cfg=cfg)
+
+    assert matrix.shape == (4, 4)
+    assert meta["feature_dim"] == 4
+    assert meta["expected_dim"] == 4
+    assert meta["selection"]["matched_expected_dim"] is True
+    assert 3 in meta["available_feature_dims"]
+
+    selected_names = {layer["name"] for layer in meta["layers"] if layer.get("selected")}
+    assert any(layer.get("feature_dim") == 3 and not layer.get("selected") for layer in meta["layers"])
+    assert any(layer.get("ignored_reason") == "feature_dim_mismatch" for layer in meta["layers"] if layer.get("feature_dim") == 3)
+    assert "linear4" in selected_names
