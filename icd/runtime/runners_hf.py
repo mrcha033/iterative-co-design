@@ -82,10 +82,14 @@ def _expected_dims_for_mamba_entry(entry: Mapping[str, Any]) -> tuple[Any | None
 def _collect_mamba_modules_from_model(model: Any) -> List[Dict[str, Any]]:
     modules: List[Dict[str, Any]] = []
     if model is None or not hasattr(model, "named_modules"):
+        logger.debug("Model is None or missing named_modules attribute")
         return modules
+
+    candidates_found = 0
     for name, module in model.named_modules():  # type: ignore[attr-defined]
         # Check for original mamba-ssm structure (A, B, C)
         if all(hasattr(module, attr) for attr in ("A", "B", "C")):
+            candidates_found += 1
             try:
                 entry: Dict[str, Any] = {
                     "A": _wrap_mamba_weight_holder(getattr(module, "A")),
@@ -96,10 +100,13 @@ def _collect_mamba_modules_from_model(model: Any) -> List[Dict[str, Any]]:
                 if hasattr(module, "x0"):
                     entry["x0"] = getattr(module, "x0")
                 modules.append(entry)
-            except Exception:
+                logger.debug(f"Collected mamba-ssm module: {name}")
+            except Exception as e:
+                logger.warning(f"Failed to wrap mamba-ssm module '{name}': {e}")
                 continue
         # Check for HuggingFace Mamba structure (MambaMixer with in_proj, x_proj, out_proj)
         elif all(hasattr(module, attr) for attr in ("in_proj", "x_proj", "out_proj")):
+            candidates_found += 1
             try:
                 entry: Dict[str, Any] = {
                     "A": _wrap_mamba_weight_holder(getattr(module, "in_proj")),
@@ -110,8 +117,18 @@ def _collect_mamba_modules_from_model(model: Any) -> List[Dict[str, Any]]:
                     "_module_ref": module,  # Reference to actual module for A_log, D, conv1d
                 }
                 modules.append(entry)
-            except Exception:
+                logger.debug(f"Collected HuggingFace Mamba module: {name}")
+            except Exception as e:
+                logger.warning(f"Failed to wrap HuggingFace Mamba module '{name}': {e}")
                 continue
+
+    if candidates_found == 0:
+        logger.warning("No Mamba module candidates found in model (checked for A/B/C and in_proj/x_proj/out_proj)")
+    elif len(modules) == 0:
+        logger.warning(f"Found {candidates_found} Mamba module candidates, but all failed to wrap")
+    else:
+        logger.info(f"Successfully collected {len(modules)} Mamba modules from {candidates_found} candidates")
+
     return modules
 from icd.utils.imports import load_object
 
@@ -244,7 +261,13 @@ def _apply_pi_sequence(
                         exc,
                     )
             if not attempted:
-                raise RuntimeError("no applicable Mamba modules found for permutation application")
+                raise RuntimeError(
+                    f"No applicable Mamba modules found for permutation application. "
+                    f"Collected modules list is empty. This may indicate: "
+                    f"1) Model is not a Mamba architecture, "
+                    f"2) Model structure changed after quantization/transformation, or "
+                    f"3) Module wrapping failed (check warnings above)."
+                )
             if not applied_successfully:
                 logger.warning(
                     "Mamba permutation rejected for all %d collected modules; leaving model unpermuted.",

@@ -610,13 +610,22 @@ def apply_pi_to_mamba_hf(module_dict: Mapping[str, Any], pi: torch.LongTensor) -
     """Apply permutation to HuggingFace Transformers Mamba (MambaMixer).
 
     HF Mamba has different structure than original mamba-ssm:
-    - in_proj: hidden_size → intermediate_size * 2
-    - x_proj: intermediate_size → dt_rank + state_size * 2
-    - out_proj: intermediate_size → hidden_size
+    - in_proj: hidden_size → intermediate_size * 2 (Linear layer)
+    - x_proj: intermediate_size → dt_rank + state_size * 2 (Linear layer)
+    - out_proj: intermediate_size → hidden_size (Linear layer)
+    - conv1d: depthwise convolution with groups=intermediate_size (Conv1d layer)
+      Shape: [intermediate_size, 1, kernel_size] where in_channels_per_group = 1
     - A_log: parameter (intermediate_size, state_size)
     - D: parameter (intermediate_size,)
 
     The permutation pi operates on hidden_size and is expanded to intermediate_size.
+
+    Important: The conv1d layer in Mamba is a DEPTHWISE convolution, meaning each output
+    channel is independently convolved with its corresponding input channel. With
+    groups=intermediate_size and in_channels=intermediate_size, each group processes
+    exactly 1 channel, resulting in weight shape [out_channels, 1, kernel_size].
+    Therefore, only the output channels (rows) should be permuted, not the in_channels
+    dimension which has size 1.
     """
     required = {"A", "B", "C"}  # These are mapped to in_proj, x_proj, out_proj
     missing = required.difference(module_dict.keys())
@@ -723,9 +732,12 @@ def apply_pi_to_mamba_hf(module_dict: Mapping[str, Any], pi: torch.LongTensor) -
         if hasattr(module_ref, "conv1d"):
             conv = module_ref.conv1d
             if hasattr(conv, "weight"):
-                # Conv1d weight shape: (out_channels, in_channels, kernel_size)
-                # Permute both in and out channels since they're both intermediate_size
-                conv.weight.data.copy_(reindex_rows(reindex_cols(conv.weight.data, pi_inner), pi_inner))
+                # Conv1d weight shape: (out_channels, in_channels_per_group, kernel_size)
+                # For HuggingFace Mamba, this is a depthwise convolution with groups=intermediate_size
+                # Shape: [intermediate_size, 1, kernel_size] where in_channels_per_group = in_channels/groups = 1
+                # Only permute output channels (rows), NOT in_channels_per_group (which is 1)
+                # Attempting to reindex 1 column to intermediate_size columns causes broadcasting error
+                conv.weight.data.copy_(reindex_rows(conv.weight.data, pi_inner))
             if getattr(conv, "bias", None) is not None:
                 conv.bias.data.copy_(reindex_vec(conv.bias.data, pi_inner))
 
