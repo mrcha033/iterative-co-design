@@ -79,19 +79,39 @@ def _local_refine_adjacent(
     best = pi[:]
     best_cost = eval_cost(W, best, best, cfg)["J"]
     n = len(pi)
+    if n < 2 or steps <= 0:
+        return best, False
+
+    time_budget = float("inf") if time_budget_s <= 0 else float(time_budget_s)
+    check_interval = max(8, n // 2)
     idx = 0
-    while steps > 0 and (time.perf_counter() - start) < time_budget_s:
+    attempted = 0
+    sweep_improved = False
+
+    while steps > 0:
+        if time_budget != float("inf") and (attempted % check_interval == 0):
+            if (time.perf_counter() - start) >= time_budget:
+                break
+
         i = idx % (n - 1)
+        if i == 0 and idx > 0:
+            if not sweep_improved:
+                break
+            sweep_improved = False
+
         idx += 1
         steps -= 1
+        attempted += 1
+
         cand = best[:]
-        # swap adjacent positions
         cand[i], cand[i + 1] = cand[i + 1], cand[i]
         jcand = eval_cost(W, cand, best, cfg)["J"]
         if jcand < best_cost:
             best = cand
             best_cost = jcand
             improved = True
+            sweep_improved = True
+
     return best, improved
 
 
