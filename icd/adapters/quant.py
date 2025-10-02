@@ -54,7 +54,7 @@ _BNB_AVAILABLE = bnb is not None
 
 
 def _ensure_bnb() -> None:
-    if not _BNB_AVAILABLE:
+    if not _BNB_AVAILABLE:  # pragma: no cover
         raise RuntimeError("bitsandbytes is required for quantization but not installed")
 
 

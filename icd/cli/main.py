@@ -58,6 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     pairp.add_argument("--out", required=True, help="Output directory for pair run root")
     pairp.add_argument("--dry-run", action="store_true", help="Validate config and exit")
     pairp.add_argument("--print-schema", action="store_true", help="Print minimal input schema and exit")
+    sub.add_parser("calibrate", help="Offline calibration stub (disabled by default)")
     validatep = sub.add_parser("validate", help="Run full hardware validation pipeline")
     validatep.add_argument("--out", required=True, help="Output directory for validation artefacts")
     validatep.add_argument("--device", default="cuda", choices=["cuda", "cpu"], help="Execution device (default: cuda)")
