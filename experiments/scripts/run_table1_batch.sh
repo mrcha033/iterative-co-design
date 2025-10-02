@@ -16,7 +16,6 @@ echo "Starting Table 1 experiments at $(date)" | tee -a "$LOG_FILE"
 echo "Project root: $PROJECT_ROOT" | tee -a "$LOG_FILE"
 
 cd "$PROJECT_ROOT"
-source venv/bin/activate || source "$PROJECT_ROOT/venv/bin/activate"
 
 # Verify CUDA
 python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available!'; print(f'Using {torch.cuda.get_device_name(0)}')" | tee -a "$LOG_FILE"
@@ -52,7 +51,7 @@ run_experiment_with_outdir() {
     if [ $? -eq 0 ]; then
         echo "[$(date)] ✓ Completed $config_name -> $out_name | $baseline | run $run" | tee -a "$LOG_FILE"
     else
-        echo "[$(date)] ✗ FAILED $config_name -> $out_name | $baseline | run $run" | tee -a "$LOG_FILE"
+        echo "[$ (date)] ✗ FAILED $config_name -> $out_name | $baseline | run $run" | tee -a "$LOG_FILE"
     fi
 }
 
