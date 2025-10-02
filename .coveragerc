@@ -1,0 +1,21 @@
+[run]
+omit =
+    # Integration/perf agents (covered by hardware CI)
+    icd/bridge/*
+    icd/experiments/*
+    icd/measure/*
+    icd/models/*
+    icd/runtime/*
+    # Optional backends exercised in dedicated suites
+    icd/core/graph_instrumented.py
+    icd/core/graph_profiling.py
+    icd/core/graph_pytorch.py
+    icd/graph/streaming_correlation.py
+    icd/adapters/tvm_export.py
+    icd/hds/checkpoint.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if TYPE_CHECKING:
+    if __name__ == "__main__":
