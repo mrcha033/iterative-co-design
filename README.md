@@ -1,14 +1,5 @@
 # Iterative HW–SW Co-Design — Layout Re-Optimization (ICD)
 
-## 🚨 NEW: Complete Paper Experiments (2025-10-02)
-
-**All 20 paper experiments are now implemented!** This project includes complete scripts to reproduce every figure and table from the paper. See sections below for:
-- ✅ **13 completed experiments** (Tables 1, 2, 5, Figures 7, quant_results, bandwidth_saturation, etc.)
-- ✅ **7 new experiments** (Synthetic validation, width scaling, Pareto frontier, hardware heatmap, latency distributions, cross-vendor, memory hierarchy)
-- ✅ Real L2 cache profiling (Nsight Compute integration)
-- ✅ CUDA-based latency measurement (microsecond precision)
-- ✅ Mechanistic validation (Modularity → Cache → Latency)
-
 **Quick Start - Run All Experiments**:
 ```bash
 # Real hardware mode (DEFAULT - requires CUDA + Nsight Compute)
