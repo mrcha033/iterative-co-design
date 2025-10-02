@@ -14,12 +14,6 @@ python scripts/run_width_scaling.py --mode real --output results/scaling/width.j
 python scripts/run_latency_distributions.py --mode real --output results/stats/latency.json
 ```
 
-**Hardware Integration Status**:
-- ✅ **3/6 scripts** fully integrated with real hardware profiling
-- ✅ Uses actual Nsight Compute L2 cache metrics and CUDA Event timing
-- ✅ Default mode: `real` (actual hardware measurements)
-- ✅ All scripts support `--mode real|simulation` flag for flexibility
-
 See **[Experiment Index](#experiment-index)** below for complete mapping to paper figures/tables.
 
 ---
