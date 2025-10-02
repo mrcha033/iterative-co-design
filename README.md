@@ -1,5 +1,10 @@
 # Iterative HW–SW Co-Design — Layout Re-Optimization (ICD)
 
+[![CI](https://github.com/mrcha033/iterative-co-design/actions/workflows/icd-ci.yml/badge.svg)](https://github.com/mrcha033/iterative-co-design/actions/workflows/icd-ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg?logo=python&logoColor=white)](pyproject.toml)
+[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
+[![Targets](https://img.shields.io/badge/targets-Lat%20%E2%88%9220%25%20%7C%20L2%20%2B10pp%20%7C%20EpT%20%E2%88%9215%25-orange)](#system-overview--architecture-analysis)
+
 **Quick Start - Run All Experiments**:
 ```bash
 # Real hardware mode (DEFAULT - requires CUDA + Nsight Compute)
