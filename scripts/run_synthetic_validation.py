@@ -4,11 +4,6 @@
 Generates synthetic access patterns with known ground-truth community structures
 and measures cache hit rates for layouts with varying modularity scores.
 
-Paper claim (lines 236-239): "We generated access patterns with known ground-truth
-community structures and measured cache hit rates for layouts with varying modularity
-scores. The plot shows a clear, monotonic relationship: as the modularity of the
-memory layout increases, the cache hit rate rises towards its theoretical maximum."
-
 This validates that modularity is a robust, physically-grounded proxy for cache efficiency.
 
 Usage:

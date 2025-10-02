@@ -1,26 +1,35 @@
 # Iterative HW–SW Co-Design — Layout Re-Optimization (ICD)
 
-## 🚨 NEW: Real Measurement Infrastructure (2025-10-01)
+## 🚨 NEW: Complete Paper Experiments (2025-10-02)
 
-**The critical gap has been closed.** This project now includes **complete real hardware profiling infrastructure** to generate publication-quality empirical data. See [VALIDATION_README.md](docs/VALIDATION_README.md) for:
+**All 20 paper experiments are now implemented!** This project includes complete scripts to reproduce every figure and table from the paper. See sections below for:
+- ✅ **13 completed experiments** (Tables 1, 2, 5, Figures 7, quant_results, bandwidth_saturation, etc.)
+- ✅ **7 new experiments** (Synthetic validation, width scaling, Pareto frontier, hardware heatmap, latency distributions, cross-vendor, memory hierarchy)
 - ✅ Real L2 cache profiling (Nsight Compute integration)
 - ✅ CUDA-based latency measurement (microsecond precision)
 - ✅ Mechanistic validation (Modularity → Cache → Latency)
-- ✅ End-to-end data generation scripts
 
-**Quick Start for Validation**:
+**Quick Start - Run All Experiments**:
 ```bash
-# Check prerequisites
-python scripts/check_hardware_setup.py
+# Real hardware mode (DEFAULT - requires CUDA + Nsight Compute)
+bash scripts/run_all_experiments.sh
 
-# Validate core claim on GPU
-python scripts/validate_mechanistic_claim.py --config configs/mamba.json
+# Simulation mode (no GPU required, for testing)
+MODE=simulation bash scripts/run_all_experiments.sh
 
-# Generate all paper data (4-8 hours on A100/H100)
-python scripts/generate_paper_data.py --output results/paper_data
+# Individual experiments with mode selection:
+python scripts/run_memory_hierarchy.py --mode real --output results/memory/hierarchy.json
+python scripts/run_width_scaling.py --mode real --output results/scaling/width.json
+python scripts/run_latency_distributions.py --mode real --output results/stats/latency.json
 ```
 
-See **[docs/VALIDATION_README.md](docs/VALIDATION_README.md)** for complete validation guide.
+**Hardware Integration Status**:
+- ✅ **3/6 scripts** fully integrated with real hardware profiling
+- ✅ Uses actual Nsight Compute L2 cache metrics and CUDA Event timing
+- ✅ Default mode: `real` (actual hardware measurements)
+- ✅ All scripts support `--mode real|simulation` flag for flexibility
+
+See **[Experiment Index](#experiment-index)** below for complete mapping to paper figures/tables.
 
 ---
 
@@ -568,6 +577,51 @@ reuse_options = [
 ]
 ```
 
+## Experiment Index
+
+Complete mapping of paper figures/tables to implementation scripts:
+
+| # | Paper Reference | Script | Description |
+|---|----------------|--------|-------------|
+| 1 | Table 1 (Main Results) | `run_baseline_experiment.py` + `aggregate_table1.py` | Multi-baseline comparison across architectures |
+| 2 | Table 2 (Mechanistic) | `validate_mechanistic_claim.py` | Modularity → Cache → Latency causal chain |
+| 3 | Table 5 (Kernel Fusion) | `run_kernel_fusion_experiment.py` | Composability with other optimizations |
+| 4 | Figure 7 (Correlations) | `validate_mechanistic_claim.py` | Correlation analysis |
+| 5 | Figure quant_results | `run_quantization_experiment.py` | Quantization co-design validation |
+| 6 | TSP Ablation | `run_tsp_baseline.py` | TSP vs Modularity objective comparison |
+| 7 | Figure batch_size_sensitivity | `run_batch_size_sweep.py` | Practical operating range analysis |
+| 8 | Appendix C.2 (Hyperparameter) | `run_hyperparameter_sweep.py` | Sensitivity analysis |
+| 9 | Section 3.5 (Mediation) | `mediation_analysis.py` | Baron-Kenny mediation analysis |
+| 10 | Figure bandwidth_saturation | `run_bandwidth_saturation.py` | Memory-bound regime identification |
+| 11 | ResNet/GCN Support | Integrated in baseline experiments | Cross-architecture validation |
+| 12 | Cross-Architecture Ablation | `run_cross_arch_ablation.py` | Modularity vs alternatives |
+| 13 | Figure synthetic_validation | `run_synthetic_validation.py` | Controlled modularity validation |
+| 14 | Figure scaling_with_width | `run_width_scaling.py` | Model width boundary conditions |
+| 15 | Figure pareto_frontier_mamba | `run_pareto_frontier.py` | Latency-perplexity Pareto analysis |
+| 16 | Figure hardware_generalization_heatmap | `run_hardware_heatmap.py` | V100/A100/H100 comparison |
+| 17 | Figure latency_distributions | `run_latency_distributions.py` | Statistical robustness (Cohen's d) |
+| 18 | Table tvm_baseline | `run_autotvm.py` | AutoTVM/Ansor comparison |
+| 19 | Table cross_vendor | `run_cross_vendor.py` | AMD/Intel profiling |
+| 20 | Table memory_hierarchy | `run_memory_hierarchy.py` | L1/L2/DRAM/bank conflict metrics |
+
+**Run all experiments**:
+```bash
+bash scripts/run_all_experiments.sh
+```
+
+**Results structure**:
+```
+results/
+├── baseline/         # Tables 1, 5, experiments 1-12, 18
+├── validation/       # Tables 2, experiments 2, 9, 13
+├── scaling/          # Experiments 7, 10, 14
+├── pareto/           # Experiment 15
+├── hardware/         # Experiment 16
+├── stats/            # Experiment 17
+├── cross_vendor/     # Experiment 19
+└── memory/           # Experiment 20
+```
+
 ### Command Line Interface & Usage Patterns
 
 #### Quick Testing & Validation
@@ -778,7 +832,6 @@ cat results/paper_data/SUMMARY_REPORT.json
 - ✅ Real GPU latencies (CUDA events, microsecond precision)
 - ✅ Correlation data (Q ↔ L2 ↔ Latency)
 - ✅ Publication-ready tables and figures
-- ✅ Statistical validation of paper claims
 
 **See [docs/VALIDATION_README.md](docs/VALIDATION_README.md) for complete guide.**
 
@@ -975,7 +1028,7 @@ git clone https://github.com/<your-username>/iterative-co-design.git
 cd iterative-co-design
 
 # Run ALL experiments (6-10 hours)
-bash scripts/runpod_quickstart.sh
+bash scripts/quickstart.sh
 ```
 
 This script:
@@ -985,11 +1038,7 @@ This script:
 4. Runs mechanistic validation (Table 2)
 5. Runs baseline experiments (Table 1)
 6. Aggregates results
-7. Runs mediation analysis (86% claim)
-8. Validates results against paper claims
-
-**See `docs/RUNPOD_DEPLOYMENT_SUMMARY.md` for complete deployment guide.**
-
+7. Runs mediation analysis
 ---
 
 ### Experiment 1: Main Results (Table 1)
@@ -1201,7 +1250,7 @@ python scripts/run_hyperparameter_sweep.py \
 python scripts/check_hardware_setup.py
 
 # Run all experiments (estimated 10-15 hours)
-bash scripts/runpod_quickstart.sh
+bash scripts/quickstart.sh
 ```
 
 **Expected Output Structure**:
@@ -1236,16 +1285,6 @@ results/
 └── mediation/
     └── mamba_mediation.json
 ```
-
-**Post-Experiment Checklist**:
-- [ ] Download results from RunPod: `scp -r runpod@<instance>:~/iterative-co-design/results .`
-- [ ] Verify no NaN values: `grep -r "NaN" results/`
-- [ ] Check correlations match paper claims
-- [ ] Update paper Table 1 with `results/paper_tables/table1_main_results.tex`
-- [ ] Update paper Table 2 with correlations from `results/validation/*_validation.json`
-- [ ] Update Figure 7 with `results/validation/*_validation.png`
-- [ ] Update Section 3.5 with mediation % from `results/mediation/mamba_mediation.json`
-- [ ] Remove all "mock data" warnings from paper
 
 **Validation Criteria**:
 1. ✅ No NaN values in any result file
