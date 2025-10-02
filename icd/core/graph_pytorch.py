@@ -30,25 +30,42 @@ else:  # pragma: no cover - optional dependency
 from .graph import CSRMatrix
 
 
-def _maybe_override_feature_dim_from_config(model: Any, current_dim: int) -> tuple[int, str | None]:
-    """Use HuggingFace config metadata to refine feature dimension when available.
+def _is_valid_dim(val: Any) -> bool:
+    try:
+        return isinstance(val, int) and val > 0
+    except Exception:
+        return False
 
-    For HuggingFace models, always prefer config.hidden_size over FX-inferred dimensions
-    to ensure permutations match the actual model layer dimensions.
+
+def _maybe_override_feature_dim_from_config(model: Any, current_dim: int) -> tuple[int, str | None]:
+    """Use configuration metadata to refine the inferred feature dimension.
+
+    HuggingFace Mamba checkpoints expose the width as ``config.d_model`` while
+    ``hidden_size`` reflects the projection output (4096 vs 2560). Prefer
+    ``d_model`` for Mamba so permutations align with mixer hidden width.
     """
 
     config = getattr(model, "config", None)
     if config is None:
         return current_dim, None
 
-    hidden_size = getattr(config, "hidden_size", None)
-    d_model = getattr(config, "d_model", None)
+    def _cfg(attr: str) -> int | None:
+        try:
+            val = getattr(config, attr, None)
+        except Exception:
+            return None
+        return int(val) if _is_valid_dim(val) else None
 
-    if isinstance(hidden_size, int) and hidden_size > 0:
-        # Always use config hidden_size for HF models - it's authoritative
-        return hidden_size, "hf_config.hidden_size"
-    if isinstance(d_model, int) and d_model > 0:
-        return d_model, "hf_config.d_model"
+    model_type = getattr(config, "model_type", None)
+    hidden_size = _cfg("hidden_size")
+    d_model = _cfg("d_model") or _cfg("model_dim")
+
+    if model_type == "mamba" and _is_valid_dim(d_model):
+        return int(d_model), "hf_config.d_model"
+    if _is_valid_dim(hidden_size):
+        return int(hidden_size), "hf_config.hidden_size"
+    if _is_valid_dim(d_model):
+        return int(d_model), "hf_config.d_model"
 
     return current_dim, None
 
@@ -263,7 +280,19 @@ def build_w_from_pytorch(
 
     cfg_hs = _config_int("hidden_size")
     cfg_d_model = _config_int("d_model") or _config_int("model_dim")
-    cfg_primary = cfg_hs or cfg_d_model
+    model_type = getattr(config, "model_type", None) if config is not None else None
+    if model_type == "mamba" and cfg_d_model > 0:
+        cfg_primary = cfg_d_model
+        cfg_primary_source = "hf_config.d_model"
+    elif cfg_hs > 0:
+        cfg_primary = cfg_hs
+        cfg_primary_source = "hf_config.hidden_size"
+    elif cfg_d_model > 0:
+        cfg_primary = cfg_d_model
+        cfg_primary_source = "hf_config.d_model"
+    else:
+        cfg_primary = 0
+        cfg_primary_source = None
     cfg_inter = _config_int("intermediate_size")
 
     if seq_len > 0 and cfg_hs > 0 and D == seq_len and cfg_hs != D:
@@ -280,6 +309,8 @@ def build_w_from_pytorch(
     if cfg_primary > 0 and D != cfg_primary:
         D = cfg_primary
         feature_dim_source = "config.primary_feature_dim"
+        if cfg_primary_source:
+            feature_dim_overrides.append(cfg_primary_source)
         feature_dim_overrides.append("config_primary")
 
     channel_candidate = tensor_penultimate if tensor_penultimate else seq_len
