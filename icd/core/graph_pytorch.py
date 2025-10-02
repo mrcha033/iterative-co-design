@@ -176,6 +176,7 @@ def _fallback_w(
     *,
     hops: int,
     seed: int,
+    example_inputs: Any | None = None,
 ) -> CSRMatrix:
     from .graph import _make_blocky_mock
 
@@ -184,10 +185,67 @@ def _fallback_w(
     except Exception:
         params = []
 
-    d = max(16, min(4096, 256 if not params else sum(int(p.shape[-1]) if getattr(p, "ndim", 0) > 0 else 1 for p in params)))
-    W = _make_blocky_mock(d=d, blocks=4, noise=0.01, seed=seed + len(params))
+    example_tuple: tuple[Any, ...] | None = None
+    if example_inputs is not None:
+        example_tuple = example_inputs if isinstance(example_inputs, tuple) else (example_inputs,)
+
+    feature_dim_hint = 0
+    feature_dim_source = None
+    if example_tuple:
+        for idx, tensor in enumerate(example_tuple):
+            cand = _infer_feature_dim_from_tensor(tensor)
+            if cand > 0:
+                feature_dim_hint = int(cand)
+                feature_dim_source = f"tensor[{idx}]"
+                break
+
+    cfg_dim, cfg_source = _maybe_override_feature_dim_from_config(model, feature_dim_hint)
+    feature_dim_overrides: list[str] = []
+    if cfg_source is not None and cfg_source != feature_dim_source:
+        feature_dim_overrides.append(cfg_source)
+    if cfg_dim > 0:
+        feature_dim_hint = int(cfg_dim)
+        feature_dim_source = cfg_source or feature_dim_source
+
+    if feature_dim_hint <= 0:
+        config = getattr(model, "config", None)
+        for attr in ("hidden_size", "d_model", "model_dim"):
+            try:
+                val = getattr(config, attr)
+            except Exception:
+                val = None
+            if isinstance(val, (int, float)) and int(val) > 0:
+                feature_dim_hint = int(val)
+                feature_dim_source = f"hf_config.{attr}"
+                feature_dim_overrides.append(feature_dim_source)
+                break
+
+    if feature_dim_hint <= 0:
+        param_dim = 256
+        if params:
+            param_dim = sum(int(p.shape[-1]) if getattr(p, "ndim", 0) > 0 else 1 for p in params)
+        feature_dim_hint = max(16, min(4096, param_dim))
+        feature_dim_source = feature_dim_source or "params.sum_last_dim"
+        feature_dim_overrides.append("params_sum_last_dim")
+
+    d = max(16, min(4096, int(feature_dim_hint)))
+    blocks = 4 if d >= 64 else 2
+    W = _make_blocky_mock(d=d, blocks=blocks, noise=0.01, seed=seed + len(params))
+
+    inter_size = None
+    try:
+        config = getattr(model, "config", None)
+        if config is not None:
+            maybe_inter = getattr(config, "intermediate_size", None)
+            if isinstance(maybe_inter, int) and maybe_inter > 0:
+                inter_size = maybe_inter
+    except Exception:
+        inter_size = None
 
     import hashlib
+
+    if not feature_dim_source:
+        feature_dim_source = "fallback"
 
     W.meta.setdefault("pytorch", {})
     W.meta["pytorch"].update(
@@ -197,9 +255,19 @@ def _fallback_w(
             "hops": hops,
             "notes": "v0.9 last-dim heuristic (fallback)",
             "shapes": [],
-            "trace_hash": hashlib.sha256(f"fallback|params={len(params)}|D={d}".encode("utf-8")).hexdigest(),
+            "trace_hash": hashlib.sha256(
+                f"fallback|params={len(params)}|D={d}".encode("utf-8")
+            ).hexdigest(),
+            "feature_dim": d,
+            "feature_dim_source": feature_dim_source,
+            "feature_dim_overrides": feature_dim_overrides,
         }
     )
+    if inter_size and d > 0:
+        intermediate_meta: Dict[str, Any] = {"size": inter_size}
+        if inter_size % d == 0:
+            intermediate_meta["expansion_factor"] = inter_size // d
+        W.meta["pytorch"]["intermediate"] = intermediate_meta
     return W
 
 
@@ -220,8 +288,10 @@ def build_w_from_pytorch(
 
     If torch is not available, returns a deterministic synthetic W from params.
     """
+    ex = example_inputs if isinstance(example_inputs, tuple) else (example_inputs,)
+
     if not TORCH_AVAILABLE:
-        return _fallback_w(model, hops=hops, seed=seed)
+        return _fallback_w(model, hops=hops, seed=seed, example_inputs=ex)
 
     import torch  # type: ignore
     from torch import fx  # type: ignore
@@ -229,7 +299,6 @@ def build_w_from_pytorch(
 
     torch.manual_seed(seed)
     model_eval = model.eval()
-    ex = example_inputs if isinstance(example_inputs, tuple) else (example_inputs,)
 
     # 1) Short profile (CPU/CUDA tolerant)
     activities = [ProfilerActivity.CPU]
@@ -249,7 +318,7 @@ def build_w_from_pytorch(
     try:
         gm = fx.symbolic_trace(model_eval)
     except Exception:
-        return _fallback_w(model, hops=hops, seed=seed)
+        return _fallback_w(model, hops=hops, seed=seed, example_inputs=ex)
 
     try:
         from torch.fx.passes.shape_prop import ShapeProp  # type: ignore
@@ -314,10 +383,34 @@ def build_w_from_pytorch(
         cfg_primary_source = None
     cfg_inter = _config_int("intermediate_size")
 
+    # Guard against sequence length being mistaken for feature dimension
+    # Common sequence lengths: 128, 256, 512, 1024, 2048, 4096, 8192
+    # Feature dimensions are usually smaller: 256, 384, 512, 768, 1024, 1280, 1536, 2048, 2560, 3072, 4096
     if seq_len > 0 and cfg_hs > 0 and D == seq_len and cfg_hs != D:
+        # Case 1: Detected exact match with sequence length, but config says otherwise
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "Feature dimension inference: D=%d matches sequence_length=%d but config.hidden_size=%d. "
+            "Overriding D=%d to prevent sequence/feature axis confusion.",
+            D, seq_len, cfg_hs, cfg_hs
+        )
         D = cfg_hs
         feature_dim_source = "hf_config.hidden_size(seq_len_disambiguation)"
         feature_dim_overrides.append("seq_len_disambiguation")
+    elif seq_len > 0 and D == seq_len and cfg_hs > 0 and D > cfg_hs * 1.5:
+        # Case 2: D matches seq_len and is significantly larger than hidden_size
+        # This suggests D captured sequence length instead of feature dimension
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "Feature dimension inference: D=%d matches sequence_length=%d and is >1.5x config.hidden_size=%d. "
+            "Likely sequence/feature axis confusion. Overriding D=%d.",
+            D, seq_len, cfg_hs, cfg_hs
+        )
+        D = cfg_hs
+        feature_dim_source = "hf_config.hidden_size(seq_len_override)"
+        feature_dim_overrides.append("seq_len_override")
 
     D_after_config, override_source = _maybe_override_feature_dim_from_config(model, D)
     if override_source is not None and D_after_config != D:
@@ -333,13 +426,18 @@ def build_w_from_pytorch(
         feature_dim_overrides.append("config_primary")
 
     channel_candidate = tensor_penultimate if tensor_penultimate else seq_len
-    if channel_candidate > 0 and D > channel_candidate:
-        # Channel-first traces expose hidden width as the penultimate dim.
-        channel_has_config_backing = (cfg_primary == channel_candidate) or (
+    if channel_candidate > 0 and D > channel_candidate and cfg_primary == 0:
+        # Channel-first traces expose hidden width as the penultimate dim. Only
+        # trust this override when the configuration does not already specify a
+        # feature dimension (cfg_primary == 0). This prevents HuggingFace
+        # checkpoints (e.g., Mamba) from being coerced to the shorter sequence
+        # length while still allowing conv-style traces without config metadata
+        # to fall back to the channel axis.
+        channel_has_config_backing = (
             cfg_inter > 0 and channel_candidate > 0 and cfg_inter % channel_candidate == 0
         )
         ratio = D / float(channel_candidate)
-        if ratio >= 1.2 and (channel_has_config_backing or cfg_primary == 0):
+        if ratio >= 1.2 and (channel_has_config_backing or cfg_inter == 0):
             D = channel_candidate
             feature_dim_source = "tensor.channel_first"
             feature_dim_overrides.append("channel_first")

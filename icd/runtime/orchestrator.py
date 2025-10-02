@@ -1038,8 +1038,25 @@ def run(config: Dict[str, Any]) -> RunArtifacts:
         if model_for_corr is not None and example_inputs_for_corr is not None:
             try:
                 corr_cfg_obj = _make_correlation_config(corr_cfg_data)
-                if W is not None and (corr_cfg_obj.expected_dim is None or corr_cfg_obj.expected_dim <= 0):
-                    corr_cfg_obj.expected_dim = int(W.shape[0])
+                # Extract expected_dim from model config to ensure we correlate over feature dimension
+                if corr_cfg_obj.expected_dim is None or corr_cfg_obj.expected_dim <= 0:
+                    # Priority 1: Use model.config.hidden_size if available
+                    config_like = getattr(model_for_corr, "config", None)
+                    if config_like is not None:
+                        hidden_size = getattr(config_like, "hidden_size", None)
+                        if isinstance(hidden_size, (int, float)) and int(hidden_size) > 0:
+                            corr_cfg_obj.expected_dim = int(hidden_size)
+                            logger.info(
+                                "[IASP] Set correlation expected_dim=%d from model.config.hidden_size",
+                                corr_cfg_obj.expected_dim,
+                            )
+                    # Priority 2: Fallback to graph W dimension
+                    if (corr_cfg_obj.expected_dim is None or corr_cfg_obj.expected_dim <= 0) and W is not None:
+                        corr_cfg_obj.expected_dim = int(W.shape[0])
+                        logger.info(
+                            "[IASP] Set correlation expected_dim=%d from graph W.shape",
+                            corr_cfg_obj.expected_dim,
+                        )
                 cov, correlation_meta = collect_correlations(
                     model_for_corr,
                     example_inputs_for_corr,

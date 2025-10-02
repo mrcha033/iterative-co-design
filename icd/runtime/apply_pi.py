@@ -664,9 +664,24 @@ def apply_pi_to_mamba_hf(module_dict: Mapping[str, Any], pi: torch.LongTensor) -
             pi_inner, hidden_size_int, intermediate_size_int
         )
     else:
+        # Enhanced error message to help diagnose sequence/feature dimension confusion
+        # Common sequence lengths that might be mistaken for feature dimensions
+        common_seq_lens = {128, 256, 512, 1024, 2048, 4096, 8192}
+        diagnostic_hint = ""
+        if pi_length in common_seq_lens:
+            diagnostic_hint = (
+                f" HINT: len(perm)={pi_length} is a common sequence length. "
+                f"This suggests correlations may have been computed along the sequence axis "
+                f"instead of the feature axis. Check that CorrelationConfig.expected_dim is set "
+                f"to hidden_size={hidden_size_int}, not sequence_length."
+            )
+
         raise PermutationApplicationError(
-            "permutation length {} does not match hidden_size {} or intermediate_size {}".format(
-                pi_length, hidden_size_int, intermediate_size_int
+            "len(perm)={}, expect hs={} inter={}: permutation length {} does not match "
+            "hidden_size {} or intermediate_size {}.{}".format(
+                pi_length, hidden_size_int, intermediate_size_int,
+                pi_length, hidden_size_int, intermediate_size_int,
+                diagnostic_hint
             )
         )
 

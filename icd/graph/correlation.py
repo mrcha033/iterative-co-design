@@ -132,6 +132,7 @@ class ActivationCollector:
         *,
         device_guard: bool = True,
         transfer_batch_size: Optional[int] = None,
+        expected_dim: Optional[int] = None,
     ) -> None:
         _ensure_torch("ActivationCollector")
         self.model = model
@@ -139,6 +140,7 @@ class ActivationCollector:
         self.dtype = dtype
         self.device_guard = device_guard
         self.transfer_batch_size = int(transfer_batch_size) if transfer_batch_size else None
+        self.expected_dim = int(expected_dim) if expected_dim and expected_dim > 0 else None
         self._stats: "OrderedDict[str, _ActivationStats]" = OrderedDict()
         self._layer_meta: "OrderedDict[str, MutableMapping[str, object]]" = OrderedDict()
         self._handles: List[Any] = []
@@ -186,11 +188,46 @@ class ActivationCollector:
             # For 2D tensors (batch, features), use as-is
             # For higher dims, flatten
             if tensor.ndim == 3:
+                batch_size = tensor.shape[0]
+                seq_len = tensor.shape[1]
                 feature_dim = tensor.shape[2]
+
+                # Validate: feature dimension should match expected_dim, not sequence length
+                if self.expected_dim is not None:
+                    if seq_len == self.expected_dim and feature_dim != self.expected_dim:
+                        # Detected likely axis confusion: sequence length matches expected_dim
+                        import warnings
+                        warnings.warn(
+                            f"Layer {name}: sequence_length={seq_len} matches expected_dim={self.expected_dim}, "
+                            f"but feature_dim={feature_dim}. This suggests the tensor may have shape "
+                            f"(batch, hidden, seq) instead of (batch, seq, hidden). Skipping this layer.",
+                            UserWarning,
+                            stacklevel=3,
+                        )
+                        return
+                    if feature_dim != self.expected_dim:
+                        # Feature dimension doesn't match expected - will be filtered later
+                        pass
+
                 # Average over sequence to get (batch, features)
                 tensor = tensor.mean(dim=1)
             elif tensor.ndim == 2:
                 feature_dim = tensor.shape[1]
+
+                # Validate: warn if feature_dim looks suspiciously like a sequence length
+                if self.expected_dim is not None and feature_dim != self.expected_dim:
+                    # Check if this might be a (batch, seq) tensor instead of (batch, features)
+                    # Sequence lengths are typically powers of 2 or common values like 512, 1024, 2048, 4096
+                    common_seq_lens = {128, 256, 512, 1024, 2048, 4096, 8192}
+                    if feature_dim in common_seq_lens and feature_dim > self.expected_dim:
+                        import warnings
+                        warnings.warn(
+                            f"Layer {name}: feature_dim={feature_dim} looks like a sequence length "
+                            f"(expected_dim={self.expected_dim}). This may indicate incorrect axis selection. "
+                            f"This layer will be filtered out.",
+                            UserWarning,
+                            stacklevel=3,
+                        )
             else:
                 tensor = tensor.reshape(tensor.shape[0], -1)
                 feature_dim = tensor.shape[1]
@@ -376,6 +413,7 @@ def collect_correlations(
         dtype=cfg.dtype,
         device_guard=cfg.device_guard,
         transfer_batch_size=cfg.transfer_batch_size,
+        expected_dim=cfg.expected_dim,
     )
     try:
         collector.run(inputs_iter, cfg.samples)
